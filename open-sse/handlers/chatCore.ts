@@ -100,6 +100,10 @@ import {
 import { getCachedSettings } from "@/lib/db/readCache";
 import { applyCodexGlobalFastServiceTier } from "@/lib/providers/codexFastTier";
 import {
+  CPA_FORCE_FAST_MODE_HEADER,
+  shouldRequestClaudeFastMode,
+} from "@/lib/providers/claudeFastMode";
+import {
   getCodexRequestDefaults,
   normalizeCodexServiceTier,
 } from "@/lib/providers/requestDefaults";
@@ -1750,6 +1754,22 @@ export async function handleChatCore({
       if ("user-agent" in upstreamHeaders) {
         upstreamHeaders["user-agent"] = connectionCustomUserAgent;
       }
+    }
+
+    // Claude Fast Mode opt-in. When the user has enabled this in
+    // Settings > AI AND the target provider is the canonical Anthropic
+    // `claude` provider (Claude Code-compatible CPA bridges are excluded
+    // since they already select their own entrypoint) AND the model id
+    // matches the configured list, signal to a paired CLIProxyAPI build to
+    // rewrite the cc_entrypoint so the request can reach Anthropic Fast
+    // Mode (speed:"fast"). CPA builds that do not understand the header
+    // forward it harmlessly.
+    if (
+      provider === "claude" &&
+      typeof settings !== "undefined" &&
+      shouldRequestClaudeFastMode(settings, modelToCall)
+    ) {
+      upstreamHeaders[CPA_FORCE_FAST_MODE_HEADER] = "1";
     }
 
     return upstreamHeaders;

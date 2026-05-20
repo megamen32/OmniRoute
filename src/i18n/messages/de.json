@@ -3970,7 +3970,13 @@
     "codexFastTierTitle": "Codex Fast Tier",
     "codexFastTierDesc": "service_tier=priority global für OpenAI Codex-Anfragen einfügen.",
     "codexFastTierHint": "Wenn aktiviert, fügt OmniRoute ausgehenden Codex-Anfragen service_tier=priority hinzu, sofern für die Verbindung noch kein Tier festgelegt ist. Der Priority-Tier erfordert einen OpenAI Enterprise API-Schlüssel oder den ChatGPT-Auth-Codex-Pfad; andere Schlüsseltypen erhalten von OpenAI einen tier-bezogenen Fehler. Pro-Verbindung-Einstellungen auf der Codex-Provider-Seite haben Vorrang.",
-    "codexFastTierSaveError": "Codex Fast Tier-Einstellung konnte nicht aktualisiert werden"
+    "codexFastTierSaveError": "Codex Fast Tier-Einstellung konnte nicht aktualisiert werden",
+    "claudeFastModeTitle": "Claude Fast Mode",
+    "claudeFastModeDesc": "Aktiviert den Fast Mode (speed:\"fast\") für ausgewählte Claude-Anfragen.",
+    "claudeFastModeHint": "Anthropic unterstützt Fast Mode für SDK-Clients offiziell nicht. Wenn aktiviert, fügt OmniRoute den Header X-CPA-Force-Fast-Mode hinzu, sodass ein kompatibler CLIProxyAPI-Build den Entrypoint umschreiben kann. Nur die aufgeführten Opus-Modelle passieren die clientseitige Anthropic-Prüfung. Abonnement, Max-Plan und Fast-Mode-Credit-Saldo werden weiterhin serverseitig durchgesetzt — Anthropic kann auch bei aktiviertem Toggle out_of_credits zurückgeben.",
+    "claudeFastModeModelsLabel": "Auf Modelle angewendet ({count})",
+    "claudeFastModeModelCheckbox": "Fast Mode für {model} aktivieren",
+    "claudeFastModeSaveError": "Claude Fast Mode-Einstellung konnte nicht aktualisiert werden"
   },
   "contextRtk": {
     "title": "RTK Engine",
