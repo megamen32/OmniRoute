@@ -1562,8 +1562,7 @@ function extractCodeAssistTierId(subscription: JsonRecord): string {
   const tierId = extractCodeAssistOnboardTierId(subscription);
   if (tierId === "legacy-tier") return "";
   const upper = tierId.toUpperCase();
-  if (mapCodeAssistTierIdToLabel(upper)) return upper;
-  return upper;
+  return mapCodeAssistTierIdToLabel(upper) ? upper : "";
 }
 
 function mapCodeAssistTierIdToLabel(tierId: string): string | null {
@@ -1636,15 +1635,26 @@ function mapCodeAssistSubscriptionToPlanLabel(subscriptionInfo: unknown): string
   return "Free";
 }
 
+const KNOWN_ANTIGRAVITY_PLAN_LABELS = new Set([
+  "Ultra",
+  "Pro",
+  "Enterprise",
+  "Business",
+  "Plus",
+  "Lite",
+]);
+
 /**
  * Map raw loadCodeAssist tier data to short display labels (Antigravity Manager parity).
  */
 function getAntigravityPlanLabel(subscriptionInfo: unknown, fallbackInfo?: unknown): string {
-  const plan = mapCodeAssistSubscriptionToPlanLabel(subscriptionInfo);
-  if (plan !== "Free") return plan;
-
+  const livePlan = mapCodeAssistSubscriptionToPlanLabel(subscriptionInfo);
   const fallbackPlan = mapCodeAssistSubscriptionToPlanLabel(fallbackInfo);
-  return fallbackPlan !== "Free" ? fallbackPlan : plan;
+
+  if (KNOWN_ANTIGRAVITY_PLAN_LABELS.has(livePlan)) return livePlan;
+  if (KNOWN_ANTIGRAVITY_PLAN_LABELS.has(fallbackPlan)) return fallbackPlan;
+  if (livePlan !== "Free") return livePlan;
+  return fallbackPlan !== "Free" ? fallbackPlan : livePlan;
 }
 
 /**

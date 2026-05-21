@@ -1299,6 +1299,13 @@ test("usage helper branches cover Gemini CLI and Antigravity plan label fallback
     }),
     "Custom sky"
   );
+  assert.equal(
+    __testing.getAntigravityPlanLabel(
+      { currentTier: { name: "TIER_UNKNOWN_CUSTOM" } },
+      { allowedTiers: [{ id: "tier_pro", isDefault: true }] }
+    ),
+    "Pro"
+  );
 });
 
 test("usage service covers NanoGPT PRO weekly token quota, FREE plan, auth denial and fetch failures", async () => {
