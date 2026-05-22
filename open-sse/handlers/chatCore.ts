@@ -1291,9 +1291,14 @@ function isCopilotClient(
 export function extractSystemRoleMessages(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload.messages)) return;
   const messages = payload.messages as Array<{ role?: unknown; content?: unknown }>;
-  const systemMessages = messages.filter(
-    (m) => typeof m.role === "string" && m.role.toLowerCase() === "system"
-  );
+  // Treat both `system` and `developer` as system-equivalent (OpenAI's Responses
+  // API renamed system → developer). Anthropic rejects either as a chat role, so
+  // both must be lifted into the top-level `system` field — parity with the
+  // normal-path extractSystemMessagesToBody closure.
+  const isSystemRole = (role: unknown): boolean =>
+    typeof role === "string" &&
+    (role.toLowerCase() === "system" || role.toLowerCase() === "developer");
+  const systemMessages = messages.filter((m) => isSystemRole(m.role));
   if (systemMessages.length === 0) return;
 
   const extraBlocks: Array<Record<string, unknown>> = [];
@@ -1318,9 +1323,7 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
       payload.system = extraBlocks;
     }
   }
-  payload.messages = messages.filter(
-    (m) => typeof m.role !== "string" || m.role.toLowerCase() !== "system"
-  );
+  payload.messages = messages.filter((m) => !isSystemRole(m.role));
 }
 
 export async function handleChatCore({

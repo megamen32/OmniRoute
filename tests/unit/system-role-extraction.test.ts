@@ -16,6 +16,24 @@ test("extractSystemRoleMessages moves role=system to top-level system", () => {
   assert.deepEqual(payload.system, [{ type: "text", text: "Memory context: foo" }]);
 });
 
+test("extractSystemRoleMessages also lifts role=developer (OpenAI Responses system alias)", () => {
+  const payload = {
+    messages: [
+      { role: "developer", content: "Dev instructions" },
+      { role: "system", content: "Sys context" },
+      { role: "user", content: "hello" },
+    ],
+  };
+  extractSystemRoleMessages(payload);
+  // both developer and system are removed from messages and lifted into system
+  assert.equal(payload.messages.length, 1);
+  assert.equal(payload.messages[0].role, "user");
+  assert.deepEqual(payload.system, [
+    { type: "text", text: "Dev instructions" },
+    { type: "text", text: "Sys context" },
+  ]);
+});
+
 test("extractSystemRoleMessages merges with existing top-level system string", () => {
   const payload = {
     system: "You are Claude.",
