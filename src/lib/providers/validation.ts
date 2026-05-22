@@ -741,11 +741,15 @@ async function validateGeminiLikeProvider({
       return { valid: false, error: "Missing base URL" };
     }
 
+    // Strip a trailing /models before appending — the default Gemini registry baseUrl is
+    // `.../v1beta/models` (for the chat urlBuilder), so naively appending /models produced
+    // `.../v1beta/models/models` → upstream 404 on connection validation (#2545).
+    const baseForModels = baseUrl.replace(/\/models\/?$/, "");
     const requestUrl =
       typeof providerSpecificData?.modelsUrl === "string" &&
       providerSpecificData.modelsUrl.trim() !== ""
         ? providerSpecificData.modelsUrl.trim()
-        : `${baseUrl}/models`;
+        : `${baseForModels}/models`;
 
     const urlWithKey =
       authType === "query" ? `${requestUrl}?key=${encodeURIComponent(apiKey)}` : requestUrl;
