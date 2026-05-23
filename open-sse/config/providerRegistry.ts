@@ -2973,7 +2973,14 @@ export const REGISTRY: Record<string, RegistryEntry> = {
     modelsUrl: "https://router.huggingface.co/v1/models",
     authType: "apikey",
     authHeader: "bearer",
-    models: [],
+    models: [
+      { id: "meta-llama/llama-3.1-8b-instruct", name: "Llama 3.1 8B" },
+      { id: "meta-llama/llama-3.2-11b-instruct", name: "Llama 3.2 11B" },
+      { id: "mistralai/mistral-7b-instruct", name: "Mistral 7B" },
+      { id: "google/gemma-2-9b-it", name: "Gemma 2 9B" },
+      { id: "Qwen/Qwen2.5-7B-Instruct", name: "Qwen 2.5 7B" },
+      { id: "deepseek-ai/DeepSeek-V3", name: "DeepSeek V3" },
+    ],
   },
 
   synthetic: {
@@ -3317,7 +3324,11 @@ export const REGISTRY: Record<string, RegistryEntry> = {
     authHeader: "bearer",
     passthroughModels: true,
     defaultContextLength: 128000,
-    models: [],
+    models: [
+      { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B" },
+      { id: "mistralai/mistral-7b-instruct", name: "Mistral 7B" },
+      { id: "deepseek-ai/deepseek-coder-33b", name: "DeepSeek Coder 33B" },
+    ],
   },
 
   deepinfra: {
@@ -3523,7 +3534,7 @@ export const REGISTRY: Record<string, RegistryEntry> = {
     alias: "snowflake",
     format: "openai",
     executor: "default",
-    baseUrl: "https://example-account.snowflakecomputing.com/api/v2",
+    baseUrl: "https://{account}.snowflakecomputing.com/api/v2",
     authType: "apikey",
     authHeader: "bearer",
     models: CHAT_OPENAI_COMPAT_MODELS.snowflake,
