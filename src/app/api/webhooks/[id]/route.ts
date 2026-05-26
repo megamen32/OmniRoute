@@ -39,7 +39,11 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     if (!webhook) {
       return NextResponse.json({ error: "Webhook not found" }, { status: 404 });
     }
-    return NextResponse.json({ webhook });
+    const masked = {
+      ...webhook,
+      secret: webhook.secret ? `${webhook.secret.slice(0, 10)}...` : null,
+    };
+    return NextResponse.json({ webhook: masked });
   } catch (error: any) {
     return NextResponse.json({ error: sanitizeErrorMessage(error) }, { status: 500 });
   }
