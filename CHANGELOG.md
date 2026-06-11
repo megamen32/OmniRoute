@@ -34,6 +34,7 @@
 
 ### 🔧 Bug Fixes
 
+- **OpenCode Free / passthrough**: "Test all models" now respects "Auto-hide failed models" and switches the list to the visible filter so hidden models actually disappear (#3610). Three related bugs fixed: `autoHideFailed` is now threaded from the outer component into `PassthroughModelsSection` via a prop (single shared checkbox); the `/api/models/test-all` request body now includes `autoHideFailed: true` so the server persists the hide; and after the loop, `visibilityFilter` is switched to `"visible"` when ≥1 model was hidden. Two pure-function helpers (`buildPassthroughTestBody`, `shouldSwitchToVisibleFilter`) extracted to `providerPageHelpers.ts` with 7 unit tests.
 - **Resilience**: clear stale transient connection cooldowns on startup so a prior unclean crash no longer makes every request time out at 120s after restart (#3625)
 
 - **fix(home topology): restore live in-flight request pulse** ([#3507]): the animated "pulse" edges in the home Provider Topology panel went dead after PR #3401 unified request visibility, because `activeRequests` was hardcoded to `[]`. Re-wired to `useLiveRequests()` (the existing WebSocket hook on port 20129) so that every pending/running request drives the animation in real time. A pure `selectActiveRequests` mapping helper was extracted to `home/topologyUtils.ts` with 5 unit tests.
