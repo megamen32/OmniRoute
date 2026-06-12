@@ -596,7 +596,9 @@ export async function safeResolveProxy(connectionId: string, apiKeyId?: string) 
   }
 }
 
-export function safeLogEvents({
+// Async because the egress-IP lookup lazy-imports proxyEgress; callers treat
+// this as fire-and-forget logging (the internal try/catch swallows everything).
+export async function safeLogEvents({
   result,
   proxyInfo,
   proxyLatency,

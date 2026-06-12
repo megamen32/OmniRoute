@@ -46,6 +46,7 @@
 - fix(gemini): standard Gemini provider no longer sends tool calls without a thought_signature (falls back to context mode when the signature is unavailable), fixing HTTP 400 on multi-turn thinking-model tool calls (#3688)
 - fix(antigravity): preserve gemini-3.1-pro High/Low budget tiers (upstream accepts the suffixed ids; stop collapsing to bare gemini-3.1-pro) (#3696)
 - fix: streaming combos now fail over to the next target when an upstream returns an empty/content-filtered response instead of surfacing a blank reply (#3685)
+- fix(qwen-web): migrate the Qwen Web provider to the v2 chat API. The legacy `/api/chat/completions` endpoint was retired upstream and returned `504` HTML from Alibaba's gateway for every request regardless of credentials, so no token refresh could help (#3288, discussion #2768). The executor now uses the two-step v2 flow (`/api/v2/chats/new` → `/api/v2/chat/completions?chat_id=`), replays the full browser cookie jar (cna + ssxmod_itna/itna2 + token) required by Alibaba's WAF instead of only a Bearer token, parses the phase-based SSE (think→reasoning, answer→content), and maps the WAF/expired HTML page to a clear actionable auth error instead of surfacing raw HTML. The credential requirement is now a full Cookie header, browser-login capture grabs the WAF cookies, and the model catalog is refreshed to the current upstream ids (`qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-plus`; legacy ids kept as aliases). 17 unit tests.
 
 ---
 

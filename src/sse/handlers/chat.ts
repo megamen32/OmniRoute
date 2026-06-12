@@ -1058,8 +1058,8 @@ async function handleSingleModelChat(
         getTargetFormat(provider, credentials.providerSpecificData) ||
         targetFormat;
 
-      // 5. Log proxy + translation events
-      safeLogEvents({
+      // 5. Log proxy + translation events (fire-and-forget; never blocks the response)
+      void safeLogEvents({
         result,
         proxyInfo,
         proxyLatency,
