@@ -430,7 +430,8 @@ export async function executeChatWithBreaker({
               String(failure?.message || failure?.code || "stream failure"),
               provider,
               model,
-              providerProfile
+              providerProfile,
+              { isCombo }
             );
           },
         })
@@ -617,6 +618,20 @@ export function safeLogEvents({
     const rawIpValue = Array.isArray(rawIp) ? rawIp[0] : rawIp;
     const clientIp = typeof rawIpValue === "string" ? rawIpValue.split(",")[0].trim() : null;
 
+    // Resolve the egress IP (the IP the upstream actually saw) from cache — never
+    // blocking the request. Warm it in the background for next time. null until
+    // the first warm completes; direct (no proxy) is also tracked.
+    let egressIp: string | null = null;
+    try {
+      const { getCachedEgressIp, warmEgressIp } = await import("../../lib/proxyEgress");
+      const { proxyConfigToUrl } = await import("@omniroute/open-sse/utils/proxyDispatcher.ts");
+      const proxyUrl = proxyInfo?.proxy ? proxyConfigToUrl(proxyInfo.proxy) : null;
+      egressIp = getCachedEgressIp(proxyUrl);
+      warmEgressIp(proxyUrl);
+    } catch {
+      // egress visibility is best-effort; never break the request path
+    }
+
     logProxyEvent({
       status: result.success
         ? "success"
@@ -629,6 +644,7 @@ export function safeLogEvents({
       provider,
       targetUrl: `${provider}/${model}`,
       clientIp,
+      egressIp,
       latencyMs: proxyLatency,
       error: result.success ? null : result.error || null,
       connectionId: credentials.connectionId,
