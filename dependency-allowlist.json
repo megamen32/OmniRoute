@@ -48,6 +48,7 @@
     "fumadocs-mdx",
     "fumadocs-ui",
     "glob",
+    "jscpd",
     "gray-matter",
     "http-proxy-middleware",
     "https-proxy-agent",
