@@ -2,38 +2,75 @@
 
 ## [Unreleased]
 
-### ✨ Added
-
-- **`@omniroute/opencode-plugin` bundled + `omniroute setup opencode`** ([#3726] — thanks @herjarsa):
-  The opencode-plugin now ships pre-built inside the `omniroute` npm package (`package.json`
-  `files` includes `@omniroute/`). A new `omniroute setup opencode` CLI command automates
-  installation:
-  1. Copies the bundled plugin into `~/.config/opencode/plugins/omniroute/`
-  2. Creates/updates `opencode.json` with the plugin entry (idempotent,
-     replaces legacy `opencode-omniroute-auth` entries automatically)
-  3. Optional `--auth` flag runs `opencode auth login --provider <id>`
-     The prepublish pipeline (Step 8.8) now builds the plugin's `dist/` via tsup so every
-     published tarball includes it. Users no longer need to extract the plugin manually.
-
-### 🐛 Fixed
-
-- **`@omniroute/opencode-plugin`: baseURL resolution for partner/tiered providers**
-  ([#3711] / [#3726] — thanks @herjarsa):
-  The `provider.models` hook now checks `_provider.options.baseURL` (set by the config
-  hook or opencode.json) as a third fallback after plugin opts and auth.json. Previously,
-  providers whose baseURL came from options returned zero models. A diagnostic `console.warn`
-  fires when no baseURL is resolvable from any source.
-
 ---
 
-## [3.8.22] — TBD
 ## [3.8.23] — TBD
 
-### 🐛 Bug Fixes
+### ✨ New Features
 
-- **Emergency budget fallback no longer leaks the failing provider's API key to the emergency provider** (combo/resilience audit): the executor-level emergency hop in `chatCore` re-sent the FAILING provider's credentials to the emergency provider's endpoint (e.g. the OpenAI key in the `Authorization` header of a request to `integrate.api.nvidia.com`) on every quota/billing error of a non-stream request — a cross-provider credential leak that also never succeeded upstream (the foreign key is always rejected). The hop is now orchestrated exclusively by the routing layer (`src/sse/handlers/chat.ts`), which resolves credentials FOR the emergency provider via account selection, and it no longer fires inside combo targets (the combo is the operator's fallback policy; the global fallback #689 still runs after it). Restores the five `#1731` fast-skip integration tests that had been `test.skip`-ed since v3.8.2, plus a new credential-leak guard test.
-- **`/v1/messages/count_tokens` now honors the connection's proxy assignment**: the provider-side token count was issued with no proxy context at all — every count call went DIRECT to the provider regardless of configured account/provider/global proxies, leaking the host IP for proxy-isolated setups. The route now resolves the connection proxy (`safeResolveProxy`) and wraps the executor call in `runWithProxyContext`, exactly like chat execution. Validated by a new integration test that also pins per-target proxy independence inside combos.
-- **Proxy resolution failures are no longer silent**: `safeResolveProxy` downgraded any resolution error (DB error, corrupt registry row) to a `debug` log and fell back to a DIRECT connection — invisible proxy bypass for traffic-isolation setups. Now logged at `warn` with the connection id.
+- **Emergency budget fallback: opt-out env switch `OMNIROUTE_EMERGENCY_FALLBACK`** ([#3741](https://github.com/diegosouzapw/OmniRoute/pull/3741) — thanks @zoispag): adds an `OMNIROUTE_EMERGENCY_FALLBACK` environment variable that disables the budget-exhaustion emergency reroute to `nvidia/openai/gpt-oss-120b` entirely when set to `false` or `0`. Default behavior (enabled) is unchanged.
+
+- **Auto-Combo: live model intelligence scoring via Arena ELO + models.dev** ([#3660](https://github.com/diegosouzapw/OmniRoute/pull/3660) — thanks @pizzav-xyz): replaces the static fitness lookup with a 5-layer resolution chain (user override → Arena ELO → models.dev tiers → hardcoded map → neutral fallback). A sync pipeline auto-fetches Arena AI leaderboard ELO scores and derives intelligence tiers from models.dev capabilities; combo picks now update as leaderboard rankings change without any manual configuration.
+
+- **Vertex AI: dynamic model discovery** ([#3712](https://github.com/diegosouzapw/OmniRoute/pull/3712) — thanks @artickc): the `vertex` provider now queries the Generative Language models API at runtime to surface the full account catalog — including image-generation models (Imagen, `gemini-*-image`), embeddings, and partner models — instead of returning only the small hardcoded registry list.
+
+- **Vertex AI: self-tracked USD spend on the Limits page** ([#3724](https://github.com/diegosouzapw/OmniRoute/pull/3724) — thanks @artickc): since the Google Cloud Billing API is inaccessible via the proxy credential, Vertex connections now track their own cumulative USD spend locally (based on token-cost accounting) and display it on the Limits page as "$ used since account added."
+
+- **Gemini: rate-limit metadata for known per-model RPM/RPD caps** ([#3686](https://github.com/diegosouzapw/OmniRoute/pull/3686) — thanks @hartmark): injects known rate-limit headers (RPM/RPD) for Gemini models that carry per-model limits (e.g. Gemma 4's 15 RPM / generous RPD), so the cooldown engine applies them correctly instead of locking out the whole account on daily-limit hits.
+
+- **Model Lockout: full settings UI with success-decay recovery** ([#3629](https://github.com/diegosouzapw/OmniRoute/pull/3629) — thanks @Chewji9875): end-to-end wiring of the per-model lockout feature — settings UI (enable/disable, configure thresholds), backend integration, structured error classification, and a success-decay mechanism that gradually recovers a locked model's fitness as successful calls accumulate. Lockout now applies to all providers when enabled, not just per-model-quota providers.
+
+### 🔧 Bug Fixes
+
+- **`@omniroute/opencode-plugin` bundled in the npm tarball + `omniroute setup opencode` CLI command** ([#3726](https://github.com/diegosouzapw/OmniRoute/pull/3726) — thanks @herjarsa): the plugin was never compiled as part of the publish pipeline, requiring manual extraction. Now ships pre-built inside the `omniroute` package and installed via `omniroute setup opencode` (copies plugin into `~/.config/opencode/plugins/omniroute/`, updates `opencode.json` idempotently). Also fixes `provider.models` baseURL resolution — checks `_provider.options.baseURL` as a third fallback so partner/tiered providers no longer return zero models. ([#3711](https://github.com/diegosouzapw/OmniRoute/issues/3711))
+
+- **MiMoCode 403 "Illegal access" fixed** ([#3728](https://github.com/diegosouzapw/OmniRoute/pull/3728) — thanks @felipesartori): the Xiaomi free endpoint gates requests on a recognized MiMoCode system-prompt signature; OmniRoute forwarded raw requests without the marker, causing 403 on every call. The executor now injects the required anti-abuse signature.
+
+- **"Test all models" flow: i18n crash, status icons, auto-hide** ([#3729](https://github.com/diegosouzapw/OmniRoute/pull/3729) — thanks @felipesartori): three bugs in the provider-detail test-all-models flow — `providerText()` crash because the `testAllResults` template requires `{ok, total}` but callers passed `{ok, error}`; missing `online`/`offline` status icons on model rows; results panel not auto-hiding after run completes.
+
+- **OAuth token-refresh invalidation loop fixed** ([#3692](https://github.com/diegosouzapw/OmniRoute/pull/3692) — thanks @diegosouzapw): `refreshClaudeOAuthToken` returned `null` instead of the error sentinel on non-canonical 400 bodies, causing the caller to retry every 60 seconds — observed as 1,352 consecutive refresh attempts on one Claude account. Fixed alongside hardening of `safeResolveProxy` (proxy resolution errors now warn instead of silently falling back to DIRECT) and adding egress-IP visibility to `safeLogEvents`.
+
+- **`safeLogEvents` async hotfix** (thanks @diegosouzapw): PR #3692 introduced a `lazy await import(proxyEgress)` inside a sync `safeLogEvents` — an ES syntax error that broke every consumer loading `chatHelpers` via `tsx` and caused 14 tests to fail at module load. Made `safeLogEvents` async; `void`-ed the single `chat.ts` call site.
+
+- **Kiro: quota tracking for IAM Identity Center accounts** ([#3722](https://github.com/diegosouzapw/OmniRoute/pull/3722) — thanks @artickc): `getKiroUsage` returned "0 used" for IAM Identity Center accounts (and `kiro-cli` imports) because those connections frequently lack a persisted `profileArn`. Now falls back to a name-based profile lookup so quota displays correctly.
+
+- **Empty Claude SSE stream now surfaces a real error** ([#3689](https://github.com/diegosouzapw/OmniRoute/pull/3689) — thanks @TechNickAI): when a Claude stream completed with lifecycle events but no content block, the proxy returned a synthetic `"[Proxy Error] The upstream API returned an empty response"` as a *successful* assistant message. Now emits a proper SSE error event; the missing-finalizer synthetic path is preserved for streams that already produced content.
+
+- **Vertex AI Express-mode API keys** ([#3690](https://github.com/diegosouzapw/OmniRoute/pull/3690) — thanks @artickc): the Vertex executor rejected every non-JSON credential with "Vertex AI requires a valid Service Account JSON." Now accepts Express-mode API key strings (`AIza*`) alongside Service Account JSON, routing them through the correct token endpoint.
+
+- **Anthropic: strip `top_p` when `temperature` is set** ([#3691](https://github.com/diegosouzapw/OmniRoute/pull/3691) — thanks @zhiru): Anthropic API rejects requests containing both `temperature` and `top_p`; VS Code's Claude extension sends both in every request, causing 400s on all routed calls. The OpenAI→Claude translator now drops `top_p` when `temperature` is present.
+
+- **Combo reasoning token buffer: conservative application + feature flag** ([#3700](https://github.com/diegosouzapw/OmniRoute/pull/3700) — thanks @rdself): tightens the #3588 buffer (only applies when the model is explicitly thinking-capable, has a non-default known output cap, and the full buffered value fits inside that cap) and adds a `reasoningTokenBufferEnabled` feature flag in combo defaults so users can fully disable it from Settings.
+
+- **Emergency budget fallback: cross-provider credential leak fixed** ([#3699](https://github.com/diegosouzapw/OmniRoute/pull/3699) — thanks @diegosouzapw): the executor-level emergency hop re-sent the failing provider's API key to the emergency provider's endpoint (e.g. the OpenAI `Authorization` header going to `integrate.api.nvidia.com`). Now orchestrated exclusively by the routing layer, which resolves credentials for the emergency provider via account selection and no longer fires inside combo targets.
+
+- **`/v1/messages/count_tokens` now honors the connection's proxy assignment** ([#3699](https://github.com/diegosouzapw/OmniRoute/pull/3699) — thanks @diegosouzapw): token count calls went DIRECT regardless of configured proxies, leaking the host IP for proxy-isolated setups. Now wraps execution in `runWithProxyContext`, exactly like chat execution.
+
+- **Gemini: context-mode fallback for signatureless tool calls** ([#3688](https://github.com/diegosouzapw/OmniRoute/pull/3688) — thanks @diegosouzapw): fixes HTTP 400 on multi-turn thinking-model tool calls when `thought_signature` is unavailable — standard Gemini provider now falls back to context mode instead of sending the unsigned call.
+
+- **Antigravity: preserve `gemini-3.1-pro` High/Low budget tiers** ([#3696](https://github.com/diegosouzapw/OmniRoute/pull/3696) — thanks @diegosouzapw): upstream accepts the suffixed ids; stop collapsing to bare `gemini-3.1-pro`.
+
+- **Stream combo: fail over on empty/content-filtered response** ([#3685](https://github.com/diegosouzapw/OmniRoute/pull/3685) — thanks @diegosouzapw): streaming combos now route to the next target instead of surfacing a blank reply.
+
+- **Qwen Web: migrated to v2 chat API** ([#3723](https://github.com/diegosouzapw/OmniRoute/pull/3723) — thanks @diegosouzapw): the legacy `/api/chat/completions` endpoint was retired upstream returning `504` HTML from Alibaba's gateway for all requests. The executor now uses the two-step v2 flow (`/api/v2/chats/new` → `/api/v2/chat/completions?chat_id=`), replays the full browser cookie jar (cna + ssxmod_itna/itna2 + token) required by Alibaba's WAF instead of only a Bearer token, parses phase-based SSE (think→reasoning, answer→content), and refreshes the model catalog to current ids (`qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-plus`; legacy ids kept as aliases). 17 unit tests. (Closes [#3288](https://github.com/diegosouzapw/OmniRoute/issues/3288))
+
+### ♻️ Code Quality
+
+- **Dashboard god-component (#3501): Phases 1g → 1t complete — ≤800 LOC target reached** ([#3717](https://github.com/diegosouzapw/OmniRoute/pull/3717), [#3721](https://github.com/diegosouzapw/OmniRoute/pull/3721), [#3725](https://github.com/diegosouzapw/OmniRoute/pull/3725), [#3727](https://github.com/diegosouzapw/OmniRoute/pull/3727) — thanks @diegosouzapw): four extraction phases bring `ProviderDetailPageClient.tsx` from 4,062 to 781 LOC — the ≤800 target set at the start of the refactor. Extracted OAuth flow helpers, quota display, traffic-inspector panel, logs viewer, combo-target editor, and remaining inline UI into standalone components under `providers/[id]/components/`.
+
+### 🌍 Internationalization
+
+- **zh-CN: comprehensive Simplified Chinese translation improvements** ([#3736](https://github.com/diegosouzapw/OmniRoute/pull/3736) — thanks @sdfsdfw2): broad pass on Simplified Chinese UI strings for accuracy and consistency.
+
+### 📝 Maintenance
+
+- **CI: bump GitHub Actions artifacts/cache actions to latest** (thanks @diegosouzapw): `actions/download-artifact` 4→8 ([#3733](https://github.com/diegosouzapw/OmniRoute/pull/3733)), `actions/cache` 4→5 ([#3734](https://github.com/diegosouzapw/OmniRoute/pull/3734)), `actions/upload-artifact` 4→7 ([#3735](https://github.com/diegosouzapw/OmniRoute/pull/3735)).
+
+- **File-size ratchet baseline reconciled** ([#3705](https://github.com/diegosouzapw/OmniRoute/pull/3705) — thanks @diegosouzapw): freezes 27 inherited/previously-grown files at their current LOC and registers `providerLimits.ts` in the gate; ongoing shrink tracked via #3501.
+
+- **docs: add FUNDING.yml and README Support section** ([#3698](https://github.com/diegosouzapw/OmniRoute/pull/3698) — thanks @diegosouzapw)
+
+- **docs(changelog): restore `#3590` bullet lost on the v3.8.20 release branch** (thanks @diegosouzapw): the fix reached `main` pre-tag via cherry-pick `#3591`, but its changelog bullet only existed on `release/v3.8.20` after the squash-merge; restored per the 2026-06-12 release-branch leftover audit.
 
 ### ✅ Tests
 
@@ -48,6 +85,9 @@
 - fix: streaming combos now fail over to the next target when an upstream returns an empty/content-filtered response instead of surfacing a blank reply (#3685)
 - fix(qwen-web): migrate the Qwen Web provider to the v2 chat API. The legacy `/api/chat/completions` endpoint was retired upstream and returned `504` HTML from Alibaba's gateway for every request regardless of credentials, so no token refresh could help (#3288, discussion #2768). The executor now uses the two-step v2 flow (`/api/v2/chats/new` → `/api/v2/chat/completions?chat_id=`), replays the full browser cookie jar (cna + ssxmod_itna/itna2 + token) required by Alibaba's WAF instead of only a Bearer token, parses the phase-based SSE (think→reasoning, answer→content), and maps the WAF/expired HTML page to a clear actionable auth error instead of surfacing raw HTML. The credential requirement is now a full Cookie header, browser-login capture grabs the WAF cookies, and the model catalog is refreshed to the current upstream ids (`qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-plus`; legacy ids kept as aliases). 17 unit tests.
 - fix(cache): semantic cache responses are now scoped to the requesting API key — two callers with different API keys that send the same prompt and model will no longer receive each other's cached responses (#3740). `generateSignature` includes the `api_key_id` dimension in the SHA-256 hash; unauthenticated requests (no API key) remain isolated from keyed requests. Existing cache entries (generated without the key dimension) are cleared by migration `098`.
+- **Combo strategy fallback coverage** (`tests/unit/combo-strategy-fallbacks.test.ts`, 11 tests — thanks @diegosouzapw): fill-first / p2c / random / cost-optimized / strict-random fallback paths (previously happy-path only), price-tie stability, stale strict-random deck degradation, unknown-strategy normalization to priority, and circuit-breaker HALF_OPEN recovery inside the combo loop + `preScreenTargets` (lazy-recovery contract).
+- **`#1731` fast-skip suite restored** (`tests/integration/combo-provider-exhaustion.test.ts` — thanks @diegosouzapw): 5 previously-skipped integration tests rewritten against the current routing policy — 8/8 green.
+- **Proxy context passthrough** (`tests/integration/proxy-context-passthrough.test.ts` — thanks @diegosouzapw): combo targets each execute under their own connection's proxy; `count_tokens` runs inside the connection's proxy context.
 
 ---
 
