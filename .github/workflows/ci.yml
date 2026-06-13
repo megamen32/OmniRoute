@@ -55,6 +55,8 @@ jobs:
       - run: npm run check:route-guard-membership
       - run: npm run check:test-discovery
       - run: npm run check:tracked-artifacts
+      - run: npm run check:lockfile
+      - run: npm run check:licenses
       - run: npm run check:docs-sync
       - run: npm run typecheck:core
       # typecheck:noimplicit:core is a forward-looking gate (noImplicitAny).
@@ -199,6 +201,11 @@ jobs:
       # Anti test-masking: flag net assert removal / new assert.ok(true) in changed tests.
       - name: Detect test-masking (weakened assertions)
         run: npm run check:test-masking
+      # Evidence-in-PR-body (Hard Rule #18 mechanized): claims of "tests pass" must carry output.
+      - name: Require evidence in PR body
+        run: npm run check:pr-evidence
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
       - name: Publish PR test policy summary
         if: always()
         run: |
