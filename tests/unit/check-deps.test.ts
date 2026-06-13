@@ -4,7 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 // @ts-expect-error — .mjs gate module has no type declarations
-import { findUnapprovedDeps, discoverManifests } from "../../scripts/check/check-deps.mjs";
+import {
+  findUnapprovedDeps,
+  discoverManifests,
+  evaluateDepAge,
+  auditNewDepsRegistry,
+} from "../../scripts/check/check-deps.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -90,4 +95,86 @@ test("6A.8 stale: a dep removed from all manifests is detected as stale in allow
     "check-deps"
   );
   assert.deepEqual(stale, ["removed-lib"]);
+});
+
+// ─── Task 7.8: evaluateDepAge (pure function) ─────────────────────────────────
+
+test("7.8 evaluateDepAge: package older than 72h is OK", () => {
+  const now = Date.now();
+  const createdMs = now - 73 * 60 * 60 * 1000; // 73 hours ago
+  const { ok, ageHours } = (evaluateDepAge as (a: number, b: number, c?: number) => { ok: boolean; ageHours: number })(
+    createdMs,
+    now
+  );
+  assert.ok(ok, "package older than 72h should be ok");
+  assert.ok(ageHours >= 73, "ageHours should reflect elapsed time");
+});
+
+test("7.8 evaluateDepAge: package exactly at 72h boundary is OK (boundary inclusive)", () => {
+  const now = Date.now();
+  const createdMs = now - 72 * 60 * 60 * 1000; // exactly 72 hours ago
+  const { ok } = (evaluateDepAge as (a: number, b: number, c?: number) => { ok: boolean; ageHours: number })(
+    createdMs,
+    now
+  );
+  assert.ok(ok, "package at exactly 72h should be ok (inclusive boundary)");
+});
+
+test("7.8 evaluateDepAge: package published 1h ago is NOT OK", () => {
+  const now = Date.now();
+  const createdMs = now - 1 * 60 * 60 * 1000; // 1 hour ago
+  const { ok, ageHours } = (evaluateDepAge as (a: number, b: number, c?: number) => { ok: boolean; ageHours: number })(
+    createdMs,
+    now
+  );
+  assert.ok(!ok, "package published 1h ago should NOT be ok");
+  assert.ok(ageHours < 72, "ageHours should reflect < 72h");
+});
+
+test("7.8 evaluateDepAge: respects custom minAgeHours", () => {
+  const now = Date.now();
+  const createdMs = now - 10 * 60 * 60 * 1000; // 10 hours ago
+  // With 24h minimum, 10h-old package should fail
+  const { ok: failWith24 } = (evaluateDepAge as (a: number, b: number, c?: number) => { ok: boolean; ageHours: number })(
+    createdMs,
+    now,
+    24
+  );
+  assert.ok(!failWith24, "10h-old package should fail with 24h minimum");
+  // With 6h minimum, 10h-old package should pass
+  const { ok: passWith6 } = (evaluateDepAge as (a: number, b: number, c?: number) => { ok: boolean; ageHours: number })(
+    createdMs,
+    now,
+    6
+  );
+  assert.ok(passWith6, "10h-old package should pass with 6h minimum");
+});
+
+test("7.8 evaluateDepAge: future timestamp (time.created in future) is NOT OK", () => {
+  const now = Date.now();
+  const createdMs = now + 1000; // 1s in future (clock skew edge case)
+  const { ok, ageHours } = (evaluateDepAge as (a: number, b: number, c?: number) => { ok: boolean; ageHours: number })(
+    createdMs,
+    now
+  );
+  assert.ok(!ok, "future timestamp should not be ok");
+  assert.ok(ageHours < 0, "ageHours should be negative for future timestamp");
+});
+
+// ─── Task 7.8: auditNewDepsRegistry (uses stubbed queryNpmRegistry) ───────────
+// We test auditNewDepsRegistry by examining its logic with real deps that are
+// known to exist and are old. The pure evaluateDepAge covers the age logic above.
+// For auditNewDepsRegistry we test the aggregation/routing logic by noting that:
+//   - an empty dep list → all empty results
+//   - any real npm package like "react" is found and old → does NOT appear in any list
+
+test("7.8 auditNewDepsRegistry: empty dep list returns all-empty results", () => {
+  const result = (auditNewDepsRegistry as (deps: string[], minAge?: number, now?: number) => {
+    notFound: string[];
+    tooNew: Array<{ name: string; ageHours: number }>;
+    offline: string[];
+  })([], 72, Date.now());
+  assert.deepEqual(result.notFound, []);
+  assert.deepEqual(result.tooNew, []);
+  assert.deepEqual(result.offline, []);
 });

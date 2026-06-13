@@ -3,9 +3,12 @@
 // Coletores incrementais: Fase 1 traz ESLint warnings + cobertura.
 // Fases 3/4 estendem com duplicação (jscpd), tamanho de arquivo e cobertura por módulo.
 // Fase 6A.11: openapiCoverage.pct + i18nUiCoverage.pct (mínimo entre locales).
+// Task 7.9: coverage.<modulo>.lines para ~8 módulos críticos, lidos do
+//   coverage/coverage-summary.json se existir (sem erro se ausente).
 import fs from "node:fs";
 import { promises as fsAsync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import yaml from "js-yaml";
 
@@ -40,7 +43,80 @@ function coverage() {
   out["coverage.branches"] = t.branches.pct;
 }
 
-// 3) OpenAPI coverage: percentage of implemented routes documented in openapi.yaml
+// 3) Coverage per critical module (Task 7.9)
+// Reads coverage/coverage-summary.json (produced by `npm run test:coverage` via c8).
+// If the file is absent → silently skips (no error). This allows the gate to
+// function normally in environments where coverage was not run (e.g. lint-only CI).
+//
+// The summary JSON produced by c8 looks like:
+//   { "total": {...}, "/abs/path/to/file.ts": { lines: { pct: 78 }, ... }, ... }
+//
+// modulePaths is a record of { metricSuffix: relPathFromRoot[] } — the first
+// matching key in the summary wins.
+
+/**
+ * Pure function — extracts per-module line-coverage percentages from a
+ * coverage-summary.json object.
+ *
+ * @param {Record<string, { lines?: { pct: number } }>} summaryJson
+ *   The parsed coverage-summary.json (keys are absolute file paths or "total").
+ * @param {Record<string, string[]>} modulePaths
+ *   Map of { metricKey: [relPath, ...fallbacks] } where relPath is relative to
+ *   the repo root (forward slashes). Returns the lines.pct of the first match.
+ * @param {string} repoRoot  Absolute path to the repo root (used to build keys).
+ * @returns {Record<string, number>} Map of metricKey → lines.pct (0-100).
+ */
+export function extractModuleCoverage(summaryJson, modulePaths, repoRoot) {
+  const result = {};
+  // Build a normalised lookup: absolute path (forward slashes) → pct
+  const lookup = new Map();
+  for (const [rawKey, data] of Object.entries(summaryJson)) {
+    if (rawKey === "total") continue;
+    const norm = rawKey.replace(/\\/g, "/");
+    const pct = data?.lines?.pct;
+    if (typeof pct === "number") lookup.set(norm, pct);
+  }
+
+  const normRoot = repoRoot.replace(/\\/g, "/").replace(/\/$/, "");
+
+  for (const [metricKey, candidates] of Object.entries(modulePaths)) {
+    for (const rel of candidates) {
+      const abs = `${normRoot}/${rel.replace(/\\/g, "/").replace(/^\//, "")}`;
+      if (lookup.has(abs)) {
+        result[metricKey] = lookup.get(abs);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/** The 8 critical modules tracked by Task 7.9 (relative paths from repo root). */
+export const CRITICAL_MODULE_PATHS = {
+  "coverage.chatCore.lines": ["open-sse/handlers/chatCore.ts"],
+  "coverage.combo.lines": ["open-sse/services/combo.ts"],
+  "coverage.accountFallback.lines": ["open-sse/services/accountFallback.ts"],
+  "coverage.auth.lines": ["src/sse/services/auth.ts"],
+  "coverage.routeGuard.lines": ["src/server/authz/routeGuard.ts"],
+  "coverage.error.lines": ["open-sse/utils/error.ts"],
+  "coverage.publicCreds.lines": ["open-sse/utils/publicCreds.ts"],
+  "coverage.circuitBreaker.lines": ["src/shared/utils/circuitBreaker.ts"],
+};
+
+function coverageByModule() {
+  const p = path.join(cwd, "coverage", "coverage-summary.json");
+  if (!fs.existsSync(p)) return; // absent → skip silently (Task 7.9 spec)
+  let summaryJson;
+  try {
+    summaryJson = JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return; // malformed file → skip
+  }
+  const moduleMetrics = extractModuleCoverage(summaryJson, CRITICAL_MODULE_PATHS, cwd);
+  Object.assign(out, moduleMetrics);
+}
+
+// 4) OpenAPI coverage: percentage of implemented routes documented in openapi.yaml
 function openapiCoverage() {
   const API_ROOT = path.join(cwd, "src", "app", "api");
   const OPENAPI_PATH = path.join(cwd, "docs", "reference", "openapi.yaml");
@@ -165,9 +241,15 @@ async function i18nUiCoverage() {
   if (onDisk.length > 0) out["i18nUiCoverage.pct"] = parseFloat(minCoverage.toFixed(1));
 }
 
-eslintCounts();
-coverage();
-openapiCoverage();
-await i18nUiCoverage();
-fs.writeFileSync(path.join(cwd, "quality-metrics.json"), JSON.stringify(out, null, 2) + "\n");
-console.log("[collect-metrics]", JSON.stringify(out));
+// Only run the collection pipeline when this file is executed directly.
+// When imported (e.g. in tests), only the exported pure functions are available
+// without triggering the expensive ESLint + i18n filesystem walks.
+if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+  eslintCounts();
+  coverage();
+  coverageByModule();
+  openapiCoverage();
+  await i18nUiCoverage();
+  fs.writeFileSync(path.join(cwd, "quality-metrics.json"), JSON.stringify(out, null, 2) + "\n");
+  console.log("[collect-metrics]", JSON.stringify(out));
+}
