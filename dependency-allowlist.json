@@ -3,6 +3,7 @@
   "allowed": [
     "@aws-sdk/client-bedrock-runtime",
     "@dnd-kit/core",
+    "@opencode-ai/plugin",
     "@dnd-kit/sortable",
     "@dnd-kit/utilities",
     "@huggingface/transformers",
@@ -91,6 +92,7 @@
     "sqlite-vec",
     "tailwindcss",
     "tls-client-node",
+    "tsup",
     "tsx",
     "typescript",
     "typescript-eslint",

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+// @ts-expect-error — .mjs helper has no type declarations; runtime shape is known.
 import { reportStaleEntries, assertNoStale } from "../../../scripts/check/lib/allowlist.mjs";
 
 test("reportStaleEntries: entrada da allowlist não mais violada => stale", () => {
