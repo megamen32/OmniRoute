@@ -10,6 +10,7 @@ import {
   findSpawnCapableRoutes,
   KNOWN_UNCLASSIFIED_SOURCE_SPAWN,
 } from "../../scripts/check/check-route-guard-membership.ts";
+import { isLocalOnlyPath } from "../../src/server/authz/routeGuard.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -120,22 +121,17 @@ test("6A.8 findSpawnCapableRoutes: detects real spawn-capable route.ts files", (
   }
 });
 
-test("6A.8: KNOWN_UNCLASSIFIED_SOURCE_SPAWN freezes the pre-existing spawn-capable routes outside protected roots", () => {
-  // These routes were discovered by 6A.8's source-scan (direct child_process/worker_threads
-  // imports) and are known security debt. TODO(6A.8): add to LOCAL_ONLY_API_PREFIXES.
-  // Note: cli-tools/antigravity-mitm/route.ts uses child_process via INDIRECT dynamic
-  // import (not a direct import) so it is NOT captured by the source-scan.
-  const preExisting = [
-    "src/app/api/system/version/route.ts",
-    "src/app/api/db-backups/exportAll/route.ts",
-  ];
-  for (const r of preExisting) {
-    assert.ok(
-      r in KNOWN_UNCLASSIFIED_SOURCE_SPAWN,
-      `expected KNOWN_UNCLASSIFIED_SOURCE_SPAWN to contain pre-existing: ${r}`
-    );
-  }
-  assert.equal(Object.keys(KNOWN_UNCLASSIFIED_SOURCE_SPAWN).length, 2, "expected exactly 2 frozen entries");
+test("6A.8 P1 RESOLVED: spawn-capable system/db-backups routes are classified local-only, not frozen", () => {
+  // RESOLVED 2026-06-13: these 2 spawn-capable routes were moved from KNOWN_UNCLASSIFIED
+  // into LOCAL_ONLY_API_PREFIXES (loopback-enforced before auth). The freeze set must now
+  // be empty, and isLocalOnlyPath must match their api paths.
+  assert.equal(
+    Object.keys(KNOWN_UNCLASSIFIED_SOURCE_SPAWN).length,
+    0,
+    "KNOWN_UNCLASSIFIED_SOURCE_SPAWN must be empty once the routes are classified (stale-enforcement)"
+  );
+  assert.equal(isLocalOnlyPath("/api/system/version"), true);
+  assert.equal(isLocalOnlyPath("/api/db-backups/exportAll"), true);
 });
 
 test("6A.8: spawn-capable routes in SPAWN_CAPABLE_ROUTE_ROOTS are still all classified local-only", async () => {

@@ -150,14 +150,10 @@ export function findSpawnCapableRoutes(repoRoot: string): string[] {
  * Adding an entry here requires a justification + follow-up issue.
  */
 export const KNOWN_UNCLASSIFIED_SOURCE_SPAWN: Record<string, string> = {
-  // TODO(6A.8): pre-existing — uses execFile("npm",...)/execFile("git",...) for
-  // version checks and auto-update. Needs loopback enforcement (Hard Rules #15/#17).
-  "src/app/api/system/version/route.ts":
-    "TODO(6A.8): uses execFile(npm/git) for auto-update; add /api/system/ to LOCAL_ONLY_API_PREFIXES or restrict spawn to a separate local endpoint",
-  // TODO(6A.8): pre-existing — uses execFileSync("tar",...) for DB export archive.
-  // Needs loopback enforcement (Hard Rules #15/#17).
-  "src/app/api/db-backups/exportAll/route.ts":
-    "TODO(6A.8): uses execFileSync(tar) for export archive; add /api/db-backups/ to LOCAL_ONLY_API_PREFIXES",
+  // RESOLVED (6A.8 P1, 2026-06-13): /api/system/version and /api/db-backups/exportAll
+  // are now classified in LOCAL_ONLY_API_PREFIXES (loopback-enforced before auth).
+  // The stale-enforcement guard requires this set to stay empty until a NEW
+  // unclassified spawn-capable route appears.
   // NOTE: cli-tools/antigravity-mitm/route.ts triggers child_process INDIRECTLY via
   // dynamic import to @/mitm/manager.runtime, but does NOT directly import child_process.
   // The source-scan gate covers DIRECT imports/calls only; this route is NOT in the
