@@ -86,4 +86,43 @@ describe("MCP audit shutdown", () => {
     expect(audit.closeAuditDb()).toBe(true);
     expect(mockDb.close).toHaveBeenCalledTimes(1);
   });
+
+  it("falls back to node:sqlite when better-sqlite3 binding is missing", async () => {
+    const [maj, min] = process.versions.node.split(".").map(Number);
+    if (maj < 22 || (maj === 22 && min < 5)) {
+      return; // node:sqlite not available on this Node, skip
+    }
+
+    // Simulate a global-install scenario where the bundled native binary
+    // never landed in dist/node_modules/better-sqlite3/build/Release/.
+    const bindingErr = new Error(
+      "Could not locate the bindings file. Tried: …/better_sqlite3.node"
+    ) as Error & { code?: string };
+    bindingErr.code = "MODULE_NOT_FOUND";
+    vi.doMock("better-sqlite3", () => {
+      throw bindingErr;
+    });
+
+    const mockNodeDb: MockAuditDb & { exec: ReturnType<typeof vi.fn> } = {
+      prepare: vi.fn(() => createStatementMock()),
+      pragma: vi.fn(),
+      close: vi.fn(),
+      open: true,
+      exec: vi.fn(),
+    };
+    const DatabaseSync = vi.fn(function DatabaseSync() {
+      return mockNodeDb;
+    });
+    vi.doMock("node:sqlite", () => ({ DatabaseSync }));
+
+    const audit = await import("../audit.ts");
+
+    await audit.logToolCall("omniroute_get_health", { ok: true }, { ok: true }, 4, true);
+    expect(DatabaseSync).toHaveBeenCalledWith(dbFile);
+    expect(mockNodeDb.prepare).toHaveBeenCalled();
+
+    expect(audit.closeAuditDb()).toBe(true);
+    expect(mockNodeDb.exec).toHaveBeenCalledWith("PRAGMA wal_checkpoint(TRUNCATE)");
+    expect(mockNodeDb.close).toHaveBeenCalledTimes(1);
+  });
 });
