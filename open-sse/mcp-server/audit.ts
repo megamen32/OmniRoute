@@ -7,6 +7,7 @@
  */
 
 import { hashInput, summarizeOutput } from "./schemas/audit.ts";
+import { isNativeSqliteLoadError } from "../../src/lib/db/core.ts";
 
 // ============ Database Connection ============
 
@@ -32,13 +33,23 @@ interface NodeSqliteDatabase {
   };
   exec: (sql: string) => void;
   close: () => void;
-  open: boolean;
 }
 
+/**
+ * node:sqlite's `DatabaseSync` does NOT expose a boolean `open` property —
+ * `open` and `close` are methods on the prototype, and the only state
+ * surface is the `isOpen` getter. Track open state locally in a closure
+ * so the adapter's `AuditDatabase` contract (`open?: boolean`) is honored
+ * and `getCachedAuditDb()`'s truthy check doesn't return a closed handle
+ * after `closeAuditDb()`.
+ */
 function createNodeSqliteAuditAdapter(db: NodeSqliteDatabase): AuditDatabase {
+  let _isOpen = true;
   return {
     driver: "node:sqlite",
-    open: db.open,
+    get open() {
+      return _isOpen;
+    },
     prepare<TRow = unknown>(sql: string) {
       const stmt = db.prepare(sql);
       return {
@@ -57,7 +68,14 @@ function createNodeSqliteAuditAdapter(db: NodeSqliteDatabase): AuditDatabase {
         return err instanceof Error ? err.message : String(err);
       }
     },
-    close: () => db.close(),
+    close: () => {
+      if (!_isOpen) return;
+      try {
+        db.close();
+      } finally {
+        _isOpen = false;
+      }
+    },
   };
 }
 
@@ -229,14 +247,15 @@ async function getDb(): Promise<AuditDatabase | null> {
       setCachedAuditDb(database);
       return database;
     } catch (nativeErr) {
-      const nativeMessage = nativeErr instanceof Error ? nativeErr.message : String(nativeErr);
-      // Only fall through if the native binding is missing/incompatible.
-      // Other errors (e.g. corrupt db, permission) should still surface.
-      const isBindingIssue =
-        nativeMessage.includes("Could not locate the bindings file") ||
-        nativeMessage.includes("NODE_MODULE_VERSION") ||
-        nativeMessage.includes("ERR_DLOPEN_FAILED");
-      if (!isBindingIssue) {
+      // Reuse the canonical detection helper from the main app's DB layer
+      // so we cover every ABI/binding failure mode the rest of the codebase
+      // already knows about: missing MODULE_NOT_FOUND, ERR_DLOPEN_FAILED,
+      // "Module did not self-register", "Cannot find module 'better-sqlite3'",
+      // the standard V8 "was compiled against a different Node.js version"
+      // message, and the bindings-loader "Could not locate the bindings file".
+      // Real errors (corrupt db, permission denied) still surface to the operator.
+      if (!isNativeSqliteLoadError(nativeErr)) {
+        const nativeMessage = nativeErr instanceof Error ? nativeErr.message : String(nativeErr);
         console.error("[MCP Audit] Failed to connect to database:", nativeMessage);
         return null;
       }

@@ -103,12 +103,13 @@ describe("MCP audit shutdown", () => {
       throw bindingErr;
     });
 
-    const mockNodeDb: MockAuditDb & { exec: ReturnType<typeof vi.fn> } = {
+    // node:sqlite's DatabaseSync does not expose a boolean `open` property,
+    // so the mock intentionally omits it — the adapter tracks open state in
+    // a local closure and exposes it via a getter.
+    const mockNodeDb = {
       prepare: vi.fn(() => createStatementMock()),
-      pragma: vi.fn(),
-      close: vi.fn(),
-      open: true,
       exec: vi.fn(),
+      close: vi.fn(),
     };
     const DatabaseSync = vi.fn(function DatabaseSync() {
       return mockNodeDb;
@@ -123,6 +124,10 @@ describe("MCP audit shutdown", () => {
 
     expect(audit.closeAuditDb()).toBe(true);
     expect(mockNodeDb.exec).toHaveBeenCalledWith("PRAGMA wal_checkpoint(TRUNCATE)");
+    expect(mockNodeDb.close).toHaveBeenCalledTimes(1);
+
+    // Cache is cleared after close, so a second close is a no-op.
+    expect(audit.closeAuditDb()).toBe(false);
     expect(mockNodeDb.close).toHaveBeenCalledTimes(1);
   });
 });
