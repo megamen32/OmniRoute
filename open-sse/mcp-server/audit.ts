@@ -247,6 +247,11 @@ async function getDb(): Promise<AuditDatabase | null> {
       setCachedAuditDb(database);
       return database;
     } catch (nativeErr) {
+      // Declared once at the top of the catch: nativeMessage is read both on
+      // the non-fallback bail-out and in the node:sqlite fallback warning
+      // further down. A block-scoped const inside the `if` below would be out
+      // of scope in the fallback path.
+      const nativeMessage = nativeErr instanceof Error ? nativeErr.message : String(nativeErr);
       // Reuse the canonical detection helper from the main app's DB layer
       // so we cover every ABI/binding failure mode the rest of the codebase
       // already knows about: missing MODULE_NOT_FOUND, ERR_DLOPEN_FAILED,
@@ -255,7 +260,6 @@ async function getDb(): Promise<AuditDatabase | null> {
       // message, and the bindings-loader "Could not locate the bindings file".
       // Real errors (corrupt db, permission denied) still surface to the operator.
       if (!isNativeSqliteLoadError(nativeErr)) {
-        const nativeMessage = nativeErr instanceof Error ? nativeErr.message : String(nativeErr);
         console.error("[MCP Audit] Failed to connect to database:", nativeMessage);
         return null;
       }

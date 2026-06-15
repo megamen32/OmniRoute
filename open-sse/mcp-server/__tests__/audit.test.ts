@@ -99,9 +99,18 @@ describe("MCP audit shutdown", () => {
       "Could not locate the bindings file. Tried: …/better_sqlite3.node"
     ) as Error & { code?: string };
     bindingErr.code = "MODULE_NOT_FOUND";
-    vi.doMock("better-sqlite3", () => {
+    // Simulate the binding-missing failure as the better-sqlite3 default
+    // constructor throwing — this matches reality (`new Database()` throws
+    // "Could not locate the bindings file" when the prebuilt .node is absent)
+    // and reaches the adapter's `catch (nativeErr)`. A factory that itself
+    // throws is reported by vitest as a mock-setup error and never reaches
+    // the code under test.
+    const ThrowingDatabase = vi.fn(function ThrowingDatabase() {
       throw bindingErr;
     });
+    vi.doMock("better-sqlite3", () => ({
+      default: ThrowingDatabase,
+    }));
 
     // node:sqlite's DatabaseSync does not expose a boolean `open` property,
     // so the mock intentionally omits it — the adapter tracks open state in
