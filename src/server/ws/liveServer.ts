@@ -99,16 +99,30 @@ async function authorizeConnection(request: import("http").IncomingMessage): Pro
   // headers — a single screenshot of the URL bar exposes the API key.
   const token = extractBearerToken(request) || extractAltTokenHeader(request);
 
+  // Browser WebSocket clients cannot set custom Authorization headers. When
+  // LiveWS is exposed same-origin through a reverse proxy, accept the existing
+  // dashboard session cookie before falling back to API-key authentication.
   if (!token) {
+    try {
+      const { isDashboardSessionAuthenticated } = await import("../../shared/utils/apiAuth.ts");
+      if (await isDashboardSessionAuthenticated({ headers: request.headers } as any)) {
+        return { authorized: true, sessionId };
+      }
+    } catch {
+      // Fall through to the explicit missing-token error below.
+    }
+
     return { authorized: false, sessionId, error: "Missing token" };
   }
 
   try {
-    // Validate API key via the existing auth system
-    const { extractApiKey, isValidApiKey } = await import("../services/auth");
-    const apiKey = extractApiKey({ headers: { authorization: `Bearer ${token}` } } as any);
+    // Validate API key via the existing auth system.
+    const { extractApiKey, isValidApiKey } = await import("../../sse/services/auth.ts");
+    const apiKey = extractApiKey({ headers: { authorization: `Bearer ${token}` } } as any, {
+      allowUrl: false,
+    });
 
-    if (!apiKey || !isValidApiKey(apiKey)) {
+    if (!apiKey || !(await isValidApiKey(apiKey))) {
       return { authorized: false, sessionId, error: "Invalid API key" };
     }
 
