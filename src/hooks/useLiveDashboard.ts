@@ -20,6 +20,10 @@ const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 function getDefaultWsUrl(): string {
   if (typeof window === "undefined") return "ws://localhost:20129";
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const { hostname } = window.location;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return `${protocol}//${hostname}:20129`;
+  }
   return `${protocol}//${window.location.host}/live-ws`;
 }
 

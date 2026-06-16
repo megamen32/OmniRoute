@@ -14,6 +14,7 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
+import { jwtVerify } from "jose";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { randomUUID } from "crypto";
 
@@ -38,6 +39,8 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 35_000;
 const MAX_CLIENTS = 500;
 const MAX_EVENTS_PER_SECOND = 100;
+const MAX_PENDING_MESSAGES_PER_CLIENT = 32;
+const MAX_PENDING_MESSAGE_BYTES = 16_384;
 
 /**
  * Origins allowed to open a WebSocket. Defaults to the loopback dashboard
@@ -115,19 +118,12 @@ async function authorizeConnection(request: import("http").IncomingMessage): Pro
 
   // Browser WebSocket clients cannot set custom Authorization headers. When
   // LiveWS is exposed same-origin through a reverse proxy, accept the existing
-  // dashboard session cookie before falling back to API-key authentication.
+  // dashboard session cookie before falling back to API-key authentication. Keep
+  // the check local to this sidecar so it does not import Next.js-only modules.
   if (!token) {
-    try {
-      const { isDashboardSessionAuthenticated } = await import("../../shared/utils/apiAuth.ts");
-      if (
-        await isDashboardSessionAuthenticated({ headers: toWebHeaders(request.headers) } as any)
-      ) {
-        return { authorized: true, sessionId };
-      }
-    } catch {
-      // Fall through to the explicit missing-token error below.
+    if (await isDashboardCookieAuthenticated(request)) {
+      return { authorized: true, sessionId };
     }
-
     return { authorized: false, sessionId, error: "Missing token" };
   }
 
@@ -152,6 +148,32 @@ function extractAltTokenHeader(request: import("http").IncomingMessage): string 
   const raw = request.headers["x-live-ws-token"];
   if (Array.isArray(raw)) return raw[0] || null;
   return typeof raw === "string" ? raw : null;
+}
+
+function getCookieValueFromHeader(
+  headers: import("http").IncomingHttpHeaders,
+  name: string
+): string | null {
+  const raw = headers.cookie;
+  const cookieHeader = Array.isArray(raw) ? raw.join("; ") : raw;
+  if (!cookieHeader) return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = cookieHeader.match(new RegExp(`(?:^|;\s*)${escaped}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function isDashboardCookieAuthenticated(
+  request: import("http").IncomingMessage
+): Promise<boolean> {
+  const token = getCookieValueFromHeader(request.headers, "auth_token");
+  if (!token || !process.env.JWT_SECRET) return false;
+  try {
+    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+    await jwtVerify(token, secret);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function extractBearerToken(request: import("http").IncomingMessage): string | null {
@@ -324,33 +346,8 @@ function handleInternalEventRequest(req: IncomingMessage, res: ServerResponse): 
 
 async function seedLatestCompressionRunFromDb(): Promise<void> {
   try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    const db = getDbInstance();
-    const row = db
-      .prepare(
-        `SELECT id, timestamp, combo_id, compression_combo_id, mode,
-                original_tokens, compressed_tokens, tokens_saved, duration_ms,
-                request_id, engine, validation_fallback
-           FROM compression_analytics
-          ORDER BY timestamp DESC, id DESC
-          LIMIT 1`
-      )
-      .get() as
-      | {
-          id: number;
-          timestamp: string;
-          combo_id: string | null;
-          compression_combo_id: string | null;
-          mode: string;
-          original_tokens: number;
-          compressed_tokens: number;
-          tokens_saved: number;
-          duration_ms: number | null;
-          request_id: string | null;
-          engine: string | null;
-          validation_fallback: number | null;
-        }
-      | undefined;
+    const { getLatestCompressionAnalyticsRun } = await import("@/lib/db/compressionAnalytics");
+    const row = getLatestCompressionAnalyticsRun();
     if (!row) return;
 
     const originalTokens = Number(row.original_tokens) || 0;
@@ -457,6 +454,14 @@ export async function startLiveDashboardServer(
     ws.on("message", (data) => {
       const raw = data.toString();
       if (!activeClientId) {
+        if (
+          pendingMessages.length >= MAX_PENDING_MESSAGES_PER_CLIENT ||
+          raw.length > MAX_PENDING_MESSAGE_BYTES
+        ) {
+          sendTo(ws, { type: "error", code: "RATE_LIMITED", message: "Too many early messages" });
+          ws.close(4008, "Too many early messages");
+          return;
+        }
         pendingMessages.push(raw);
         return;
       }
