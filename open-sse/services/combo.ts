@@ -515,6 +515,24 @@ function getCombosArray(allCombos: ComboCollectionLike): ComboLike[] {
  * 1. Body is valid JSON
  * 2. Has at least one choice with non-empty content or tool_calls
  */
+async function forwardDashboardEventToLiveWs(event: string, payload: unknown): Promise<void> {
+  const port = process.env.LIVE_WS_PORT || "20129";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_500);
+  try {
+    await fetch(`http://127.0.0.1:${port}/__omniroute_event`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event, payload, timestamp: Date.now() }),
+      signal: controller.signal,
+    });
+  } catch {
+    // Best-effort sidecar bridge; do not affect the routing hot path.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function validateResponseQuality(
   response: Response,
   isStreaming: boolean,
@@ -3942,14 +3960,16 @@ export async function handleComboChat({
             "COMBO",
             `Trying model ${i + 1}/${orderedTargets.length}: ${modelStr}${retry > 0 ? ` (retry ${retry})` : ""}`
           );
-          emit("combo.target.attempt", {
+          const comboTargetAttemptPayload = {
             comboName: combo.name,
             targetIndex: i,
             provider,
             model: modelStr,
             timestamp: Date.now(),
             strategy,
-          });
+          };
+          emit("combo.target.attempt", comboTargetAttemptPayload);
+          void forwardDashboardEventToLiveWs("combo.target.attempt", comboTargetAttemptPayload);
 
           // Deep clone the body to ensure context preservation and prevent mutations
           // from affecting other targets in the combo
@@ -4066,14 +4086,17 @@ export async function handleComboChat({
                   );
                 }
               }
-              emit("combo.target.failed", {
+              const comboTargetFailedPayload = {
                 comboName: combo.name,
                 targetIndex: i,
                 provider,
                 model: modelStr,
                 error: `Quality: ${quality.reason}`,
                 latencyMs: Date.now() - startTime,
-              });
+                timestamp: Date.now(),
+              };
+              emit("combo.target.failed", comboTargetFailedPayload);
+              void forwardDashboardEventToLiveWs("combo.target.failed", comboTargetFailedPayload);
               return null;
             }
 
@@ -4096,13 +4119,20 @@ export async function handleComboChat({
             }
 
             const latencyMs = Date.now() - startTime;
-            emit("combo.target.succeeded", {
+            const comboTargetSucceededPayload = {
               comboName: combo.name,
               targetIndex: i,
               provider,
               model: modelStr,
               latencyMs,
-            });
+              timestamp: Date.now(),
+              fallbackCount,
+            };
+            emit("combo.target.succeeded", comboTargetSucceededPayload);
+            void forwardDashboardEventToLiveWs(
+              "combo.target.succeeded",
+              comboTargetSucceededPayload
+            );
             log.info(
               "COMBO",
               `Model ${modelStr} succeeded (${latencyMs}ms, ${fallbackCount} fallbacks)`
