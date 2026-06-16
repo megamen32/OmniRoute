@@ -14,7 +14,7 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer } from "http";
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { randomUUID } from "crypto";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -232,35 +232,173 @@ function sendTo(ws: WebSocket, msg: WsServerMessage | Record<string, unknown>): 
 
 // ── Event Bus → WebSocket Bridge ──────────────────────────────────────────
 
+function publishDashboardEvent(
+  event: DashboardEventName,
+  payload: unknown,
+  timestamp = Date.now()
+): boolean {
+  const channel = getChannelForEvent(event);
+  if (!channel) return false;
+
+  // Store in backlog so clients that subscribe just after a run still receive it.
+  eventHistoryBacklog.push({ event, payload, timestamp });
+  if (eventHistoryBacklog.length > BACKLOG_MAX) {
+    eventHistoryBacklog.shift();
+  }
+
+  const msg: WsEventMessage = {
+    type: "event",
+    channel,
+    event,
+    data: payload,
+  };
+
+  for (const [clientId, client] of clients) {
+    if (client.ws.readyState !== WebSocket.OPEN) {
+      clients.delete(clientId);
+      continue;
+    }
+    if (client.subscribedChannels.has(channel)) {
+      sendTo(client.ws, msg);
+    }
+  }
+
+  return true;
+}
+
 function subscribeToEventBus(): () => void {
   return onAny((event: DashboardEventName, payload: unknown) => {
-    const channel = getChannelForEvent(event);
-    if (!channel) return;
+    publishDashboardEvent(event, payload);
+  });
+}
 
-    // Store in backlog
-    eventHistoryBacklog.push({ event, payload, timestamp: Date.now() });
-    if (eventHistoryBacklog.length > BACKLOG_MAX) {
-      eventHistoryBacklog.shift();
-    }
+function isLoopbackRequest(req: IncomingMessage): boolean {
+  const addr = req.socket.remoteAddress;
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
 
-    // Forward to subscribed clients
-    const msg: WsEventMessage = {
-      type: "event",
-      channel,
-      event,
-      data: payload,
-    };
+function handleInternalEventRequest(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== "POST" || req.url !== "/__omniroute_event") {
+    res.writeHead(404).end();
+    return;
+  }
+  if (!isLoopbackRequest(req)) {
+    res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ ok: false }));
+    return;
+  }
 
-    for (const [clientId, client] of clients) {
-      if (client.ws.readyState !== WebSocket.OPEN) {
-        clients.delete(clientId);
-        continue;
-      }
-      if (client.subscribedChannels.has(channel)) {
-        sendTo(client.ws, msg);
-      }
+  let body = "";
+  req.setEncoding("utf8");
+  req.on("data", (chunk) => {
+    body += chunk;
+    if (body.length > 1_000_000) {
+      req.destroy(new Error("Internal event payload too large"));
     }
   });
+  req.on("error", () => {
+    if (!res.headersSent) res.writeHead(400).end();
+  });
+  req.on("end", () => {
+    try {
+      const parsed = JSON.parse(body || "{}");
+      const event = parsed.event as DashboardEventName;
+      if (!Object.values(CHANNEL_EVENTS).some((events) => events.includes(event))) {
+        res
+          .writeHead(400, { "content-type": "application/json" })
+          .end(JSON.stringify({ ok: false }));
+        return;
+      }
+      const ok = publishDashboardEvent(
+        event,
+        parsed.payload,
+        Number(parsed.timestamp) || Date.now()
+      );
+      res
+        .writeHead(ok ? 202 : 400, { "content-type": "application/json" })
+        .end(JSON.stringify({ ok }));
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ ok: false }));
+    }
+  });
+}
+
+async function seedLatestCompressionRunFromDb(): Promise<void> {
+  try {
+    const { getDbInstance } = await import("@/lib/db/core");
+    const db = getDbInstance();
+    const row = db
+      .prepare(
+        `SELECT id, timestamp, combo_id, compression_combo_id, mode,
+                original_tokens, compressed_tokens, tokens_saved, duration_ms,
+                request_id, engine, validation_fallback
+           FROM compression_analytics
+          ORDER BY timestamp DESC, id DESC
+          LIMIT 1`
+      )
+      .get() as
+      | {
+          id: number;
+          timestamp: string;
+          combo_id: string | null;
+          compression_combo_id: string | null;
+          mode: string;
+          original_tokens: number;
+          compressed_tokens: number;
+          tokens_saved: number;
+          duration_ms: number | null;
+          request_id: string | null;
+          engine: string | null;
+          validation_fallback: number | null;
+        }
+      | undefined;
+    if (!row) return;
+
+    const originalTokens = Number(row.original_tokens) || 0;
+    const compressedTokens = Number(row.compressed_tokens) || 0;
+    const savingsPercent =
+      originalTokens > 0
+        ? Math.round(((originalTokens - compressedTokens) / originalTokens) * 100)
+        : 0;
+    const timestamp = Number.isFinite(Date.parse(row.timestamp))
+      ? Date.parse(row.timestamp)
+      : Date.now();
+
+    publishDashboardEvent(
+      "compression.completed",
+      {
+        requestId: row.request_id || `analytics-${row.id}`,
+        comboId: row.compression_combo_id || row.combo_id || null,
+        mode: row.mode,
+        originalTokens,
+        compressedTokens,
+        savingsPercent,
+        engineBreakdown: [
+          {
+            engine: row.engine || row.mode || "compression",
+            originalTokens,
+            compressedTokens,
+            savingsPercent,
+            techniquesUsed: [],
+            rulesApplied: [],
+            durationMs: row.duration_ms ?? undefined,
+          },
+        ],
+        validationWarnings: [],
+        fallbackApplied: Boolean(row.validation_fallback),
+        timestamp,
+      },
+      timestamp
+    );
+    console.log(
+      "[LiveWS] Seeded latest compression run from analytics: %s",
+      row.request_id || row.id
+    );
+  } catch (err) {
+    console.warn(
+      "[LiveWS] Could not seed compression analytics backlog: %s",
+      err instanceof Error ? err.message : String(err)
+    );
+  }
 }
 
 // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -300,13 +438,31 @@ export async function startLiveDashboardServer(
   port = DEFAULT_PORT,
   host = DEFAULT_HOST
 ): Promise<import("http").Server> {
-  const server = createServer();
+  const server = createServer((req, res) => {
+    handleInternalEventRequest(req, res);
+  });
   const wss = new WebSocketServer({ server });
 
   // Subscribe to EventBus
   const unsubscribe = subscribeToEventBus();
+  await seedLatestCompressionRunFromDb();
 
   wss.on("connection", async (ws, request) => {
+    const pendingMessages: string[] = [];
+    let activeClientId: string | null = null;
+
+    // Clients can send the subscribe frame immediately after the WS open event,
+    // while dashboard cookie/API-key auth is still resolving. Queue those early
+    // messages so the first subscribe is not dropped.
+    ws.on("message", (data) => {
+      const raw = data.toString();
+      if (!activeClientId) {
+        pendingMessages.push(raw);
+        return;
+      }
+      handleMessage(activeClientId, raw);
+    });
+
     // Origin check — browsers always send Origin on the WS upgrade; reject
     // unknown origins to stop drive-by cross-origin WebSocket from a victim
     // page. Non-browser clients (CLI / MCP) omit Origin and are accepted
@@ -335,6 +491,7 @@ export async function startLiveDashboardServer(
     }
 
     const clientId = auth.sessionId;
+    activeClientId = clientId;
     const client: ClientState = {
       ws,
       sessionId: clientId,
@@ -357,10 +514,10 @@ export async function startLiveDashboardServer(
       clients.size
     );
 
-    // Handle messages
-    ws.on("message", (data) => {
-      handleMessage(clientId, data.toString());
-    });
+    // Replay any subscribe/ping frames sent while auth was still pending.
+    for (const raw of pendingMessages.splice(0)) {
+      handleMessage(clientId, raw);
+    }
 
     // Handle close
     ws.on("close", () => {

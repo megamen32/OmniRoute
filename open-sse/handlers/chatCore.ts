@@ -445,6 +445,19 @@ function extractMemoryTextFromRequestBody(
   return "";
 }
 
+async function forwardDashboardEventToLiveWs(event: string, payload: unknown): Promise<void> {
+  const port = process.env.LIVE_WS_PORT || "20129";
+  try {
+    await fetch(`http://127.0.0.1:${port}/__omniroute_event`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event, payload, timestamp: Date.now() }),
+    });
+  } catch {
+    // Best-effort sidecar bridge; do not affect the chat hot path.
+  }
+}
+
 async function maybeSyncClaudeExtraUsageState({
   provider,
   connectionId,
@@ -2653,7 +2666,7 @@ export async function handleChatCore({
           // Guard: only emit when compression actually ran and produced stats.
           if (result.compressed && result.stats) {
             try {
-              emit("compression.completed", {
+              const compressionCompletedPayload = {
                 requestId: traceId,
                 comboId: result.stats.compressionComboId ?? null,
                 mode,
@@ -2664,7 +2677,12 @@ export async function handleChatCore({
                 validationWarnings: result.stats.validationWarnings,
                 fallbackApplied: result.stats.fallbackApplied,
                 timestamp: Date.now(),
-              });
+              };
+              emit("compression.completed", compressionCompletedPayload);
+              void forwardDashboardEventToLiveWs(
+                "compression.completed",
+                compressionCompletedPayload
+              );
             } catch (_emitErr) {
               // never propagate into the hot path — but log like the sibling
               // fire-and-forget blocks so a throwing event bus isn't fully silent.
