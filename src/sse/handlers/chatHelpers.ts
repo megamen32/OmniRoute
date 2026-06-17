@@ -1,6 +1,7 @@
 import { getModelInfo, getComboForModel } from "../services/model";
 import { clearAccountError, markAccountUnavailable } from "../services/auth";
 import { connectionHasExtraKeys } from "@omniroute/open-sse/services/apiKeyRotator.ts";
+import { createBuiltinAutoCombo } from "@omniroute/open-sse/services/autoCombo/builtinCatalog.ts";
 import * as log from "../utils/logger";
 import { updateProviderCredentials } from "../services/tokenRefresh";
 import {
@@ -48,64 +49,6 @@ const PREFERRED_BY_FAMILY: Record<string, string> = {
 };
 
 const CODEX_NATIVE_RESPONSES_MODELS = new Set(["gpt-5.5"]);
-
-type AutoVariant = "coding" | "fast" | "cheap" | "offline" | "smart" | "lkgp";
-
-const VALID_AUTO_VARIANTS = new Set<AutoVariant>([
-  "coding",
-  "fast",
-  "cheap",
-  "offline",
-  "smart",
-  "lkgp",
-]);
-
-const AUTO_TEMPLATE_VARIANTS: Record<string, AutoVariant | undefined> = {
-  "auto/best-coding": "coding",
-  "auto/best-reasoning": "smart",
-  "auto/best-fast": "fast",
-  "auto/best-vision": "smart",
-  "auto/best-chat": undefined,
-  "auto/best-coding-fast": "fast",
-  "auto/pro-coding": "coding",
-  "auto/pro-reasoning": "smart",
-  "auto/pro-vision": "smart",
-  "auto/pro-chat": undefined,
-  "auto/pro-fast": "fast",
-  "auto/coding": "coding",
-  "auto/fast": "fast",
-  "auto/chat": undefined,
-  "auto/claude-opus": "smart",
-  "auto/claude-sonnet": "coding",
-};
-
-type ResolvedAutoVariant =
-  | { recognized: true; variant: AutoVariant | undefined }
-  | { recognized: false };
-
-function resolveAutoVariant(modelStr: string, suffix: string): ResolvedAutoVariant {
-  if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, modelStr)) {
-    return { recognized: true, variant: AUTO_TEMPLATE_VARIANTS[modelStr] };
-  }
-  if (VALID_AUTO_VARIANTS.has(suffix as AutoVariant)) {
-    return { recognized: true, variant: suffix as AutoVariant };
-  }
-  return { recognized: false };
-}
-
-async function createBuiltinAutoCombo(modelStr: string, suffix: string) {
-  const resolved = resolveAutoVariant(modelStr, suffix);
-  if (!resolved.recognized) {
-    throw new Error(`Unknown built-in auto combo: ${modelStr}`);
-  }
-
-  const { createVirtualAutoCombo } =
-    await import("@omniroute/open-sse/services/autoCombo/virtualFactory.ts");
-  const virtualCombo = await createVirtualAutoCombo(resolved.variant);
-  virtualCombo.name = modelStr;
-  virtualCombo.id = modelStr;
-  return virtualCombo;
-}
 
 type TrafficType = "production" | "shadow";
 

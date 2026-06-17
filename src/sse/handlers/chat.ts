@@ -29,6 +29,10 @@ import {
   PROVIDER_ID_TO_ALIAS,
 } from "@omniroute/open-sse/config/providerModels.ts";
 import type { AutoVariant } from "@omniroute/open-sse/services/autoCombo/autoPrefix.ts";
+import {
+  AUTO_TEMPLATE_VARIANTS,
+  VALID_AUTO_VARIANTS,
+} from "@omniroute/open-sse/services/autoCombo/builtinCatalog.ts";
 import * as log from "../utils/logger";
 import { checkAndRefreshToken } from "../services/tokenRefresh";
 import { createHookContext, runHooks, initPreRequestRegistry } from "@/lib/middleware/registry";
@@ -379,32 +383,6 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
   // entirely and generate a virtual auto-combo on-the-fly from connected providers.
   let autoVariant: AutoVariant | undefined;
   let isAutoRouting = resolvedModelStr === "auto" || resolvedModelStr.startsWith("auto/");
-  const AUTO_TEMPLATE_VARIANTS: Record<string, AutoVariant | undefined> = {
-    "auto/best-coding": "coding",
-    "auto/best-reasoning": "smart",
-    "auto/best-fast": "fast",
-    "auto/best-vision": "smart",
-    "auto/best-chat": undefined,
-    "auto/best-coding-fast": "fast",
-    "auto/pro-coding": "coding",
-    "auto/pro-reasoning": "smart",
-    "auto/pro-vision": "smart",
-    "auto/pro-chat": undefined,
-    "auto/pro-fast": "fast",
-    "auto/coding": "coding",
-    "auto/fast": "fast",
-    "auto/chat": undefined,
-    "auto/claude-opus": "smart",
-    "auto/claude-sonnet": "coding",
-  };
-  const VALID_AUTO_VARIANTS = new Set<AutoVariant>([
-    "coding",
-    "fast",
-    "cheap",
-    "offline",
-    "smart",
-    "lkgp",
-  ]);
   let recognizedBuiltInAuto = resolvedModelStr === "auto";
   if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, resolvedModelStr)) {
     recognizedBuiltInAuto = true;
