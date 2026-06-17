@@ -49,6 +49,64 @@ const PREFERRED_BY_FAMILY: Record<string, string> = {
 
 const CODEX_NATIVE_RESPONSES_MODELS = new Set(["gpt-5.5"]);
 
+type AutoVariant = "coding" | "fast" | "cheap" | "offline" | "smart" | "lkgp";
+
+const VALID_AUTO_VARIANTS = new Set<AutoVariant>([
+  "coding",
+  "fast",
+  "cheap",
+  "offline",
+  "smart",
+  "lkgp",
+]);
+
+const AUTO_TEMPLATE_VARIANTS: Record<string, AutoVariant | undefined> = {
+  "auto/best-coding": "coding",
+  "auto/best-reasoning": "smart",
+  "auto/best-fast": "fast",
+  "auto/best-vision": "smart",
+  "auto/best-chat": undefined,
+  "auto/best-coding-fast": "fast",
+  "auto/pro-coding": "coding",
+  "auto/pro-reasoning": "smart",
+  "auto/pro-vision": "smart",
+  "auto/pro-chat": undefined,
+  "auto/pro-fast": "fast",
+  "auto/coding": "coding",
+  "auto/fast": "fast",
+  "auto/chat": undefined,
+  "auto/claude-opus": "smart",
+  "auto/claude-sonnet": "coding",
+};
+
+type ResolvedAutoVariant =
+  | { recognized: true; variant: AutoVariant | undefined }
+  | { recognized: false };
+
+function resolveAutoVariant(modelStr: string, suffix: string): ResolvedAutoVariant {
+  if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, modelStr)) {
+    return { recognized: true, variant: AUTO_TEMPLATE_VARIANTS[modelStr] };
+  }
+  if (VALID_AUTO_VARIANTS.has(suffix as AutoVariant)) {
+    return { recognized: true, variant: suffix as AutoVariant };
+  }
+  return { recognized: false };
+}
+
+async function createBuiltinAutoCombo(modelStr: string, suffix: string) {
+  const resolved = resolveAutoVariant(modelStr, suffix);
+  if (!resolved.recognized) {
+    throw new Error(`Unknown built-in auto combo: ${modelStr}`);
+  }
+
+  const { createVirtualAutoCombo } =
+    await import("@omniroute/open-sse/services/autoCombo/virtualFactory.ts");
+  const virtualCombo = await createVirtualAutoCombo(resolved.variant);
+  virtualCombo.name = modelStr;
+  virtualCombo.id = modelStr;
+  return virtualCombo;
+}
+
 type TrafficType = "production" | "shadow";
 
 type ExecuteChatWithBreakerOptions = {
@@ -173,18 +231,20 @@ export async function resolveModelOrError(
     }
   }
 
-  // "auto" is a combo prefix, not a provider. parseModel("auto/fast") splits it into
-  // provider="auto" model="fast" — redirect to matching combo before credential lookup fails.
+  // "auto" is a built-in virtual combo prefix, not a provider. parseModel("auto/fast")
+  // splits it into provider="auto" model="fast", so resolve it before credential lookup.
   if (modelInfo.provider === "auto") {
+    const suffix = modelInfo.model || "";
+    const fuzzyCandidates = [`auto/best-${suffix}`, `auto/${suffix}`];
+
     const exactCombo = await getComboForModel(modelStr);
     if (exactCombo) {
       log.info("ROUTING", `"auto" provider → combo "${modelStr}"`);
-      return { combo: exactCombo, provider: "auto", model: modelInfo.model };
+      return { combo: exactCombo, provider: "auto", model: suffix };
     }
 
-    // Fuzzy: "fast" → "auto/best-fast", "chat" → "auto/best-chat"
-    const suffix = modelInfo.model || "";
-    for (const candidate of [`auto/best-${suffix}`, `auto/${suffix}`]) {
+    // Preserve persisted fuzzy combo behavior before falling back to built-in virtual catalog ids.
+    for (const candidate of fuzzyCandidates) {
       const fuzzyCombo = await getComboForModel(candidate);
       if (fuzzyCombo) {
         log.info("ROUTING", `"auto/${suffix}" → combo "${candidate}" (fuzzy)`);
@@ -192,25 +252,35 @@ export async function resolveModelOrError(
       }
     }
 
-    // List available auto/* combos in error
-    const available: string[] = [];
     try {
-      const { getCombos } = await import("@/lib/localDb");
-      const all = await getCombos();
-      for (const c of all) {
-        const name =
-          typeof c === "object" && c !== null ? (c as Record<string, unknown>).name : undefined;
-        if (typeof name === "string" && name.startsWith("auto/")) available.push(name);
-      }
-    } catch {
-      /* DB unavailable */
+      const virtualCombo = await createBuiltinAutoCombo(modelStr, suffix);
+      log.info(
+        "AUTO",
+        `"auto" provider → built-in virtual combo "${modelStr}" (${virtualCombo.candidatePool?.length || 0} candidates)`
+      );
+      return { combo: virtualCombo, provider: "auto", model: suffix };
+    } catch (err) {
+      log.warn("CHAT", `Failed to create built-in auto combo "${modelStr}"`, { err });
     }
 
-    const hint =
-      available.length > 0
-        ? ` Available auto combos: ${available.join(", ")}`
-        : " No auto combos configured — create one in the Dashboard.";
-    const message = `Model '${modelStr}' is not a valid combo or provider.${hint}`;
+    // Fuzzy: "fast" → "auto/best-fast", "chat" → "auto/best-chat"
+    for (const candidate of fuzzyCandidates) {
+      try {
+        const virtualCombo = await createBuiltinAutoCombo(
+          candidate,
+          candidate.replace(/^auto\/?/, "")
+        );
+        log.info(
+          "AUTO",
+          `"auto/${suffix}" → built-in virtual combo "${candidate}" (fuzzy, ${virtualCombo.candidatePool?.length || 0} candidates)`
+        );
+        return { combo: virtualCombo, provider: "auto", model: suffix };
+      } catch {
+        /* Try next fuzzy candidate */
+      }
+    }
+
+    const message = `Model '${modelStr}' is not a valid combo or provider. Unknown built-in auto combo.`;
     log.warn("CHAT", message, { model: modelStr });
     return { error: errorResponse(HTTP_STATUS.BAD_REQUEST, message) };
   }
