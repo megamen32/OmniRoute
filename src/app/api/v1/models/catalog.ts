@@ -782,10 +782,19 @@ export async function getUnifiedModelsResponse(
       if (combo.isActive === false || combo.isHidden === true) continue;
       if (typeof combo.name !== "string" || combo.name.length === 0) continue;
 
-      // Combo visibility is controlled by the combo itself. Do not hide a
-      // namespaced combo just because one of its raw target models is hidden
-      // from the public model catalog; hidden raw targets are often wrapped
-      // intentionally by combos such as combo/free-stack.
+      // Skip combos whose any underlying target model is hidden
+      const comboTargets = resolveNestedComboTargets(
+        combo as Parameters<typeof resolveNestedComboTargets>[0],
+        combos as Parameters<typeof resolveNestedComboTargets>[1]
+      ) as ComboCatalogTarget[];
+      if (
+        comboTargets.some((target) => {
+          const resolved = getComboTargetModelId(target);
+          return resolved ? getModelIsHidden(resolved.providerId, resolved.modelId) : false;
+        })
+      ) {
+        continue;
+      }
 
       const comboMetadata = await buildComboCatalogMetadata(combo, combos);
 
@@ -800,16 +809,6 @@ export async function getUnifiedModelsResponse(
         ...comboMetadata,
       };
       models.push(comboModel);
-
-      const namespacedComboId = `combo/${combo.name}`;
-      if (!models.some((model) => model.id === namespacedComboId)) {
-        models.push({
-          ...comboModel,
-          id: namespacedComboId,
-          root: combo.name,
-          parent: combo.name,
-        });
-      }
     }
 
     // Add built-in virtual auto-combos to /v1/models so OpenAI-compatible

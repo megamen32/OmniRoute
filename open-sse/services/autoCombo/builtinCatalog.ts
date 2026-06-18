@@ -14,7 +14,6 @@ import { VALID_VARIANTS } from "./autoPrefix";
 export const VALID_AUTO_VARIANTS = new Set<AutoVariant>(VALID_VARIANTS);
 
 export const AUTO_TEMPLATE_VARIANTS: Record<string, AutoVariant | undefined> = {
-  "auto/best": "coding",
   "auto/best-coding": "coding",
   "auto/best-reasoning": "smart",
   "auto/best-fast": "fast",
