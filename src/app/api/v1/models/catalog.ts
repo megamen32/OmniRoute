@@ -78,14 +78,27 @@ type ComboCatalogTarget = {
   provider?: string | null;
 };
 
-type CatalogPricing = {
+type CatalogPricingRate = {
   input: number;
   output: number;
-  unit: "per_1m_tokens";
-  source: string;
-  sample_size?: number;
   prompt: number;
   completion: number;
+};
+
+type CatalogPricingBand = CatalogPricingRate & {
+  unit: "per_1m_tokens";
+};
+
+type CatalogPricing = CatalogPricingBand & {
+  source: string;
+  sample_size?: number;
+  history_sample_size?: number;
+  target_sample_size?: number;
+  history_weight?: number;
+  confidence?: "historical" | "blended" | "target_p90" | "estimated";
+  p75?: CatalogPricingBand;
+  p90?: CatalogPricingBand;
+  max?: CatalogPricingBand;
 };
 
 const ESTIMATED_COMBO_PRICING: CatalogPricing = {
@@ -99,9 +112,7 @@ const ESTIMATED_COMBO_PRICING: CatalogPricing = {
   source: "omniroute_estimate",
 };
 
-function normalizeCatalogPricing(
-  value: unknown
-): Omit<CatalogPricing, "source" | "sample_size"> | null {
+function normalizeCatalogPricing(value: unknown): CatalogPricingRate | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   const toPositiveNumber = (entry: unknown) => {
@@ -126,36 +137,140 @@ function normalizeCatalogPricing(
   };
 }
 
-type CatalogPricingRate = Omit<CatalogPricing, "source" | "sample_size">;
+const HISTORY_FULL_WEIGHT_SAMPLE_SIZE = 30;
+const MIN_HISTORY_WEIGHT = 0.2;
+const TARGET_FALLBACK_PERCENTILE = 0.9;
 
-type ComboUsagePricingRow = {
-  provider: string | null;
-  model: string | null;
-  requested_model: string | null;
-  tokens_in: number | null;
-  tokens_out: number | null;
+type TargetPricingStats = {
+  target_sample_size: number;
+  p75?: CatalogPricingBand;
+  p90?: CatalogPricingBand;
+  max?: CatalogPricingBand;
 };
 
 function knownCatalogPrices(prices: Array<CatalogPricingRate | null>): CatalogPricingRate[] {
   return prices.filter((price): price is CatalogPricingRate => price !== null);
 }
 
-function maxCatalogPricing(
+function roundCatalogPrice(value: number) {
+  return Number(value.toFixed(6));
+}
+
+function catalogRateToBand(rate: CatalogPricingRate): CatalogPricingBand {
+  return {
+    input: roundCatalogPrice(rate.input),
+    output: roundCatalogPrice(rate.output),
+    prompt: roundCatalogPrice(rate.prompt),
+    completion: roundCatalogPrice(rate.completion),
+    unit: "per_1m_tokens",
+  };
+}
+
+function percentile(values: number[], percentileValue: number) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(sorted.length * percentileValue) - 1)
+  );
+  return sorted[index];
+}
+
+function percentileCatalogRate(
+  prices: CatalogPricingRate[],
+  percentileValue: number
+): CatalogPricingRate {
+  const pick = (key: keyof CatalogPricingRate) =>
+    percentile(
+      prices.map((price) => price[key]),
+      percentileValue
+    );
+  return {
+    input: pick("input"),
+    output: pick("output"),
+    prompt: pick("prompt"),
+    completion: pick("completion"),
+  };
+}
+
+function targetPricingStats(prices: Array<CatalogPricingRate | null>): TargetPricingStats {
+  const known = knownCatalogPrices(prices);
+  if (known.length === 0) return { target_sample_size: 0 };
+  return {
+    target_sample_size: known.length,
+    p75: catalogRateToBand(percentileCatalogRate(known, 0.75)),
+    p90: catalogRateToBand(percentileCatalogRate(known, TARGET_FALLBACK_PERCENTILE)),
+    max: catalogRateToBand(percentileCatalogRate(known, 1)),
+  };
+}
+
+function buildCatalogPricing(
+  rate: CatalogPricingRate,
+  source: string,
+  metadata: Omit<CatalogPricing, keyof CatalogPricingBand | "source"> = {}
+): CatalogPricing {
+  return {
+    ...catalogRateToBand(rate),
+    source,
+    ...metadata,
+  };
+}
+
+function targetExpectedCatalogPricing(
   prices: Array<CatalogPricingRate | null>,
   source: string
 ): CatalogPricing {
   const known = knownCatalogPrices(prices);
-  if (known.length === 0) return ESTIMATED_COMBO_PRICING;
-  const max = (key: "input" | "output" | "prompt" | "completion") =>
-    Number(Math.max(...known.map((price) => price[key])).toFixed(6));
+  if (known.length === 0) {
+    return {
+      ...ESTIMATED_COMBO_PRICING,
+      confidence: "estimated",
+    };
+  }
+  return buildCatalogPricing(percentileCatalogRate(known, TARGET_FALLBACK_PERCENTILE), source, {
+    sample_size: known.length,
+    target_sample_size: known.length,
+    confidence: "target_p90",
+  });
+}
+
+function withTargetPricingStats(
+  pricing: CatalogPricing,
+  prices: Array<CatalogPricingRate | null>
+): CatalogPricing {
+  const stats = targetPricingStats(prices);
   return {
-    input: max("input"),
-    output: max("output"),
-    prompt: max("prompt"),
-    completion: max("completion"),
+    ...pricing,
+    target_sample_size: stats.target_sample_size,
+    ...(stats.p75 ? { p75: stats.p75 } : {}),
+    ...(stats.p90 ? { p90: stats.p90 } : {}),
+    ...(stats.max ? { max: stats.max } : {}),
+  };
+}
+
+function blendCatalogPricing(
+  historical: CatalogPricing,
+  fallback: CatalogPricing,
+  source: string
+): CatalogPricing {
+  const historySamples = historical.sample_size || 0;
+  const historyWeight = Math.min(
+    1,
+    Math.max(MIN_HISTORY_WEIGHT, historySamples / HISTORY_FULL_WEIGHT_SAMPLE_SIZE)
+  );
+  const blend = (key: keyof CatalogPricingRate) =>
+    roundCatalogPrice(historical[key] * historyWeight + fallback[key] * (1 - historyWeight));
+  return {
+    input: blend("input"),
+    output: blend("output"),
+    prompt: blend("prompt"),
+    completion: blend("completion"),
     unit: "per_1m_tokens",
     source,
-    sample_size: known.length,
+    sample_size: historySamples,
+    history_sample_size: historySamples,
+    history_weight: roundCatalogPrice(historyWeight),
+    confidence: historyWeight >= 1 ? "historical" : "blended",
   };
 }
 
@@ -782,12 +897,6 @@ export async function getUnifiedModelsResponse(
       source: string,
       usageComboName?: string
     ): Promise<CatalogPricing> => {
-      const historical = await getHistoricalCatalogPricing(
-        usageComboName,
-        `${source}_historical_average`
-      );
-      if (historical) return historical;
-
       const prices = await Promise.all(
         targets.map(async (target) => {
           const targetModel = getComboTargetModelId(target);
@@ -801,7 +910,19 @@ export async function getUnifiedModelsResponse(
           }
         })
       );
-      return maxCatalogPricing(prices, `${source}_max_no_stats`);
+
+      const targetFallback = targetExpectedCatalogPricing(prices, `${source}_p90_no_stats`);
+      const historical = await getHistoricalCatalogPricing(
+        usageComboName,
+        `${source}_historical_average`
+      );
+
+      if (!historical) return withTargetPricingStats(targetFallback, prices);
+      const pricing =
+        (historical.sample_size || 0) >= HISTORY_FULL_WEIGHT_SAMPLE_SIZE
+          ? { ...historical, confidence: "historical" as const }
+          : blendCatalogPricing(historical, targetFallback, `${source}_blended_historical_p90`);
+      return withTargetPricingStats(pricing, prices);
     };
 
     const buildComboCatalogMetadata = async (
