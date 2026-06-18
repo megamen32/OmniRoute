@@ -9,6 +9,7 @@ import {
   getModelIsHidden,
   getPricingForModel,
 } from "@/lib/localDb";
+import { getDbInstance } from "@/lib/db/core";
 import { getAllEmbeddingModels } from "@omniroute/open-sse/config/embeddingRegistry";
 import { getAllImageModels } from "@omniroute/open-sse/config/imageRegistry";
 import { getAllRerankModels } from "@omniroute/open-sse/config/rerankRegistry";
@@ -103,18 +104,18 @@ function normalizeCatalogPricing(
 ): Omit<CatalogPricing, "source" | "sample_size"> | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const toNumber = (entry: unknown) => {
-    if (typeof entry === "number" && Number.isFinite(entry) && entry >= 0) return entry;
+  const toPositiveNumber = (entry: unknown) => {
+    if (typeof entry === "number" && Number.isFinite(entry) && entry > 0) return entry;
     if (typeof entry === "string") {
       const parsed = Number(entry);
-      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
     }
     return null;
   };
-  const input = toNumber(record.input ?? record.prompt);
-  const output = toNumber(record.output ?? record.completion);
+  const input = toPositiveNumber(record.input ?? record.prompt);
+  const output = toPositiveNumber(record.output ?? record.completion ?? record.reasoning);
   if (input === null && output === null) return null;
-  const normalizedInput = input ?? output ?? ESTIMATED_COMBO_PRICING.input;
+  const normalizedInput = input ?? ESTIMATED_COMBO_PRICING.input;
   const normalizedOutput = output ?? input ?? ESTIMATED_COMBO_PRICING.output;
   return {
     input: normalizedInput,
@@ -125,24 +126,121 @@ function normalizeCatalogPricing(
   };
 }
 
-function averageCatalogPricing(
-  prices: Array<Omit<CatalogPricing, "source" | "sample_size"> | null>,
+type CatalogPricingRate = Omit<CatalogPricing, "source" | "sample_size">;
+
+type ComboUsagePricingRow = {
+  provider: string | null;
+  model: string | null;
+  requested_model: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+};
+
+function knownCatalogPrices(prices: Array<CatalogPricingRate | null>): CatalogPricingRate[] {
+  return prices.filter((price): price is CatalogPricingRate => price !== null);
+}
+
+function maxCatalogPricing(
+  prices: Array<CatalogPricingRate | null>,
   source: string
 ): CatalogPricing {
-  const known = prices.filter(
-    (price): price is Omit<CatalogPricing, "source" | "sample_size"> => price !== null
-  );
+  const known = knownCatalogPrices(prices);
   if (known.length === 0) return ESTIMATED_COMBO_PRICING;
-  const avg = (key: "input" | "output" | "prompt" | "completion") =>
-    Number((known.reduce((sum, price) => sum + price[key], 0) / known.length).toFixed(6));
+  const max = (key: "input" | "output" | "prompt" | "completion") =>
+    Number(Math.max(...known.map((price) => price[key])).toFixed(6));
   return {
-    input: avg("input"),
-    output: avg("output"),
-    prompt: avg("prompt"),
-    completion: avg("completion"),
+    input: max("input"),
+    output: max("output"),
+    prompt: max("prompt"),
+    completion: max("completion"),
     unit: "per_1m_tokens",
     source,
     sample_size: known.length,
+  };
+}
+
+function splitProviderModel(value: string | null | undefined) {
+  if (!value || !value.includes("/")) return null;
+  const [providerId, ...modelParts] = value.split("/");
+  const modelId = modelParts.join("/");
+  if (!providerId || !modelId) return null;
+  return { providerId, modelId };
+}
+
+function resolveUsageProviderModel(row: ComboUsagePricingRow) {
+  if (row.provider && row.model) return { providerId: row.provider, modelId: row.model };
+  return splitProviderModel(row.requested_model);
+}
+
+async function getHistoricalCatalogPricing(
+  comboName: string | undefined,
+  source: string
+): Promise<CatalogPricing | null> {
+  if (!comboName) return null;
+  let rows: ComboUsagePricingRow[] = [];
+  try {
+    rows = getDbInstance()
+      .prepare(
+        `SELECT provider, model, requested_model, tokens_in, tokens_out
+           FROM call_logs
+          WHERE combo_name = ?
+            AND status >= 200 AND status < 300
+            AND (COALESCE(tokens_in, 0) > 0 OR COALESCE(tokens_out, 0) > 0)
+          ORDER BY timestamp DESC
+          LIMIT 1000`
+      )
+      .all(comboName) as ComboUsagePricingRow[];
+  } catch {
+    return null;
+  }
+
+  if (rows.length === 0) return null;
+
+  const samples: Array<{
+    pricing: CatalogPricingRate;
+    tokensIn: number;
+    tokensOut: number;
+  }> = [];
+
+  for (const row of rows) {
+    const resolved = resolveUsageProviderModel(row);
+    if (!resolved) continue;
+    const pricing = normalizeCatalogPricing(
+      await getPricingForModel(resolved.providerId, resolved.modelId)
+    );
+    if (!pricing) continue;
+    samples.push({
+      pricing,
+      tokensIn: Math.max(0, Number(row.tokens_in || 0)),
+      tokensOut: Math.max(0, Number(row.tokens_out || 0)),
+    });
+  }
+
+  if (samples.length === 0) return null;
+
+  const average = (key: "input" | "output" | "prompt" | "completion") =>
+    samples.reduce((sum, sample) => sum + sample.pricing[key], 0) / samples.length;
+  const weighted = (
+    key: "input" | "prompt" | "output" | "completion",
+    tokenKey: "tokensIn" | "tokensOut"
+  ) => {
+    const totalTokens = samples.reduce((sum, sample) => sum + sample[tokenKey], 0);
+    if (totalTokens <= 0) return average(key);
+    return (
+      samples.reduce((sum, sample) => sum + sample.pricing[key] * sample[tokenKey], 0) / totalTokens
+    );
+  };
+
+  const input = Number(weighted("input", "tokensIn").toFixed(6));
+  const output = Number(weighted("output", "tokensOut").toFixed(6));
+  return {
+    input,
+    output,
+    prompt: Number(weighted("prompt", "tokensIn").toFixed(6)),
+    completion: Number(weighted("completion", "tokensOut").toFixed(6)),
+    unit: "per_1m_tokens",
+    source,
+    sample_size: samples.length,
   };
 }
 
@@ -681,8 +779,15 @@ export async function getUnifiedModelsResponse(
 
     const buildPricingForTargets = async (
       targets: ComboCatalogTarget[],
-      source: string
+      source: string,
+      usageComboName?: string
     ): Promise<CatalogPricing> => {
+      const historical = await getHistoricalCatalogPricing(
+        usageComboName,
+        `${source}_historical_average`
+      );
+      if (historical) return historical;
+
       const prices = await Promise.all(
         targets.map(async (target) => {
           const targetModel = getComboTargetModelId(target);
@@ -696,7 +801,7 @@ export async function getUnifiedModelsResponse(
           }
         })
       );
-      return averageCatalogPricing(prices, source);
+      return maxCatalogPricing(prices, `${source}_max_no_stats`);
     };
 
     const buildComboCatalogMetadata = async (
@@ -713,7 +818,7 @@ export async function getUnifiedModelsResponse(
         return { ...baseMetadata, ...catalogPriceFields(ESTIMATED_COMBO_PRICING) };
       }
 
-      const pricing = await buildPricingForTargets(targets, "combo_target_average");
+      const pricing = await buildPricingForTargets(targets, "combo_target", combo.name);
       const targetMetadata = targets.map((target) => getComboTargetCatalogMetadata(target));
 
       const knownMetadata = targetMetadata.filter(
@@ -822,7 +927,7 @@ export async function getUnifiedModelsResponse(
           modelStr: model.model,
           provider: model.providerId,
         }));
-        const pricing = await buildPricingForTargets(virtualTargets, "auto_target_average");
+        const pricing = await buildPricingForTargets(virtualTargets, "auto_target", autoModelId);
         const contextLength = virtualCombo.advertisedContextLength || 128000;
         const maxOutputTokens = virtualCombo.advertisedMaxOutputTokens || 8192;
         models.push({
