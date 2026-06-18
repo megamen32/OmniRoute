@@ -718,10 +718,6 @@ export async function getUnifiedModelsResponse(
       try {
         const suffix = autoModelId.replace(/^auto\/?/, "");
         const virtualCombo = await createBuiltinAutoCombo(autoModelId, suffix);
-        const virtualTargets = (virtualCombo.models || []).map((model) => ({
-          modelStr: model.model,
-          provider: model.providerId,
-        }));
         const contextLength = virtualCombo.advertisedContextLength || 128000;
         const maxOutputTokens = virtualCombo.advertisedMaxOutputTokens || 8192;
         models.push({
