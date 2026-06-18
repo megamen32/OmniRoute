@@ -365,3 +365,297 @@ test("404 response is cached for 5 minutes to avoid hammering", async () => {
   await fetchOpencodeQuota(connectionId, { apiKey: "sk-test-key" });
   assert.equal(callCount, callsAfterSecond + 1);
 });
+
+// ─── Cookie-auth dashboard scrape (path #1) ──────────────────────────────────
+
+test("fetchOpencodeQuota scrapes the OpenCode Go dashboard when authCookie + workspaceId are configured", async () => {
+  const connectionId = `oc-dashboard-${Date.now()}`;
+  const calls: { url: string; init: RequestInit }[] = [];
+
+  // Simulate a SolidJS hydration output with `monthlyUsage` first.
+  const html = `
+    <html><body>
+    <script>monthlyUsage:$R[1]={usagePercent:42,resetInSec:86400,label:"Monthly"}</script>
+    </body></html>
+  `;
+
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: url as string, init: init as RequestInit });
+    return new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+  };
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    apiKey: "sk-test-key", // also set to verify it's NOT used when cookie is configured
+    providerSpecificData: {
+      workspaceId: "wrk_test_workspace",
+      authCookie: "Fe26.2**testcookie",
+    },
+  });
+
+  assert.ok(quota !== null, "should return a quota object");
+  assert.equal(calls.length, 1, "should hit the network exactly once");
+  assert.ok(
+    calls[0].url.includes("opencode.ai/workspace/wrk_test_workspace/go"),
+    `expected dashboard URL, got ${calls[0].url}`
+  );
+  const headers = (calls[0].init.headers ?? {}) as Record<string, string>;
+  assert.equal(headers["Cookie"], "auth=Fe26.2**testcookie", "should send the auth cookie");
+  assert.ok(
+    !("Authorization" in headers),
+    "should NOT send Bearer auth on the dashboard path (cookie-only)"
+  );
+
+  // 42% → 0.42 fraction
+  assert.ok(
+    Math.abs(quota!.percentUsed - 0.42) < 0.001,
+    `percentUsed should mirror 42% worst window, got ${quota!.percentUsed}`
+  );
+  assert.ok(quota!.windows?.["window_5h"], "should surface a 5h window from the scrape");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota scrapes correctly when resetInSec comes first in the SSR record", async () => {
+  const connectionId = `oc-dash-order-${Date.now()}`;
+
+  // Field order swapped — the parser must still extract both fields.
+  const html = `
+    <script>
+    weeklyUsage:$R[0]={resetInSec:259200,usagePercent:30}
+    </script>
+  `;
+
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie-value",
+    },
+  });
+
+  assert.ok(quota !== null, "should still parse a valid quota when field order is swapped");
+  // 30% is the only window, so worst-case is 0.30
+  assert.ok(
+    Math.abs(quota!.percentUsed - 0.3) < 0.001,
+    `percentUsed should be 0.30, got ${quota!.percentUsed}`
+  );
+  // resetInSec 259200 → ~3 days from now
+  const resetAtIso = quota!.resetAt;
+  assert.ok(typeof resetAtIso === "string", "resetAt should be an ISO string");
+  const resetAtMs = new Date(resetAtIso as string).getTime();
+  const expectedMs = Date.now() + 259_200_000;
+  // Allow a 5s tolerance for the test running across the boundary.
+  assert.ok(
+    Math.abs(resetAtMs - expectedMs) < 5_000,
+    `resetAt should be ~3 days from now (delta=${Math.abs(resetAtMs - expectedMs)}ms)`
+  );
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota picks the worst window when multiple are present in the SSR output", async () => {
+  const connectionId = `oc-dash-multi-${Date.now()}`;
+
+  const html = `
+    <script>
+    monthlyUsage:$R[0]={usagePercent:10,resetInSec:86400}
+    weeklyUsage:$R[1]={usagePercent:80,resetInSec:259200}
+    hourlyUsage:$R[2]={usagePercent:55,resetInSec:18000}
+    </script>
+  `;
+
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie-value",
+    },
+  });
+
+  assert.ok(quota !== null, "should return a quota object");
+  // weekly at 80% is the worst
+  assert.ok(
+    Math.abs(quota!.percentUsed - 0.8) < 0.001,
+    `percentUsed should be 0.80 (worst window), got ${quota!.percentUsed}`
+  );
+  // 259200 seconds → ~3 days
+  const resetAtMs = new Date(quota!.resetAt as string).getTime();
+  const expectedMs = Date.now() + 259_200_000;
+  assert.ok(
+    Math.abs(resetAtMs - expectedMs) < 5_000,
+    `resetAt should be from the worst window (weekly, ~3d)`
+  );
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota returns null when dashboard HTML has no usage records", async () => {
+  const connectionId = `oc-dash-empty-${Date.now()}`;
+
+  globalThis.fetch = async () =>
+    new Response("<html><body>No usage data</body></html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie-value",
+    },
+  });
+
+  assert.equal(quota, null, "should fail-open when no usage records are in the HTML");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota returns null on dashboard 401 (expired cookie) without falling through to API key", async () => {
+  const connectionId = `oc-dash-401-${Date.now()}`;
+  let callCount = 0;
+
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    return new Response("Unauthorized", { status: 401 });
+  }) as typeof fetch;
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    apiKey: "sk-test-key",
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "expired-cookie",
+    },
+  });
+
+  assert.equal(quota, null, "expired cookie should fail-open");
+  assert.equal(callCount, 1, "should NOT fall through to the API-key endpoint when cookie is set");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota does not use cookie path when only one of (workspaceId, authCookie) is set", async () => {
+  const connectionId = `oc-dash-partial-${Date.now()}`;
+
+  // workspaceId present but authCookie missing → should fall through to API-key path
+  // which will 404 (the standard fallback behavior). We're verifying it does NOT
+  // attempt the dashboard scrape with an empty cookie.
+  globalThis.fetch = (async () => new Response("Not Found", { status: 404 })) as typeof fetch;
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    apiKey: "sk-test-key",
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      // authCookie deliberately missing
+    },
+  });
+
+  assert.equal(quota, null, "partial cookie config should fall through to API-key path");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota does not use cookie path when authCookie is empty string", async () => {
+  const connectionId = `oc-dash-empty-cookie-${Date.now()}`;
+
+  globalThis.fetch = (async () => new Response("Not Found", { status: 404 })) as typeof fetch;
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    apiKey: "sk-test-key",
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "   ", // whitespace-only — should be treated as missing
+    },
+  });
+
+  assert.equal(quota, null, "empty cookie should fall through to API-key path");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota caches successful dashboard scrapes (no second fetch on retry)", async () => {
+  const connectionId = `oc-dash-cache-${Date.now()}`;
+  let callCount = 0;
+
+  const html = `<script>monthlyUsage:$R[1]={usagePercent:25,resetInSec:86400}</script>`;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    return new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+
+  const first = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie-value",
+    },
+  });
+  const second = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie-value",
+    },
+  });
+
+  assert.equal(callCount, 1, "should only hit the network once across two calls");
+  assert.deepEqual(first, second, "cached result should be identical");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota URL-encodes the workspaceId in the dashboard path", async () => {
+  const connectionId = `oc-dash-encode-${Date.now()}`;
+  const calls: { url: string }[] = [];
+
+  globalThis.fetch = async (url) => {
+    calls.push({ url: url as string });
+    return new Response(`<script>monthlyUsage:$R[1]={usagePercent:10,resetInSec:60}</script>`, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  };
+
+  await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      // Contains characters that would be valid in a workspace ID but should
+      // be percent-encoded in the URL (e.g., forward-slashes, dots).
+      workspaceId: "wrk/test.id with space",
+      authCookie: "cookie",
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.ok(
+    calls[0].url.includes("wrk%2Ftest.id%20with%20space"),
+    `workspaceId should be URL-encoded, got ${calls[0].url}`
+  );
+  assert.ok(
+    !calls[0].url.includes("wrk/test.id with space"),
+    "raw workspaceId should not appear unencoded in the URL"
+  );
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota sets limitReached when dashboard usage is 100%", async () => {
+  const connectionId = `oc-dash-full-${Date.now()}`;
+
+  const html = `<script>monthlyUsage:$R[1]={usagePercent:100,resetInSec:86400}</script>`;
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie",
+    },
+  });
+
+  assert.ok(quota !== null);
+  assert.equal(quota!.limitReached, true, "limitReached should be true at 100%");
+  assert.ok(Math.abs(quota!.percentUsed - 1.0) < 0.001, "percentUsed should be 1.0");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});

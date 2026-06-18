@@ -930,119 +930,76 @@ async function getGlmUsage(apiKey: string, providerSpecificData?: Record<string,
   return { plan, quotas: orderGlmQuotas(quotas) };
 }
 
-async function getOpenCodeGoUsage(apiKey: string) {
-  const token = normalizeOpenCodeGoQuotaToken(apiKey);
-
-  if (!token) {
-    return { message: "API key not available. Add an OpenCode Go API key to view usage." };
+async function getOpenCodeGoUsage(
+  connectionId: string,
+  apiKey: string,
+  providerSpecificData?: JsonRecord
+) {
+  if (!apiKey) {
+    return { message: "OpenCode Go API key not available. Add a key to view usage." };
   }
 
-  const res = await fetch(OPENCODE_GO_QUOTA_URL, {
-    headers: {
-      Authorization: token,
-      "Accept-Language": "en-US,en",
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-  });
+  try {
+    const quota = (await fetchOpencodeQuota(connectionId, {
+      apiKey,
+      providerSpecificData,
+    })) as OpencodeTripleWindowQuota | null;
 
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
+    if (!quota) {
       return {
         message:
-          "OpenCode Go does not expose a public quota API. Chat requests still work. " +
-          "Set OMNIROUTE_OPENCODE_GO_QUOTA_URL to a working endpoint, or follow " +
-          "https://github.com/anomalyco/opencode/issues/16017 for upstream status.",
+          "OpenCode Go connected but unable to fetch quota data. Configure workspaceId + authCookie via provider-specific data or env vars.",
       };
     }
-    return {
-      message:
-        `OpenCode Go quota API error (${res.status}). ` +
-        "Set OMNIROUTE_OPENCODE_GO_QUOTA_URL to a working endpoint, or follow " +
-        "https://github.com/anomalyco/opencode/issues/16017 for upstream status.",
+
+    const { window5h, windowWeekly, windowMonthly, limitReached } = quota;
+
+    const quotas: Record<string, UsageQuota> = {};
+
+    // $12 / 5-hour rolling window
+    quotas["window_5h"] = {
+      used: window5h.percentUsed * 12,
+      total: 12,
+      remaining: (1 - window5h.percentUsed) * 12,
+      remainingPercentage: (1 - window5h.percentUsed) * 100,
+      resetAt: window5h.resetAt,
+      unlimited: false,
+      displayName: "$12 / 5-hour",
+      currency: "USD",
     };
-  }
 
-  let json: unknown;
-  try {
-    json = await res.json();
-  } catch {
-    return { message: "OpenCode Go quota response parsing failed." };
-  }
-
-  const code = toNumber((json as Record<string, unknown>).code, 200);
-  if (code === 401 || code === 403 || (json as Record<string, unknown>).success === false) {
-    return {
-      message:
-        "OpenCode Go does not expose a public quota API. Chat requests still work. " +
-        "Set OMNIROUTE_OPENCODE_GO_QUOTA_URL to a working endpoint, or follow " +
-        "https://github.com/anomalyco/opencode/issues/16017 for upstream status.",
+    // $30 / weekly window
+    quotas["window_weekly"] = {
+      used: windowWeekly.percentUsed * 30,
+      total: 30,
+      remaining: (1 - windowWeekly.percentUsed) * 30,
+      remainingPercentage: (1 - windowWeekly.percentUsed) * 100,
+      resetAt: windowWeekly.resetAt,
+      unlimited: false,
+      displayName: "$30 / week",
+      currency: "USD",
     };
+
+    // $60 / monthly window
+    quotas["window_monthly"] = {
+      used: windowMonthly.percentUsed * 60,
+      total: 60,
+      remaining: (1 - windowMonthly.percentUsed) * 60,
+      remainingPercentage: (1 - windowMonthly.percentUsed) * 100,
+      resetAt: windowMonthly.resetAt,
+      unlimited: false,
+      displayName: "$60 / month",
+      currency: "USD",
+    };
+
+    return {
+      plan: "OpenCode Go",
+      quotas,
+      limitReached,
+    };
+  } catch (error) {
+    return { message: `OpenCode Go error: ${sanitizeErrorMessage(error)}` };
   }
-
-  const data = toRecord((json as Record<string, unknown>).data);
-  const limits: unknown[] = Array.isArray(data.limits) ? data.limits : [];
-  const quotas: Record<string, UsageQuota> = {};
-
-  for (const limit of limits) {
-    const src = toRecord(limit);
-    const type = String(src.type || "").toUpperCase();
-    const resetAt = parseResetTime(src.nextResetTime);
-
-    if (type === "TOKENS_LIMIT" || type === "TOKEN_LIMIT") {
-      const quotaName = getOpenCodeGoTokenQuotaName(src, quotas);
-
-      quotas[quotaName] = buildOpenCodeGoDollarQuota(
-        quotaName,
-        src.percentage,
-        resetAt,
-        undefined,
-        Array.isArray(src.models)
-          ? (src.models as unknown[]).map((model) => {
-              const modelInfo = toRecord(model);
-              return {
-                name: String(modelInfo.model || modelInfo.modelCode || "usage"),
-                used: toNumber(modelInfo.percentage, 0),
-              };
-            })
-          : undefined
-      );
-      continue;
-    }
-
-    if (type === "TIME_LIMIT" || type === "TIME_USAGE_LIMIT") {
-      quotas.mcp_monthly = buildOpenCodeGoDollarQuota(
-        "mcp_monthly",
-        src.percentage,
-        resetAt,
-        src.currentValue,
-        Array.isArray(src.usageDetails)
-          ? src.usageDetails.map((item) => {
-              const detail = toRecord(item);
-              return {
-                name: String(detail.modelCode || detail.name || "usage"),
-                used: toNumber(detail.usage, 0),
-              };
-            })
-          : undefined
-      );
-    }
-  }
-
-  const levelRaw =
-    typeof data.planName === "string"
-      ? data.planName
-      : typeof data.level === "string"
-        ? data.level
-        : "";
-  const planLabel = toTitleCase(levelRaw.replace(/\s*plan$/i, ""));
-  const plan = planLabel
-    ? /^opencode\s+go\b/i.test(planLabel)
-      ? planLabel
-      : `OpenCode Go ${planLabel}`
-    : null;
-
-  return { plan, quotas: orderOpenCodeGoQuotas(quotas) };
 }
 
 /**
@@ -1550,7 +1507,7 @@ export async function getUsageForProvider(
         ...(provider === "glm-cn" ? { apiRegion: "china" } : {}),
       });
     case "opencode-go":
-      return await getOpenCodeGoUsage(apiKey || "");
+      return await getOpenCodeGoUsage(id || "", apiKey || "", providerSpecificData);
     case "minimax":
     case "minimax-cn":
       return await getMiniMaxUsage(apiKey || "", provider);
