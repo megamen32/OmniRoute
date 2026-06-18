@@ -4,6 +4,20 @@ import assert from "node:assert/strict";
 const usage = await import("../../open-sse/services/usage.ts");
 const { USAGE_SUPPORTED_PROVIDERS } = await import("../../src/shared/constants/providers.ts");
 
+const originalDisableConfigFile = process.env.OPENCODE_GO_DISABLE_CONFIG_FILE;
+
+test.beforeEach(() => {
+  process.env.OPENCODE_GO_DISABLE_CONFIG_FILE = "1";
+});
+
+test.afterEach(() => {
+  if (originalDisableConfigFile === undefined) {
+    delete process.env.OPENCODE_GO_DISABLE_CONFIG_FILE;
+  } else {
+    process.env.OPENCODE_GO_DISABLE_CONFIG_FILE = originalDisableConfigFile;
+  }
+});
+
 test("USAGE_SUPPORTED_PROVIDERS includes opencode-go", () => {
   assert.ok(
     (USAGE_SUPPORTED_PROVIDERS as string[]).includes("opencode-go"),

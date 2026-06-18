@@ -16,9 +16,19 @@ import {
 import { clearSessions, touchSession } from "../../open-sse/services/sessionManager.ts";
 
 const originalFetch = globalThis.fetch;
+const originalDisableConfigFile = process.env.OPENCODE_GO_DISABLE_CONFIG_FILE;
+
+test.beforeEach(() => {
+  process.env.OPENCODE_GO_DISABLE_CONFIG_FILE = "1";
+});
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
+  if (originalDisableConfigFile === undefined) {
+    delete process.env.OPENCODE_GO_DISABLE_CONFIG_FILE;
+  } else {
+    process.env.OPENCODE_GO_DISABLE_CONFIG_FILE = originalDisableConfigFile;
+  }
   clearQuotaMonitors();
   clearSessions();
 });
