@@ -601,7 +601,7 @@ export async function getUnifiedModelsResponse(
       };
     };
 
-    const buildComboCatalogMetadata = async (
+    const buildComboCatalogMetadata = (
       combo: Parameters<typeof resolveNestedComboTargets>[0],
       allCombos: Parameters<typeof resolveNestedComboTargets>[1]
     ) => {
@@ -696,7 +696,7 @@ export async function getUnifiedModelsResponse(
         continue;
       }
 
-      const comboMetadata = await buildComboCatalogMetadata(combo, combos);
+      const comboMetadata = buildComboCatalogMetadata(combo, combos);
 
       const comboModel = {
         id: combo.name,
