@@ -7,7 +7,9 @@ import {
   getSettings,
   getProviderNodes,
   getModelIsHidden,
+  getPricingForModel,
 } from "@/lib/localDb";
+import { getDbInstance } from "@/lib/db/core";
 import { getAllEmbeddingModels } from "@omniroute/open-sse/config/embeddingRegistry";
 import { getAllImageModels } from "@omniroute/open-sse/config/imageRegistry";
 import { getAllRerankModels } from "@omniroute/open-sse/config/rerankRegistry";
@@ -75,6 +77,295 @@ type ComboCatalogTarget = {
   modelStr?: string;
   provider?: string | null;
 };
+
+type CatalogPricingRate = {
+  input: number;
+  output: number;
+  prompt: number;
+  completion: number;
+};
+
+type CatalogPricingBand = CatalogPricingRate & {
+  unit: "per_1m_tokens";
+};
+
+type CatalogPricing = CatalogPricingBand & {
+  source: string;
+  sample_size?: number;
+  history_sample_size?: number;
+  target_sample_size?: number;
+  history_weight?: number;
+  confidence?: "historical" | "blended" | "target_p90" | "estimated";
+  p75?: CatalogPricingBand;
+  p90?: CatalogPricingBand;
+  max?: CatalogPricingBand;
+};
+
+const ESTIMATED_COMBO_PRICING: CatalogPricing = {
+  // Fallback when no target has synced pricing. Values are intentionally
+  // conservative display estimates per 1M tokens, not billing logic.
+  input: 0.1,
+  output: 0.3,
+  prompt: 0.1,
+  completion: 0.3,
+  unit: "per_1m_tokens",
+  source: "omniroute_estimate",
+};
+
+function normalizeCatalogPricing(value: unknown): CatalogPricingRate | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const toPositiveNumber = (entry: unknown) => {
+    if (typeof entry === "number" && Number.isFinite(entry) && entry > 0) return entry;
+    if (typeof entry === "string") {
+      const parsed = Number(entry);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  };
+  const input = toPositiveNumber(record.input ?? record.prompt);
+  const output = toPositiveNumber(record.output ?? record.completion ?? record.reasoning);
+  if (input === null && output === null) return null;
+  const normalizedInput = input ?? ESTIMATED_COMBO_PRICING.input;
+  const normalizedOutput = output ?? input ?? ESTIMATED_COMBO_PRICING.output;
+  return {
+    input: normalizedInput,
+    output: normalizedOutput,
+    prompt: normalizedInput,
+    completion: normalizedOutput,
+    unit: "per_1m_tokens",
+  };
+}
+
+const HISTORY_FULL_WEIGHT_SAMPLE_SIZE = 30;
+const MIN_HISTORY_WEIGHT = 0.2;
+const TARGET_FALLBACK_PERCENTILE = 0.9;
+
+type TargetPricingStats = {
+  target_sample_size: number;
+  p75?: CatalogPricingBand;
+  p90?: CatalogPricingBand;
+  max?: CatalogPricingBand;
+};
+
+function knownCatalogPrices(prices: Array<CatalogPricingRate | null>): CatalogPricingRate[] {
+  return prices.filter((price): price is CatalogPricingRate => price !== null);
+}
+
+function roundCatalogPrice(value: number) {
+  return Number(value.toFixed(6));
+}
+
+function catalogRateToBand(rate: CatalogPricingRate): CatalogPricingBand {
+  return {
+    input: roundCatalogPrice(rate.input),
+    output: roundCatalogPrice(rate.output),
+    prompt: roundCatalogPrice(rate.prompt),
+    completion: roundCatalogPrice(rate.completion),
+    unit: "per_1m_tokens",
+  };
+}
+
+function percentile(values: number[], percentileValue: number) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(sorted.length * percentileValue) - 1)
+  );
+  return sorted[index];
+}
+
+function percentileCatalogRate(
+  prices: CatalogPricingRate[],
+  percentileValue: number
+): CatalogPricingRate {
+  const pick = (key: keyof CatalogPricingRate) =>
+    percentile(
+      prices.map((price) => price[key]),
+      percentileValue
+    );
+  return {
+    input: pick("input"),
+    output: pick("output"),
+    prompt: pick("prompt"),
+    completion: pick("completion"),
+  };
+}
+
+function targetPricingStats(prices: Array<CatalogPricingRate | null>): TargetPricingStats {
+  const known = knownCatalogPrices(prices);
+  if (known.length === 0) return { target_sample_size: 0 };
+  return {
+    target_sample_size: known.length,
+    p75: catalogRateToBand(percentileCatalogRate(known, 0.75)),
+    p90: catalogRateToBand(percentileCatalogRate(known, TARGET_FALLBACK_PERCENTILE)),
+    max: catalogRateToBand(percentileCatalogRate(known, 1)),
+  };
+}
+
+function buildCatalogPricing(
+  rate: CatalogPricingRate,
+  source: string,
+  metadata: Omit<CatalogPricing, keyof CatalogPricingBand | "source"> = {}
+): CatalogPricing {
+  return {
+    ...catalogRateToBand(rate),
+    source,
+    ...metadata,
+  };
+}
+
+function targetExpectedCatalogPricing(
+  prices: Array<CatalogPricingRate | null>,
+  source: string
+): CatalogPricing {
+  const known = knownCatalogPrices(prices);
+  if (known.length === 0) {
+    return {
+      ...ESTIMATED_COMBO_PRICING,
+      confidence: "estimated",
+    };
+  }
+  return buildCatalogPricing(percentileCatalogRate(known, TARGET_FALLBACK_PERCENTILE), source, {
+    sample_size: known.length,
+    target_sample_size: known.length,
+    confidence: "target_p90",
+  });
+}
+
+function withTargetPricingStats(
+  pricing: CatalogPricing,
+  prices: Array<CatalogPricingRate | null>
+): CatalogPricing {
+  const stats = targetPricingStats(prices);
+  return {
+    ...pricing,
+    target_sample_size: stats.target_sample_size,
+    ...(stats.p75 ? { p75: stats.p75 } : {}),
+    ...(stats.p90 ? { p90: stats.p90 } : {}),
+    ...(stats.max ? { max: stats.max } : {}),
+  };
+}
+
+function blendCatalogPricing(
+  historical: CatalogPricing,
+  fallback: CatalogPricing,
+  source: string
+): CatalogPricing {
+  const historySamples = historical.sample_size || 0;
+  const historyWeight = Math.min(
+    1,
+    Math.max(MIN_HISTORY_WEIGHT, historySamples / HISTORY_FULL_WEIGHT_SAMPLE_SIZE)
+  );
+  const blend = (key: keyof CatalogPricingRate) =>
+    roundCatalogPrice(historical[key] * historyWeight + fallback[key] * (1 - historyWeight));
+  return {
+    input: blend("input"),
+    output: blend("output"),
+    prompt: blend("prompt"),
+    completion: blend("completion"),
+    unit: "per_1m_tokens",
+    source,
+    sample_size: historySamples,
+    history_sample_size: historySamples,
+    history_weight: roundCatalogPrice(historyWeight),
+    confidence: historyWeight >= 1 ? "historical" : "blended",
+  };
+}
+
+function splitProviderModel(value: string | null | undefined) {
+  if (!value || !value.includes("/")) return null;
+  const [providerId, ...modelParts] = value.split("/");
+  const modelId = modelParts.join("/");
+  if (!providerId || !modelId) return null;
+  return { providerId, modelId };
+}
+
+function resolveUsageProviderModel(row: ComboUsagePricingRow) {
+  if (row.provider && row.model) return { providerId: row.provider, modelId: row.model };
+  return splitProviderModel(row.requested_model);
+}
+
+async function getHistoricalCatalogPricing(
+  comboName: string | undefined,
+  source: string
+): Promise<CatalogPricing | null> {
+  if (!comboName) return null;
+  let rows: ComboUsagePricingRow[] = [];
+  try {
+    rows = getDbInstance()
+      .prepare(
+        `SELECT provider, model, requested_model, tokens_in, tokens_out
+           FROM call_logs
+          WHERE combo_name = ?
+            AND status >= 200 AND status < 300
+            AND (COALESCE(tokens_in, 0) > 0 OR COALESCE(tokens_out, 0) > 0)
+          ORDER BY timestamp DESC
+          LIMIT 1000`
+      )
+      .all(comboName) as ComboUsagePricingRow[];
+  } catch {
+    return null;
+  }
+
+  if (rows.length === 0) return null;
+
+  const samples: Array<{
+    pricing: CatalogPricingRate;
+    tokensIn: number;
+    tokensOut: number;
+  }> = [];
+
+  for (const row of rows) {
+    const resolved = resolveUsageProviderModel(row);
+    if (!resolved) continue;
+    const pricing = normalizeCatalogPricing(
+      await getPricingForModel(resolved.providerId, resolved.modelId)
+    );
+    if (!pricing) continue;
+    samples.push({
+      pricing,
+      tokensIn: Math.max(0, Number(row.tokens_in || 0)),
+      tokensOut: Math.max(0, Number(row.tokens_out || 0)),
+    });
+  }
+
+  if (samples.length === 0) return null;
+
+  const average = (key: "input" | "output" | "prompt" | "completion") =>
+    samples.reduce((sum, sample) => sum + sample.pricing[key], 0) / samples.length;
+  const weighted = (
+    key: "input" | "prompt" | "output" | "completion",
+    tokenKey: "tokensIn" | "tokensOut"
+  ) => {
+    const totalTokens = samples.reduce((sum, sample) => sum + sample[tokenKey], 0);
+    if (totalTokens <= 0) return average(key);
+    return (
+      samples.reduce((sum, sample) => sum + sample.pricing[key] * sample[tokenKey], 0) / totalTokens
+    );
+  };
+
+  const input = Number(weighted("input", "tokensIn").toFixed(6));
+  const output = Number(weighted("output", "tokensOut").toFixed(6));
+  return {
+    input,
+    output,
+    prompt: Number(weighted("prompt", "tokensIn").toFixed(6)),
+    completion: Number(weighted("completion", "tokensOut").toFixed(6)),
+    unit: "per_1m_tokens",
+    source,
+    sample_size: samples.length,
+  };
+}
+
+function catalogPriceFields(pricing: CatalogPricing) {
+  return {
+    pricing,
+    input_price: pricing.input,
+    output_price: pricing.output,
+  };
+}
 
 function isPositiveFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -601,6 +892,39 @@ export async function getUnifiedModelsResponse(
       };
     };
 
+    const buildPricingForTargets = async (
+      targets: ComboCatalogTarget[],
+      source: string,
+      usageComboName?: string
+    ): Promise<CatalogPricing> => {
+      const prices = await Promise.all(
+        targets.map(async (target) => {
+          const targetModel = getComboTargetModelId(target);
+          if (!targetModel) return null;
+          try {
+            return normalizeCatalogPricing(
+              await getPricingForModel(targetModel.providerId, targetModel.modelId)
+            );
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      const targetFallback = targetExpectedCatalogPricing(prices, `${source}_p90_no_stats`);
+      const historical = await getHistoricalCatalogPricing(
+        usageComboName,
+        `${source}_historical_average`
+      );
+
+      if (!historical) return withTargetPricingStats(targetFallback, prices);
+      const pricing =
+        (historical.sample_size || 0) >= HISTORY_FULL_WEIGHT_SAMPLE_SIZE
+          ? { ...historical, confidence: "historical" as const }
+          : blendCatalogPricing(historical, targetFallback, `${source}_blended_historical_p90`);
+      return withTargetPricingStats(pricing, prices);
+    };
+
     const buildComboCatalogMetadata = async (
       combo: Parameters<typeof resolveNestedComboTargets>[0],
       allCombos: Parameters<typeof resolveNestedComboTargets>[1]
@@ -612,16 +936,17 @@ export async function getUnifiedModelsResponse(
       const baseMetadata = explicitContextLength ? { context_length: explicitContextLength } : {};
       const targets = resolveNestedComboTargets(combo, allCombos) as ComboCatalogTarget[];
       if (targets.length === 0) {
-        return baseMetadata;
+        return { ...baseMetadata, ...catalogPriceFields(ESTIMATED_COMBO_PRICING) };
       }
 
+      const pricing = await buildPricingForTargets(targets, "combo_target", combo.name);
       const targetMetadata = targets.map((target) => getComboTargetCatalogMetadata(target));
 
       const knownMetadata = targetMetadata.filter(
         (metadata): metadata is ComboTargetCatalogMetadata => metadata !== null
       );
       if (knownMetadata.length === 0) {
-        return baseMetadata;
+        return { ...baseMetadata, ...catalogPriceFields(pricing) };
       }
       const contextLength =
         explicitContextLength ??
@@ -670,6 +995,7 @@ export async function getUnifiedModelsResponse(
         ...(inputModalities.length > 0 ? { input_modalities: inputModalities } : {}),
         ...(outputModalities.length > 0 ? { output_modalities: outputModalities } : {}),
         ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
+        ...catalogPriceFields(pricing),
       };
     };
 
@@ -712,7 +1038,7 @@ export async function getUnifiedModelsResponse(
     }
 
     // Add built-in virtual auto-combos to /v1/models so OpenAI-compatible
-    // clients receive context metadata before the first request.
+    // clients receive context/pricing metadata before the first request.
     for (const autoModelId of Object.keys(AUTO_TEMPLATE_VARIANTS)) {
       if (models.some((model) => model.id === autoModelId)) continue;
       try {
@@ -722,6 +1048,7 @@ export async function getUnifiedModelsResponse(
           modelStr: model.model,
           provider: model.providerId,
         }));
+        const pricing = await buildPricingForTargets(virtualTargets, "auto_target", autoModelId);
         const contextLength = virtualCombo.advertisedContextLength || 128000;
         const maxOutputTokens = virtualCombo.advertisedMaxOutputTokens || 8192;
         models.push({
@@ -741,6 +1068,7 @@ export async function getUnifiedModelsResponse(
             thinking: true,
             temperature: true,
           },
+          ...catalogPriceFields(pricing),
         });
       } catch (err) {
         console.log(`[catalog] Could not materialize built-in auto model ${autoModelId}:`, err);
