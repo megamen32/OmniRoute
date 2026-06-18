@@ -7,6 +7,7 @@ import {
   getSettings,
   getProviderNodes,
   getModelIsHidden,
+  getPricingForModel,
 } from "@/lib/localDb";
 import { getAllEmbeddingModels } from "@omniroute/open-sse/config/embeddingRegistry";
 import { getAllImageModels } from "@omniroute/open-sse/config/imageRegistry";
@@ -18,6 +19,10 @@ import { getAllMusicModels } from "@omniroute/open-sse/config/musicRegistry";
 import { REGISTRY } from "@omniroute/open-sse/config/providerRegistry";
 import { CODEX_NATIVE_UNPREFIXED_MODELS } from "@omniroute/open-sse/services/model";
 import { resolveNestedComboTargets } from "@omniroute/open-sse/services/combo";
+import {
+  AUTO_TEMPLATE_VARIANTS,
+  createBuiltinAutoCombo,
+} from "@omniroute/open-sse/services/autoCombo/builtinCatalog";
 import { getAllSyncedAvailableModels, type SyncedAvailableModel } from "@/lib/db/models";
 import { getCompatibleFallbackModels } from "@/lib/providers/managedAvailableModels";
 import { getOpenRouterCatalog } from "@/lib/catalog/openrouterCatalog";
@@ -72,14 +77,82 @@ type ComboCatalogTarget = {
   provider?: string | null;
 };
 
-type ComboTargetCatalogMetadata = {
-  contextLength?: number;
-  maxInputTokens?: number;
-  maxOutputTokens?: number;
-  inputModalities?: string[];
-  outputModalities?: string[];
-  capabilities: Record<string, boolean>;
+type CatalogPricing = {
+  input: number;
+  output: number;
+  unit: "per_1m_tokens";
+  source: string;
+  sample_size?: number;
+  prompt: number;
+  completion: number;
 };
+
+const ESTIMATED_COMBO_PRICING: CatalogPricing = {
+  // Fallback when no target has synced pricing. Values are intentionally
+  // conservative display estimates per 1M tokens, not billing logic.
+  input: 0.1,
+  output: 0.3,
+  prompt: 0.1,
+  completion: 0.3,
+  unit: "per_1m_tokens",
+  source: "omniroute_estimate",
+};
+
+function normalizeCatalogPricing(
+  value: unknown
+): Omit<CatalogPricing, "source" | "sample_size"> | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const toNumber = (entry: unknown) => {
+    if (typeof entry === "number" && Number.isFinite(entry) && entry >= 0) return entry;
+    if (typeof entry === "string") {
+      const parsed = Number(entry);
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    }
+    return null;
+  };
+  const input = toNumber(record.input ?? record.prompt);
+  const output = toNumber(record.output ?? record.completion);
+  if (input === null && output === null) return null;
+  const normalizedInput = input ?? output ?? ESTIMATED_COMBO_PRICING.input;
+  const normalizedOutput = output ?? input ?? ESTIMATED_COMBO_PRICING.output;
+  return {
+    input: normalizedInput,
+    output: normalizedOutput,
+    prompt: normalizedInput,
+    completion: normalizedOutput,
+    unit: "per_1m_tokens",
+  };
+}
+
+function averageCatalogPricing(
+  prices: Array<Omit<CatalogPricing, "source" | "sample_size"> | null>,
+  source: string
+): CatalogPricing {
+  const known = prices.filter(
+    (price): price is Omit<CatalogPricing, "source" | "sample_size"> => price !== null
+  );
+  if (known.length === 0) return ESTIMATED_COMBO_PRICING;
+  const avg = (key: "input" | "output" | "prompt" | "completion") =>
+    Number((known.reduce((sum, price) => sum + price[key], 0) / known.length).toFixed(6));
+  return {
+    input: avg("input"),
+    output: avg("output"),
+    prompt: avg("prompt"),
+    completion: avg("completion"),
+    unit: "per_1m_tokens",
+    source,
+    sample_size: known.length,
+  };
+}
+
+function catalogPriceFields(pricing: CatalogPricing) {
+  return {
+    pricing,
+    input_price: pricing.input,
+    output_price: pricing.output,
+  };
+}
 
 function isPositiveFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -606,7 +679,27 @@ export async function getUnifiedModelsResponse(
       };
     };
 
-    const buildComboCatalogMetadata = (
+    const buildPricingForTargets = async (
+      targets: ComboCatalogTarget[],
+      source: string
+    ): Promise<CatalogPricing> => {
+      const prices = await Promise.all(
+        targets.map(async (target) => {
+          const targetModel = getComboTargetModelId(target);
+          if (!targetModel) return null;
+          try {
+            return normalizeCatalogPricing(
+              await getPricingForModel(targetModel.providerId, targetModel.modelId)
+            );
+          } catch {
+            return null;
+          }
+        })
+      );
+      return averageCatalogPricing(prices, source);
+    };
+
+    const buildComboCatalogMetadata = async (
       combo: Parameters<typeof resolveNestedComboTargets>[0],
       allCombos: Parameters<typeof resolveNestedComboTargets>[1]
     ) => {
@@ -616,14 +709,19 @@ export async function getUnifiedModelsResponse(
 
       const baseMetadata = explicitContextLength ? { context_length: explicitContextLength } : {};
       const targets = resolveNestedComboTargets(combo, allCombos) as ComboCatalogTarget[];
-      if (targets.length === 0) return baseMetadata;
+      if (targets.length === 0) {
+        return { ...baseMetadata, ...catalogPriceFields(ESTIMATED_COMBO_PRICING) };
+      }
 
+      const pricing = await buildPricingForTargets(targets, "combo_target_average");
       const targetMetadata = targets.map((target) => getComboTargetCatalogMetadata(target));
 
       const knownMetadata = targetMetadata.filter(
         (metadata): metadata is ComboTargetCatalogMetadata => metadata !== null
       );
-      if (knownMetadata.length === 0) return baseMetadata;
+      if (knownMetadata.length === 0) {
+        return { ...baseMetadata, ...catalogPriceFields(pricing) };
+      }
       const contextLength =
         explicitContextLength ??
         minKnownNumber(knownMetadata.map((metadata) => metadata.contextLength));
@@ -671,6 +769,7 @@ export async function getUnifiedModelsResponse(
         ...(inputModalities.length > 0 ? { input_modalities: inputModalities } : {}),
         ...(outputModalities.length > 0 ? { output_modalities: outputModalities } : {}),
         ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
+        ...catalogPriceFields(pricing),
       };
     };
 
@@ -683,23 +782,14 @@ export async function getUnifiedModelsResponse(
       if (combo.isActive === false || combo.isHidden === true) continue;
       if (typeof combo.name !== "string" || combo.name.length === 0) continue;
 
-      // Skip combos whose any underlying target model is hidden
-      const comboTargets = resolveNestedComboTargets(
-        combo as Parameters<typeof resolveNestedComboTargets>[0],
-        combos as Parameters<typeof resolveNestedComboTargets>[1]
-      ) as ComboCatalogTarget[];
-      if (
-        comboTargets.some((target) => {
-          const resolved = getComboTargetModelId(target);
-          return resolved ? getModelIsHidden(resolved.providerId, resolved.modelId) : false;
-        })
-      ) {
-        continue;
-      }
+      // Combo visibility is controlled by the combo itself. Do not hide a
+      // namespaced combo just because one of its raw target models is hidden
+      // from the public model catalog; hidden raw targets are often wrapped
+      // intentionally by combos such as combo/free-stack.
 
-      const comboMetadata = buildComboCatalogMetadata(combo, combos);
+      const comboMetadata = await buildComboCatalogMetadata(combo, combos);
 
-      models.push({
+      const comboModel = {
         id: combo.name,
         object: "model",
         created: timestamp,
@@ -708,7 +798,56 @@ export async function getUnifiedModelsResponse(
         root: combo.name,
         parent: null,
         ...comboMetadata,
-      });
+      };
+      models.push(comboModel);
+
+      const namespacedComboId = `combo/${combo.name}`;
+      if (!models.some((model) => model.id === namespacedComboId)) {
+        models.push({
+          ...comboModel,
+          id: namespacedComboId,
+          root: combo.name,
+          parent: combo.name,
+        });
+      }
+    }
+
+    // Add built-in virtual auto-combos to /v1/models so OpenAI-compatible
+    // clients receive context/pricing metadata before the first request.
+    for (const autoModelId of Object.keys(AUTO_TEMPLATE_VARIANTS)) {
+      if (models.some((model) => model.id === autoModelId)) continue;
+      try {
+        const suffix = autoModelId.replace(/^auto\/?/, "");
+        const virtualCombo = await createBuiltinAutoCombo(autoModelId, suffix);
+        const virtualTargets = (virtualCombo.models || []).map((model) => ({
+          modelStr: model.model,
+          provider: model.providerId,
+        }));
+        const pricing = await buildPricingForTargets(virtualTargets, "auto_target_average");
+        const contextLength = virtualCombo.advertisedContextLength || 128000;
+        const maxOutputTokens = virtualCombo.advertisedMaxOutputTokens || 8192;
+        models.push({
+          id: autoModelId,
+          object: "model",
+          created: timestamp,
+          owned_by: "auto",
+          permission: [],
+          root: autoModelId,
+          parent: null,
+          context_length: contextLength,
+          max_input_tokens: contextLength,
+          max_output_tokens: maxOutputTokens,
+          capabilities: {
+            tool_calling: true,
+            reasoning: true,
+            thinking: true,
+            temperature: true,
+          },
+          ...catalogPriceFields(pricing),
+        });
+      } catch (err) {
+        console.log(`[catalog] Could not materialize built-in auto model ${autoModelId}:`, err);
+      }
     }
 
     // Resolve synced available models (from auto-sync) — used to skip static

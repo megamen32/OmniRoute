@@ -174,6 +174,26 @@ export async function resolveModelOrError(
     }
   }
 
+  // "combo" is an explicit combo namespace for OpenAI-compatible clients.
+  // Example: OpenCode provider model `omniroute/combo/free-stack` reaches
+  // OmniRoute as `combo/free-stack`; route it to persisted combo `free-stack`
+  // while keeping the old bare `free-stack` model id working.
+  if (modelInfo.provider === "combo") {
+    const comboName = modelInfo.model || "";
+    const comboCandidates = [...new Set([comboName, modelStr].filter(Boolean))];
+    for (const candidate of comboCandidates) {
+      const combo = await getComboForModel(candidate);
+      if (combo) {
+        log.info("ROUTING", `"combo" provider → combo "${candidate}"`);
+        return { combo, provider: "combo", model: comboName };
+      }
+    }
+
+    const message = `Model '${modelStr}' is not a valid combo namespace model. Expected combo/<combo-name>.`;
+    log.warn("CHAT", message, { model: modelStr });
+    return { error: errorResponse(HTTP_STATUS.BAD_REQUEST, message) };
+  }
+
   // "auto" is a built-in virtual combo prefix, not a provider. parseModel("auto/fast")
   // splits it into provider="auto" model="fast", so resolve it before credential lookup.
   if (modelInfo.provider === "auto") {
