@@ -4,15 +4,15 @@ export type CaptureSource = "agent-bridge" | "custom-host" | "http-proxy" | "sys
 export type DetectedKind = "llm" | "app" | "unknown";
 
 export interface InterceptedRequest {
-  id: string;                            // uuid
+  id: string; // uuid
   source: CaptureSource;
-  agent?: import("../types").AgentId;    // only when source === "agent-bridge"
-  timestamp: string;                     // ISO 8601
+  agent?: import("../types").AgentId; // only when source === "agent-bridge"
+  timestamp: string; // ISO 8601
   method: string;
   host: string;
   path: string;
   requestHeaders: Record<string, string>;
-  requestBody: string | null;            // masked
+  requestBody: string | null; // masked
   requestSize: number;
   responseHeaders: Record<string, string>;
   responseBody: string | null;
@@ -21,14 +21,16 @@ export interface InterceptedRequest {
   proxyLatencyMs?: number;
   upstreamLatencyMs?: number;
   totalLatencyMs?: number;
-  error?: string;                        // sanitized
+  error?: string; // sanitized
   sourceModel?: string | null;
   mappedModel?: string | null;
   detectedKind?: DetectedKind;
-  contextKey?: string;                   // 12-hex SHA-256 of system prompt
+  contextKey?: string; // 12-hex SHA-256 of system prompt
   annotation?: string;
   sessionId?: string;
   note?: string;
+  pid?: number; // originating process id (Linux only)
+  processName?: string; // originating process name (Linux only)
 }
 
 export const InterceptedRequestSchema = z.object({
@@ -57,6 +59,8 @@ export const InterceptedRequestSchema = z.object({
   annotation: z.string().optional(),
   sessionId: z.string().uuid().optional(),
   note: z.string().optional(),
+  pid: z.number().int().nonnegative().optional(),
+  processName: z.string().optional(),
 });
 
 export type NormalizedBlock =

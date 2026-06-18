@@ -69,13 +69,25 @@ const IGNORE_FROM_CODE = new Set([
   "NEXT_DIST_DIR",
   "NEXT_PHASE",
   "NEXT_RUNTIME",
+  // Set/read by Next.js's own dev server (next-dev-server.js) when the turbopack
+  // bundler is active — framework-internal. The OmniRoute-facing knob is
+  // OMNIROUTE_USE_TURBOPACK (scripts/dev/run-next.mjs), which IS documented.
+  "TURBOPACK",
   "NODE_TEST_CONTEXT",
   "VITEST",
   // Instruction snippet shown to users (Traffic Inspector HttpProxySnippetCard) — not OmniRoute config.
   "NODE_TLS_REJECT_UNAUTHORIZED",
+  // Claude Code's own auth env var — read from the CLI environment to detect
+  // existing auth and written into the generated Claude Code settings (so the CLI
+  // points at OmniRoute). A downstream client-tool var, not an OmniRoute server
+  // input (src/shared/services/claudeCliConfig.ts, api/cli-tools/claude-settings).
+  "ANTHROPIC_AUTH_TOKEN",
   // CI providers (set by the runner).
   "GITHUB_BASE_REF",
   "GITHUB_BASE_SHA",
+  // CI passes BASE_REF=${{ github.base_ref }} to the OpenAPI breaking-change gate
+  // (scripts/check/check-openapi-breaking.mjs) — a build/check signal, not OmniRoute runtime config.
+  "BASE_REF",
   // PR body injected by GitHub Actions into the pr-evidence gate (github.event.pull_request.body);
   // a CI-only signal, never an OmniRoute runtime config (Phase 7.10).
   "PR_BODY",

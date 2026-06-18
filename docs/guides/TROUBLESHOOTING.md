@@ -18,19 +18,19 @@ Common problems and solutions for OmniRoute.
 
 **New to OmniRoute?** Start here — these solve 90% of problems:
 
-| I see this | What it means | What to do |
-|------------|--------------|------------|
-| "Can't connect" | OmniRoute isn't running | Run `omniroute` or `docker restart omniroute` |
-| "Invalid API key" | Your key is wrong or expired | Re-copy the key from the provider's website |
-| "Rate limit exceeded" | You're sending too many requests | Wait 1 minute, or use `model: "auto"` for automatic fallback |
-| "Quota exceeded" | You've used up your free/paid quota | Connect more providers, or use free providers (Kiro, Pollinations) |
-| "Slow responses" | Provider is busy or far away | Use `model: "auto/fast"` or connect a faster provider (Groq, Cerebras) |
-| "Wrong provider used" | `auto` picked a different provider | That's normal! `auto` picks the best one. Force a specific provider with `model: "openai/gpt-4o"` |
-| "502 Bad Gateway" | Provider is down | Wait and retry, or use `model: "auto"` to switch providers |
-| "401 Unauthorized" | Your credentials are wrong | Check your API key or re-authenticate with OAuth |
-| "429 Too Many Requests" | Rate limited | Wait 1 minute, or connect more providers |
+| I see this              | What it means                       | What to do                                                                                        |
+| ----------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| "Can't connect"         | OmniRoute isn't running             | Run `omniroute` or `docker restart omniroute`                                                     |
+| "Invalid API key"       | Your key is wrong or expired        | Re-copy the key from the provider's website                                                       |
+| "Rate limit exceeded"   | You're sending too many requests    | Wait 1 minute, or use `model: "auto"` for automatic fallback                                      |
+| "Quota exceeded"        | You've used up your free/paid quota | Connect more providers, or use free providers (Kiro, Pollinations)                                |
+| "Slow responses"        | Provider is busy or far away        | Use `model: "auto/fast"` or connect a faster provider (Groq, Cerebras)                            |
+| "Wrong provider used"   | `auto` picked a different provider  | That's normal! `auto` picks the best one. Force a specific provider with `model: "openai/gpt-4o"` |
+| "502 Bad Gateway"       | Provider is down                    | Wait and retry, or use `model: "auto"` to switch providers                                        |
+| "401 Unauthorized"      | Your credentials are wrong          | Check your API key or re-authenticate with OAuth                                                  |
+| "429 Too Many Requests" | Rate limited                        | Wait 1 minute, or connect more providers                                                          |
 
-**Still stuck?** See the [detailed troubleshooting](#detailed-troubleshooting) below, or ask on [Discord](https://discord.gg/hmexnhgE).
+**Still stuck?** See the [detailed troubleshooting](#detailed-troubleshooting) below, or ask on [Discord](https://discord.gg/EkzRkpzKYt).
 
 ---
 
@@ -129,6 +129,12 @@ omniroute
 **Cause:** On Node.js 22, the undici@8 dispatcher is incompatible with Node's built-in `fetch()` implementation.
 
 **Fix (v3.5.5+):** OmniRoute now uses undici's own `fetch()` function when a proxy dispatcher is active, ensuring consistent behavior. Update to v3.5.5+.
+
+### MITM proxy under WSL: desktop apps on the Windows host are not intercepted
+
+**Cause:** The MITM proxy and its CA certificate install into the environment where OmniRoute runs. Under WSL that environment is the Linux guest, while the AI desktop apps (Kiro, Trae, Copilot, Zed, …) run on the Windows host. The host apps do not trust the guest's certificate store and do not route through the guest's system proxy, so desktop interception does not engage there.
+
+**Recommendation:** Run OmniRoute natively on the same OS as the desktop apps you want to intercept (Windows for Windows apps; macOS/Linux likewise). Keeping OmniRoute inside WSL while targeting host apps requires manually trusting the generated CA certificate on the Windows host and pointing each host app's network/proxy settings at the WSL proxy endpoint — an unsupported, fragile setup.
 
 ---
 

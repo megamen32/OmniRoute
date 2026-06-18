@@ -29,6 +29,10 @@ import {
   PROVIDER_ID_TO_ALIAS,
 } from "@omniroute/open-sse/config/providerModels.ts";
 import type { AutoVariant } from "@omniroute/open-sse/services/autoCombo/autoPrefix.ts";
+import {
+  AUTO_TEMPLATE_VARIANTS,
+  VALID_AUTO_VARIANTS,
+} from "@omniroute/open-sse/services/autoCombo/builtinCatalog.ts";
 import * as log from "../utils/logger";
 import { checkAndRefreshToken } from "../services/tokenRefresh";
 import { createHookContext, runHooks, initPreRequestRegistry } from "@/lib/middleware/registry";
@@ -68,6 +72,7 @@ import { generateRequestId } from "../../shared/utils/requestId";
 import { logAuditEvent } from "../../lib/compliance/index";
 import { enforceApiKeyPolicy } from "../../shared/utils/apiKeyPolicy";
 import { cloneLogPayload } from "@/lib/logPayloads";
+import { handleInternalUsageCommand } from "@/lib/usage/internalUsageCommand";
 import {
   applyTaskAwareRouting,
   getTaskRoutingConfig,
@@ -241,6 +246,12 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
+  const internalUsageCommandResponse = await handleInternalUsageCommand(request, body);
+  if (internalUsageCommandResponse) {
+    recordTelemetry(telemetry);
+    return internalUsageCommandResponse;
+  }
+
   const isComboLiveTest = request.headers?.get?.("x-internal-test") === "combo-health-check";
 
   if (!modelStr) {
@@ -372,6 +383,15 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
   // entirely and generate a virtual auto-combo on-the-fly from connected providers.
   let autoVariant: AutoVariant | undefined;
   let isAutoRouting = resolvedModelStr === "auto" || resolvedModelStr.startsWith("auto/");
+  let recognizedBuiltInAuto = resolvedModelStr === "auto";
+  if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, resolvedModelStr)) {
+    recognizedBuiltInAuto = true;
+    autoVariant = AUTO_TEMPLATE_VARIANTS[resolvedModelStr];
+  } else if (resolvedModelStr.startsWith("auto/")) {
+    const suffix = resolvedModelStr.slice(5);
+    recognizedBuiltInAuto = VALID_AUTO_VARIANTS.has(suffix as AutoVariant);
+  }
+
   if (isAutoRouting) {
     // C2: Enforce autoRoutingEnabled setting.
     // Issue #2346: `getSettings` was never imported in this module; only
@@ -391,9 +411,15 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
         await import("@omniroute/open-sse/services/autoCombo/autoPrefix.ts");
       const parsed = parseAutoPrefix(resolvedModelStr);
       if (parsed.valid) {
-        autoVariant = parsed.variant;
+        if (!Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, resolvedModelStr)) {
+          autoVariant = parsed.variant;
+        }
         // C3: Apply autoRoutingDefaultVariant from settings when bare "auto" is used
-        if (autoVariant === undefined && settings?.autoRoutingDefaultVariant) {
+        if (
+          resolvedModelStr === "auto" &&
+          autoVariant === undefined &&
+          settings?.autoRoutingDefaultVariant
+        ) {
           autoVariant = settings.autoRoutingDefaultVariant as AutoVariant;
         }
         log.info(
@@ -426,8 +452,15 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     }
   }
 
-  // Auto-prefix short-circuit: if auto/ prefix was detected, replace combo with virtual one
+  // Auto-prefix short-circuit: if a recognized auto/ prefix was detected, replace combo with virtual one
   if (isAutoRouting && combo === null) {
+    if (!recognizedBuiltInAuto) {
+      return errorResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        `Model '${resolvedModelStr}' is not a valid combo or provider. Unknown built-in auto combo.`
+      );
+    }
+
     try {
       const { createVirtualAutoCombo } =
         await import("@omniroute/open-sse/services/autoCombo/virtualFactory.ts");

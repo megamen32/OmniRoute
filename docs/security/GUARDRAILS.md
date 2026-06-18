@@ -86,6 +86,14 @@ options:
 | Mode            | `INJECTION_GUARD_MODE` / `INPUT_SANITIZER_MODE` | `warn`  | `block`, `warn`, or `log`.              |
 | Block threshold | `blockThreshold` option                         | `high`  | Minimum severity required to block.     |
 
+**Mode precedence** (`getMode`): caller `options.mode` →
+`INJECTION_GUARD_MODE` **DB feature-flag override** (Dashboard → Settings →
+Feature Flags) → `INJECTION_GUARD_MODE` env → `INPUT_SANITIZER_MODE` env →
+`warn`. A dashboard override therefore wins over the env vars, so the Feature
+Flags UI controls the running guard live (no restart). The DB read is fail-safe:
+if it errors, the guard falls back to the env-based behavior, and when no
+override is set behavior is identical to env-only resolution.
+
 Detection sources:
 
 1. `sanitizeRequest()` from `@/shared/utils/inputSanitizer` (shared detector
@@ -204,13 +212,13 @@ Guardrails that throw are recorded with `error: <message>` and logged via
 
 Environment variables read by the built-in guardrails:
 
-| Variable                              | Used by                          | Effect                                                |
-| ------------------------------------- | -------------------------------- | ----------------------------------------------------- |
-| `INPUT_SANITIZER_ENABLED`             | `prompt-injection`               | Set `false` to disable detection entirely.            |
-| `INPUT_SANITIZER_MODE`                | `prompt-injection`, `pii-masker` | Shared mode: `warn`, `block`, `log`, or `redact`.     |
-| `INJECTION_GUARD_MODE`                | `prompt-injection`               | Legacy alias for `INPUT_SANITIZER_MODE`.              |
-| `PII_REDACTION_ENABLED`               | `pii-masker`                     | When `true` + mode `redact`, request PII is stripped. |
-| `PII_RESPONSE_SANITIZATION` / `_MODE` | `pii-masker` (downstream)        | Controls response-side masker behavior.               |
+| Variable                              | Used by                          | Effect                                                                                           |
+| ------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `INPUT_SANITIZER_ENABLED`             | `prompt-injection`               | Set `false` to disable detection entirely.                                                       |
+| `INPUT_SANITIZER_MODE`                | `prompt-injection`, `pii-masker` | Shared mode: `warn`, `block`, `log`, or `redact`.                                                |
+| `INJECTION_GUARD_MODE`                | `prompt-injection`               | Mode for the injection guard; also a DB feature flag that **overrides** the env vars (DB > ENV). |
+| `PII_REDACTION_ENABLED`               | `pii-masker`                     | When `true` + mode `redact`, request PII is stripped.                                            |
+| `PII_RESPONSE_SANITIZATION` / `_MODE` | `pii-masker` (downstream)        | Controls response-side masker behavior.                                                          |
 
 The Vision Bridge reads runtime config from the DB-backed settings store
 (`getSettings()`), not env vars: `visionBridgeEnabled`, `visionBridgeModel`,
@@ -274,11 +282,11 @@ O injection-guard (`createInjectionGuard` / `withInjectionGuard`) cobre todas as
 que aceitam prompt do usuário. Respeita `INJECTION_GUARD_MODE` (default `warn` = só loga;
 `block` = retorna HTTP 400 `SECURITY_001`).
 
-| Tipo | Rotas | Modo default |
-|---|---|---|
-| Texto (já existente) | `/v1/chat/completions`, `/v1/completions`, `/v1/relay/chat/completions` | warn |
-| Generativas | `/v1/messages`, `/v1/responses`, `/v1/images/generations`, `/v1/images/edits`, `/v1/videos/generations`, `/v1/music/generations`, `/v1/audio/speech` | warn |
-| Dados | `/v1/embeddings`, `/v1/rerank`, `/v1/search`, `/v1/moderations` | warn |
+| Tipo                 | Rotas                                                                                                                                                | Modo default |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Texto (já existente) | `/v1/chat/completions`, `/v1/completions`, `/v1/relay/chat/completions`                                                                              | warn         |
+| Generativas          | `/v1/messages`, `/v1/responses`, `/v1/images/generations`, `/v1/images/edits`, `/v1/videos/generations`, `/v1/music/generations`, `/v1/audio/speech` | warn         |
+| Dados                | `/v1/embeddings`, `/v1/rerank`, `/v1/search`, `/v1/moderations`                                                                                      | warn         |
 
 A extração de texto (`extractMessageContents`) cobre `messages`/`input`/`prompt`/`query`+`documents`/`instructions`/`system`.
 

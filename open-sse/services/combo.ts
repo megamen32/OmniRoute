@@ -828,6 +828,7 @@ const MAX_RR_COUNTERS = 500;
 const MAX_RESET_AWARE_CACHE = 200;
 
 const rrCounters = new Map<string, number>();
+const rrStickyTargets = new Map<string, { executionKey: string; successCount: number }>();
 
 const resetAwareConnectionCache = new Map<
   string,
@@ -847,6 +848,50 @@ function normalizeModelEntry(entry: unknown): { model: string; weight: number } 
     model: getComboStepTarget(entry) || "",
     weight: getComboStepWeight(entry),
   };
+}
+
+function clampStickyRoundRobinTargetLimit(value: unknown): number {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return 1;
+  return Math.min(Math.max(Math.floor(numericValue), 1), 1000);
+}
+
+function getStickyRoundRobinStartIndex(
+  comboName: string,
+  targets: ResolvedComboTarget[],
+  stickyLimit: number
+): { startIndex: number; counter: number } {
+  const sticky = rrStickyTargets.get(comboName);
+  const stickyIndex = sticky
+    ? targets.findIndex((target) => target.executionKey === sticky.executionKey)
+    : -1;
+  if (stickyLimit > 1 && sticky && stickyIndex >= 0 && sticky.successCount < stickyLimit) {
+    return { startIndex: stickyIndex, counter: rrCounters.get(comboName) || 0 };
+  }
+
+  const counter = rrCounters.get(comboName) || 0;
+  return { startIndex: counter % targets.length, counter };
+}
+
+function recordStickyRoundRobinSuccess(
+  comboName: string,
+  target: ResolvedComboTarget,
+  stickyLimit: number,
+  targets: ResolvedComboTarget[]
+): void {
+  const sticky = rrStickyTargets.get(comboName);
+  const successCount = sticky?.executionKey === target.executionKey ? sticky.successCount + 1 : 1;
+  if (successCount >= stickyLimit) {
+    const servedIndex = targets.findIndex((entry) => entry.executionKey === target.executionKey);
+    rrCounters.set(
+      comboName,
+      servedIndex >= 0 ? servedIndex + 1 : (rrCounters.get(comboName) || 0) + 1
+    );
+    rrStickyTargets.delete(comboName);
+    return;
+  }
+
+  rrStickyTargets.set(comboName, { executionKey: target.executionKey, successCount });
 }
 
 function getTargetProvider(modelStr: string, providerId?: string | null): string {
@@ -1578,7 +1623,13 @@ function getTargetCompatibilityFailures(
     failures.push("tools");
   }
 
-  if (requirements.requiresVision && capabilities.supportsVision === false) {
+  // For a request that carries an image, only route to a target whose vision
+  // support is *confirmed* (`=== true`). Treat `false` AND `null` (unknown) as
+  // incompatible: an unknown-capability model receiving the image is exactly how
+  // a text-only model (e.g. ministral) ended up answering "image not provided".
+  // The caller keeps all targets when none qualify, so combos with no
+  // confirmed-vision member still behave as before.
+  if (requirements.requiresVision && capabilities.supportsVision !== true) {
     failures.push("vision");
   }
 
@@ -1607,7 +1658,7 @@ function getTargetCompatibilityFailures(
   return failures;
 }
 
-function filterTargetsByRequestCompatibility(
+export function filterTargetsByRequestCompatibility(
   targets: ResolvedComboTarget[],
   body: Record<string, unknown>,
   log: ComboLogger,
@@ -2994,7 +3045,8 @@ export async function expandAutoComboCandidatePool(
     (combo?.config as Record<string, unknown> | undefined) ||
     {};
 
-  if (Array.isArray(localAutoConfig?.candidatePool)) return eligibleTargets;
+  if (Array.isArray(localAutoConfig?.candidatePool) && localAutoConfig.candidatePool.length > 0)
+    return eligibleTargets;
 
   try {
     const allConnections = await getProviderConnections({ isActive: true });
@@ -3188,13 +3240,16 @@ export async function handleComboChat({
       ...(target ?? {}),
       modelAbortSignal: timeoutController.signal,
     };
-    if (target?.modelAbortSignal) {
-      if (target.modelAbortSignal.aborted) {
+    const parentHedgeSignal = target?.modelAbortSignal ?? null;
+    let onParentHedgeAbort: (() => void) | null = null;
+    if (parentHedgeSignal) {
+      if (parentHedgeSignal.aborted) {
         timeoutController.abort(new Error("hedge-cancelled"));
       } else {
-        target.modelAbortSignal.addEventListener("abort", () => {
+        onParentHedgeAbort = () => {
           timeoutController.abort(new Error("hedge-cancelled"));
-        });
+        };
+        parentHedgeSignal.addEventListener("abort", onParentHedgeAbort, { once: true });
       }
     }
     try {
@@ -3212,6 +3267,12 @@ export async function handleComboChat({
       ]);
     } finally {
       clearTimeout(timeoutId);
+      // Detach our listener from the SHARED parent hedge signal. Without this, every target
+      // attempt left a listener on the long-lived parent signal for the whole request, so a
+      // request that tries many combo targets accumulated listeners on one signal.
+      if (parentHedgeSignal && onParentHedgeAbort) {
+        parentHedgeSignal.removeEventListener("abort", onParentHedgeAbort);
+      }
     }
   };
 
@@ -3562,7 +3623,13 @@ export async function handleComboChat({
     );
     const selectedTarget =
       orderedTargets.find((target) => target.executionKey === selectedExecutionKey) || null;
-    const rest = orderedTargets.filter((target) => target.executionKey !== selectedExecutionKey);
+    // #3959: shuffle the fallback remainder too. Previously `rest` kept fixed
+    // priority order, so after a failing deck pick the chain always fell through
+    // to the same top-priority model — a persistently-failing model was retried
+    // on essentially every request and fallback load never spread across peers.
+    const rest = fisherYatesShuffle(
+      orderedTargets.filter((target) => target.executionKey !== selectedExecutionKey)
+    );
     orderedTargets = [selectedTarget, ...rest].filter(
       (target): target is ResolvedComboTarget => target !== null
     );
@@ -4700,14 +4767,38 @@ async function handleRoundRobinCombo({
     log
   );
 
-  // Get and increment atomic counter
-  const counter = rrCounters.get(combo.name) || 0;
-  if (!rrCounters.has(combo.name) && rrCounters.size >= MAX_RR_COUNTERS) {
+  // Sticky batch size at the combo level. Reuses the global `stickyRoundRobinLimit`
+  // setting so a single knob controls sticky batching for both account fallback and
+  // combo targets. Values <= 1 preserve the historical one-request-per-target rotation.
+  const stickyLimit = clampStickyRoundRobinTargetLimit(
+    (settings as Record<string, unknown> | null)?.stickyRoundRobinLimit
+  );
+  const stickyRoundRobinEnabled = stickyLimit > 1;
+  if (
+    !rrCounters.has(combo.name) &&
+    !rrStickyTargets.has(combo.name) &&
+    rrCounters.size >= MAX_RR_COUNTERS
+  ) {
     const oldest = rrCounters.keys().next().value;
-    if (oldest !== undefined) rrCounters.delete(oldest);
+    if (oldest !== undefined) {
+      rrCounters.delete(oldest);
+      rrStickyTargets.delete(oldest);
+    }
   }
-  rrCounters.set(combo.name, counter + 1);
-  const startIndex = counter % modelCount;
+  // Ensure rrCounters has an entry for this combo so the eviction logic above
+  // applies to both maps even when sticky round-robin is enabled (in which
+  // case rrCounters isn't incremented per request).
+  if (!rrCounters.has(combo.name)) {
+    rrCounters.set(combo.name, 0);
+  }
+  const { startIndex, counter } = getStickyRoundRobinStartIndex(
+    combo.name,
+    filteredTargets,
+    stickyLimit
+  );
+  if (!stickyRoundRobinEnabled) {
+    rrCounters.set(combo.name, counter + 1);
+  }
 
   const clientRequestedStream = body?.stream === true;
   const startTime = Date.now();
@@ -4901,6 +4992,10 @@ async function handleRoundRobinCombo({
 
           if (provider && provider !== "unknown") {
             recordProviderSuccess(provider, target.connectionId ?? undefined);
+          }
+
+          if (stickyRoundRobinEnabled) {
+            recordStickyRoundRobinSuccess(combo.name, target, stickyLimit, filteredTargets);
           }
 
           if (provider) {

@@ -1,10 +1,17 @@
 import { retrieveMemories } from "@/lib/memory/retrieval";
-import { getMemorySettings, DEFAULT_MEMORY_SETTINGS, toMemoryRetrievalConfig } from "@/lib/memory/settings";
+import {
+  getMemorySettings,
+  DEFAULT_MEMORY_SETTINGS,
+  toMemoryRetrievalConfig,
+} from "@/lib/memory/settings";
 import { injectMemory, shouldInjectMemory } from "@/lib/memory/injection";
 import { injectSkills } from "@/lib/skills/injection";
 import { FORMATS } from "../../translator/formats.ts";
+import { detectCachingContext } from "../../services/compression/cachingAware.ts";
 
-export function getSkillsProviderForFormat(format: string): "openai" | "anthropic" | "google" | "other" {
+export function getSkillsProviderForFormat(
+  format: string
+): "openai" | "anthropic" | "google" | "other" {
   switch (format) {
     case FORMATS.CLAUDE:
       return "anthropic";
@@ -96,7 +103,7 @@ export async function injectMemoryAndSkills({
           }
           return "";
         }
-        
+
         if (Array.isArray(body.messages)) {
           const r = pickFrom(body.messages);
           if (r) return r;
@@ -113,10 +120,15 @@ export async function injectMemoryAndSkills({
         toMemoryRetrievalConfig(memorySettings, { query: lastUserQuery })
       );
       if (memories.length > 0) {
+        // #3890: when the client uses prompt caching (cache_control breakpoints), inject
+        // memory cache-safely (before the last user message) so the per-query memory text
+        // does not poison the cacheable prefix and force a cache miss on every turn.
+        const cacheSafe = detectCachingContext(body, { provider, targetFormat }).hasCacheControl;
         const injected = injectMemory(
           body as Parameters<typeof injectMemory>[0],
           memories,
-          provider
+          provider,
+          { cacheSafe }
         );
         body = injected as typeof body;
         log?.debug?.("MEMORY", `Injected ${memories.length} memories for key=${memoryOwnerId}`);

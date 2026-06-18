@@ -18,40 +18,40 @@ OmniRoute **aggregates** these free tiers into one endpoint. Instead of signing 
 
 These providers are **always free** with no limits:
 
-| Provider | Models | Quota | How to Connect |
-|----------|--------|-------|----------------|
-| **Kiro AI** | Claude Sonnet 4.5, Haiku 4.5, Opus 4.6 | 50 credits/month | No auth needed |
-| **OpenCode Free** | GPT-4o, Claude, Gemini | Unlimited | No auth needed |
-| **Pollinations** | GPT-5, Claude, Gemini, DeepSeek, Llama 4 | No key needed | No auth needed |
-| **LongCat** | LongCat-Flash-Lite | 50M tokens/day | No auth needed |
-| **Cloudflare AI** | 50+ models | 10K neurons/day | No auth needed |
-| **Qwen** | Qwen3-coder-plus/flash/next | Unlimited | No auth needed |
-| **Qoder** | Kimi-K2, DeepSeek-R1, Qwen3-coder | Unlimited | No auth needed |
+| Provider          | Models                                   | Quota            | How to Connect |
+| ----------------- | ---------------------------------------- | ---------------- | -------------- |
+| **Kiro AI**       | Claude Sonnet 4.5, Haiku 4.5, Opus 4.6   | 50 credits/month | No auth needed |
+| **OpenCode Free** | GPT-4o, Claude, Gemini                   | Unlimited        | No auth needed |
+| **Pollinations**  | GPT-5, Claude, Gemini, DeepSeek, Llama 4 | No key needed    | No auth needed |
+| **LongCat**       | LongCat-Flash-Lite                       | 50M tokens/day   | No auth needed |
+| **Cloudflare AI** | 50+ models                               | 10K neurons/day  | No auth needed |
+| **Qwen**          | Qwen3-coder-plus/flash/next              | Unlimited        | No auth needed |
+| **Qoder**         | Kimi-K2, DeepSeek-R1, Qwen3-coder        | Unlimited        | No auth needed |
 
 ### Tier 2: Free with Signup (Generous)
 
 These providers give you **free credits** when you sign up:
 
-| Provider | Free Credits | Models | How to Get |
-|----------|-------------|--------|------------|
-| **NVIDIA NIM** | ~40 RPM | 129 models | Sign up at build.nvidia.com |
-| **Cerebras** | 1M tokens/day | Qwen3 235B, GPT-OSS 120B | Sign up at cerebras.ai |
-| **DeepSeek** | 5M free tokens | DeepSeek V4 | Sign up at platform.deepseek.com |
-| **Groq** | 30 RPM free | Llama 4, Mixtral | Sign up at console.groq.com |
-| **OpenAI** | $5 free credits | GPT-5, GPT-4o | Sign up at platform.openai.com |
-| **Anthropic** | $5 free credits | Claude Opus 4.6, Sonnet 4.6 | Sign up at console.anthropic.com |
-| **Google** | 1,500 req/day | Gemini 2.5 Pro, Flash | Sign up at aistudio.google.com |
+| Provider       | Free Credits    | Models                      | How to Get                       |
+| -------------- | --------------- | --------------------------- | -------------------------------- |
+| **NVIDIA NIM** | ~40 RPM         | 129 models                  | Sign up at build.nvidia.com      |
+| **Cerebras**   | 1M tokens/day   | Qwen3 235B, GPT-OSS 120B    | Sign up at cerebras.ai           |
+| **DeepSeek**   | 5M free tokens  | DeepSeek V4                 | Sign up at platform.deepseek.com |
+| **Groq**       | 30 RPM free     | Llama 4, Mixtral            | Sign up at console.groq.com      |
+| **OpenAI**     | $5 free credits | GPT-5, GPT-4o               | Sign up at platform.openai.com   |
+| **Anthropic**  | $5 free credits | Claude Opus 4.6, Sonnet 4.6 | Sign up at console.anthropic.com |
+| **Google**     | 1,500 req/day   | Gemini 2.5 Pro, Flash       | Sign up at aistudio.google.com   |
 
 ### Tier 3: Free with Limits (Specific Use Cases)
 
 These providers have **free tiers** with specific limits:
 
-| Provider | Free Limit | Models | Best For |
-|----------|-----------|--------|----------|
-| **Cerebras** | 1M tokens/day | Qwen3 235B | Fast inference |
-| **NVIDIA NIM** | ~40 RPM | 129 models | Variety |
-| **Groq** | 30 RPM | Llama 4, Mixtral | Speed |
-| **Cloudflare AI** | 10K neurons/day | 50+ models | Variety |
+| Provider          | Free Limit      | Models           | Best For       |
+| ----------------- | --------------- | ---------------- | -------------- |
+| **Cerebras**      | 1M tokens/day   | Qwen3 235B       | Fast inference |
+| **NVIDIA NIM**    | ~40 RPM         | 129 models       | Variety        |
+| **Groq**          | 30 RPM          | Llama 4, Mixtral | Speed          |
+| **Cloudflare AI** | 10K neurons/day | 50+ models       | Variety        |
 
 ---
 
@@ -69,6 +69,7 @@ Connect these 4 providers for **unlimited free AI**:
 4. **LongCat** — 50M tokens/day (backup)
 
 Then use `model: "auto"` and OmniRoute will:
+
 - Try Kiro first (best quality)
 - If Kiro is busy → try OpenCode Free
 - If OpenCode Free is slow → try Pollinations
@@ -95,6 +96,7 @@ Click the **+ Add Provider** button.
 ### Step 4: Select a Free Provider
 
 Browse the list and select one of these free providers:
+
 - **Kiro AI** — Free Claude models
 - **OpenCode Free** — Free GPT models
 - **Pollinations** — Free GPT-5, Claude, Gemini
@@ -187,6 +189,7 @@ If one free provider is busy or down, OmniRoute automatically tries the next one
 ### 2. Smart Routing
 
 OmniRoute picks the **best free provider** for each request based on:
+
 - Speed — Which provider is fastest right now?
 - Quality — Which provider is best for this task?
 - Capacity — Which provider has quota remaining?
@@ -207,27 +210,27 @@ Let's calculate how much free AI you can get:
 
 ### Conservative Estimate (3 providers)
 
-| Provider | Daily Quota | Monthly Quota |
-|----------|-------------|---------------|
-| Kiro AI | ~1.7 credits | 50 credits |
-| OpenCode Free | Unlimited | Unlimited |
-| Pollinations | Unlimited | Unlimited |
+| Provider      | Daily Quota  | Monthly Quota |
+| ------------- | ------------ | ------------- |
+| Kiro AI       | ~1.7 credits | 50 credits    |
+| OpenCode Free | Unlimited    | Unlimited     |
+| Pollinations  | Unlimited    | Unlimited     |
 
 **Total**: Unlimited free AI
 
 ### Aggressive Estimate (7 providers)
 
-| Provider | Daily Quota | Monthly Quota |
-|----------|-------------|---------------|
-| Kiro AI | ~1.7 credits | 50 credits |
-| OpenCode Free | Unlimited | Unlimited |
-| Pollinations | Unlimited | Unlimited |
-| LongCat | 50M tokens | 1.5B tokens |
-| Cloudflare AI | 10K neurons | 300K neurons |
-| NVIDIA NIM | ~40 RPM | ~1.7M requests |
-| Cerebras | 1M tokens | 30M tokens |
+| Provider      | Daily Quota  | Monthly Quota  |
+| ------------- | ------------ | -------------- |
+| Kiro AI       | ~1.7 credits | 50 credits     |
+| OpenCode Free | Unlimited    | Unlimited      |
+| Pollinations  | Unlimited    | Unlimited      |
+| LongCat       | 50M tokens   | 1.5B tokens    |
+| Cloudflare AI | 10K neurons  | 300K neurons   |
+| NVIDIA NIM    | ~40 RPM      | ~1.7M requests |
+| Cerebras      | 1M tokens    | 30M tokens     |
 
-**Total**: ~1.9B+ free tokens/month (with compression: ~9.5B+ effective tokens)
+**Total**: ~1.5B documented free tokens/month — up to ~2.1B in your first month with signup credits (with compression: ~7.5B+ effective tokens)
 
 ---
 
