@@ -304,10 +304,17 @@ async function loadCookieAuthFromConfigFile(): Promise<CookieAuth | null> {
 }
 
 // SolidJS SSR hydration output uses `$R[n]={...}` record literals. The field
-// order is not guaranteed, so we match both orderings. Examples from the live
-// dashboard:
-//   monthlyUsage:$R[1]={usagePercent:42,resetInSec:86400}
-//   weeklyUsage:$R[0]={resetInSec:259200,usagePercent:30}
+// order is not guaranteed, and body fields may include nested objects (e.g.
+// `usageLimit:{}`). Adapted from the openchamber-style opencode-quota plugin
+// (slkiser/opencode-quota#41) which correctly handles both shapes:
+//
+//   1. JSON-in-__next_f:    "rollingUsage":{...}
+//   2. SolidStart inline:   rollingUsage:$R[1]={...}
+//
+// Examples from the live dashboard:
+//   monthlyUsage:$R[1]={usagePercent:42,resetInSec:86400,usageLimit:{...}}
+//   weeklyUsage:$R[0]={resetInSec:259200,usagePercent:30,usageLimit:{...}}
+//   rollingUsage:$R[2]={usagePercent:5,resetInSec:18000,usageLimit:{...}}
 
 const HTML_DECODE: Record<string, string> = {
   "&quot;": '"',
@@ -328,12 +335,55 @@ function normalizeHtmlEntities(html: string): string {
 }
 
 interface ScrapeWindow {
+  /** usagePercent as a 0..100 integer from the dashboard */
   usagePercent: number;
+  /** resetInSec as a non-negative integer (seconds until reset) */
   resetInSec: number;
 }
 
-function parseNumericField(text: string, field: string): number | null {
-  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Locate the body of `{...}` that follows a `fieldName:` (SolidStart inline)
+ * or `"fieldName":` (JSON) marker. Brace-balanced so nested objects like
+ * `usageLimit:{}` do not terminate the match early. Mirrors openchamber's
+ * `captureObjectBody` so we stay aligned with the reference implementation.
+ */
+function captureObjectBody(fieldName: string, text: string): string | null {
+  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Match both:
+  //   fieldName:$R[123]={...}
+  //   "fieldName":{...}      (also unquoted fieldName:{...})
+  const pattern = new RegExp(`["']?${escaped}["']?\\s*:\\s*(?:\\$R\\[\\d+\\]\\s*=\\s*)?\\{`, "s");
+  const match = pattern.exec(text);
+  if (!match) return null;
+
+  // Walk forward from the end of the opening `{`, balancing nested braces so
+  // the body is the full object literal (including any nested objects).
+  const start = match.index + match[0].length;
+  let depth = 1;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract a numeric field by name. Accepts:
+ *   fieldName:42
+ *   fieldName:"42"
+ *   "fieldName":42
+ *   "fieldName":"42"
+ * Mirrors openchamber's `captureNumber` so we don't choke on quoted integers
+ * (which SolidJS emits for some serialized props).
+ */
+function captureNumber(fieldName: string, text: string): number | null {
+  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`["']?${escaped}["']?\\s*:\\s*"?(-?\\d+(?:\\.\\d+)?)"?`);
   const match = pattern.exec(text);
   if (!match) return null;
@@ -341,121 +391,117 @@ function parseNumericField(text: string, field: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function parseUsageRecordFromJson(text: string, key: string): ScrapeWindow | null {
-  // Pattern 1: JSON-in-__next_f format: "rollingUsage":{"usagePercent":42,"resetInSec":86400}
-  // This is the SolidStart SSR hydration JSON embedded in script tags.
-  const jsonBodyPattern = new RegExp(`["']${key}Usage["']?\\s*:\\s*\\{([^}]+)\\}`, "s");
-  const jsonMatch = jsonBodyPattern.exec(text);
-  if (jsonMatch) {
-    const body = jsonMatch[1];
-    const usagePercent = parseNumericField(body, "usagePercent");
-    const resetInSec = parseNumericField(body, "resetInSec");
-    if (usagePercent !== null && resetInSec !== null) {
-      return { usagePercent, resetInSec };
-    }
-  }
+/**
+ * Parse a single window record from the dashboard HTML body. Returns null
+ * when either `usagePercent` or `resetInSec` is missing — the dashboard
+ * always emits both together.
+ */
+function parseWindow(fieldName: string, text: string): ScrapeWindow | null {
+  const body = captureObjectBody(fieldName, text);
+  if (!body) return null;
 
-  // Pattern 2: SolidJS SSR hydration output: monthlyUsage:$R[1]={usagePercent:42,resetInSec:86400,...}
-  // Field order is not guaranteed.
-  const pctFirst = new RegExp(
-    `${key}Usage:\\$R\\[\\d+\\]=\\{[^}]*usagePercent:(\\d+)[^}]*resetInSec:(\\d+)[^}]*\\}`
-  );
-  const resetFirst = new RegExp(
-    `${key}Usage:\\$R\\[\\d+\\]=\\{[^}]*resetInSec:(\\d+)[^}]*usagePercent:(\\d+)[^}]*\\}`
-  );
-  const pctFirstMatch = pctFirst.exec(text);
-  if (pctFirstMatch) {
-    const usagePercent = Number(pctFirstMatch[1]);
-    const resetInSec = Number(pctFirstMatch[2]);
-    if (Number.isFinite(usagePercent) && Number.isFinite(resetInSec)) {
-      return { usagePercent, resetInSec };
-    }
-  }
-  const resetFirstMatch = resetFirst.exec(text);
-  if (resetFirstMatch) {
-    const resetInSec = Number(resetFirstMatch[1]);
-    const usagePercent = Number(resetFirstMatch[2]);
-    if (Number.isFinite(usagePercent) && Number.isFinite(resetInSec)) {
-      return { usagePercent, resetInSec };
-    }
-  }
-  return null;
+  const usagePercent = captureNumber("usagePercent", body);
+  const resetInSec = captureNumber("resetInSec", body);
+  if (usagePercent === null || resetInSec === null) return null;
+
+  return {
+    usagePercent: Math.max(0, Math.min(100, usagePercent)),
+    resetInSec: Math.max(0, Math.round(resetInSec)),
+  };
 }
 
-const WINDOW_FIELD_NAMES: Record<string, string[]> = {
-  monthly: ["monthly"],
-  weekly: ["weekly"],
-  hourly: ["hourly", "rolling"],
+/** Window labels as surfaced to the dashboard. */
+const WINDOW_FIELD_NAMES: Record<string, string> = {
+  monthly: "monthlyUsage",
+  weekly: "weeklyUsage",
+  hourly: "rollingUsage",
 };
+
+export interface ParsedDashboardUsage {
+  monthly: ScrapeWindow | null;
+  weekly: ScrapeWindow | null;
+  hourly: ScrapeWindow | null;
+}
 
 /**
  * Parse the SolidJS SSR hydration output of the OpenCode Go workspace page.
  *
- * Returns the worst-case `usagePercent` and a corresponding `resetInSec`
- * (taken from the worst window), or `null` if no usage records were found.
+ * Returns a per-window record (5h rolling, weekly, monthly) or `null` if no
+ * usage records were found. Mirrors openchamber's `parseDashboardUsage` so
+ * we extract each window independently rather than collapsing to a single
+ * "worst" value.
  */
-function parseDashboardUsage(html: string): ScrapeWindow | null {
-  const decoded = normalizeHtmlEntities(html);
+function parseDashboardUsage(html: string): ParsedDashboardUsage | null {
+  const text = normalizeHtmlEntities(html);
 
-  // Try each window key with all its alias field names.
-  // Priority: monthly > weekly > hourly/rolling.
-  // The dashboard exposes up to 3 windows; the upstream client only confirms
-  // `monthlyUsage` is present in SSR — the others are best-effort.
-  const fieldKeys: Array<"monthly" | "weekly" | "hourly"> = ["monthly", "weekly", "hourly"];
-  const windows: ScrapeWindow[] = [];
+  const result: ParsedDashboardUsage = {
+    monthly: parseWindow(WINDOW_FIELD_NAMES.monthly, text),
+    weekly: parseWindow(WINDOW_FIELD_NAMES.weekly, text),
+    hourly: parseWindow(WINDOW_FIELD_NAMES.hourly, text),
+  };
 
-  for (const key of fieldKeys) {
-    for (const alias of WINDOW_FIELD_NAMES[key]) {
-      const parsed = parseUsageRecordFromJson(decoded, alias);
-      if (parsed) {
-        windows.push(parsed);
-        break; // one match per window key
-      }
-    }
-  }
-
-  if (windows.length === 0) return null;
-
-  let worst = windows[0];
-  for (const w of windows) {
-    if (w.usagePercent > worst.usagePercent) worst = w;
-  }
-  return worst;
+  if (!result.monthly && !result.weekly && !result.hourly) return null;
+  return result;
 }
 
 /**
- * Build a `OpencodeTripleWindowQuota` from a dashboard scrape result. The
- * dashboard only reports a single combined `usagePercent` from the worst
- * window; we surface it under the matching `OPENCODE_WINDOW_*` key and
- * leave the other windows absent (consistent with the API-key parser
- * which omits windows that aren't in the response).
+ * Build a `OpencodeTripleWindowQuota` from a dashboard scrape result. Each
+ * window from the dashboard is surfaced under its own `OPENCODE_WINDOW_*`
+ * key so the UI can display 5h / weekly / monthly independently.
  */
-function buildQuotaFromScrape(scrape: ScrapeWindow): OpencodeTripleWindowQuota {
-  const usagePercent = Math.max(0, Math.min(1, scrape.usagePercent / 100));
-  const resetInSec = Math.max(0, scrape.resetInSec);
-  const resetAt = resetInSec > 0 ? new Date(Date.now() + resetInSec * 1000).toISOString() : null;
-
-  // Without a per-window breakdown from the dashboard, we conservatively
-  // attribute the worst-case percent to the 5h window (the tightest cap
-  // on the opencode-go plan, $12 rolling). The dashboard's `hourly` field
-  // is the closest match to our 5h label; if absent, fall back to monthly.
-  const window5h = { percentUsed: usagePercent, resetAt };
-  const windows: Record<string, { percentUsed: number; resetAt: string | null }> = {
-    [OPENCODE_WINDOW_5H]: window5h,
+function buildQuotaFromScrape(parsed: ParsedDashboardUsage): OpencodeTripleWindowQuota {
+  const toWindow = (
+    scrape: ScrapeWindow | null
+  ): { percentUsed: number; resetAt: string | null } => {
+    if (!scrape) return { percentUsed: 0, resetAt: null };
+    return {
+      percentUsed: scrape.usagePercent / 100,
+      resetAt: new Date(Date.now() + scrape.resetInSec * 1000).toISOString(),
+    };
   };
 
+  // Dashboard exposes hourly (5h rolling) and weekly/monthly separately.
+  // We map `hourly` to our `window_5h` label to match the OpenCode Go plan
+  // ($12 rolling 5h cap) and the rest to their own keys.
+  const window5h = toWindow(parsed.hourly);
+  const windowWeekly = toWindow(parsed.weekly);
+  const windowMonthly = toWindow(parsed.monthly);
+
+  const worstPercent = Math.max(
+    window5h.percentUsed,
+    windowWeekly.percentUsed,
+    windowMonthly.percentUsed
+  );
+  const limitReached = worstPercent >= 1;
+
+  const windows: Record<string, { percentUsed: number; resetAt: string | null }> = {};
+  if (parsed.hourly) windows[OPENCODE_WINDOW_5H] = window5h;
+  if (parsed.weekly) windows[OPENCODE_WINDOW_WEEKLY] = windowWeekly;
+  if (parsed.monthly) windows[OPENCODE_WINDOW_MONTHLY] = windowMonthly;
+
+  // Dominant reset: prefer the worst window's reset time.
+  let dominantResetAt: string | null = null;
+  if (
+    window5h.percentUsed >= windowWeekly.percentUsed &&
+    window5h.percentUsed >= windowMonthly.percentUsed
+  ) {
+    dominantResetAt = window5h.resetAt ?? windowWeekly.resetAt ?? windowMonthly.resetAt;
+  } else if (windowWeekly.percentUsed >= windowMonthly.percentUsed) {
+    dominantResetAt = windowWeekly.resetAt ?? window5h.resetAt ?? windowMonthly.resetAt;
+  } else {
+    dominantResetAt = windowMonthly.resetAt ?? windowWeekly.resetAt ?? window5h.resetAt;
+  }
+
   return {
-    used: usagePercent * 100,
+    used: worstPercent * 100,
     total: 100,
-    percentUsed: usagePercent,
-    resetAt,
+    percentUsed: worstPercent,
+    resetAt: dominantResetAt,
     windows,
     window5h,
-    // The scrape only resolves the worst window; per-window fields default
-    // to 0 / null so callers don't accidentally treat them as live data.
-    windowWeekly: { percentUsed: 0, resetAt: null },
-    windowMonthly: { percentUsed: 0, resetAt: null },
-    limitReached: usagePercent >= 1,
+    windowWeekly,
+    windowMonthly,
+    limitReached,
   };
 }
 

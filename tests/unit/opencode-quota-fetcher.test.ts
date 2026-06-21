@@ -415,12 +415,32 @@ test("fetchOpencodeQuota scrapes the OpenCode Go dashboard when authCookie + wor
     "should NOT send Bearer auth on the dashboard path (cookie-only)"
   );
 
-  // 42% → 0.42 fraction
+  // 42% → 0.42 fraction (only one window is present, so worst-case = 0.42)
   assert.ok(
     Math.abs(quota!.percentUsed - 0.42) < 0.001,
     `percentUsed should mirror 42% worst window, got ${quota!.percentUsed}`
   );
-  assert.ok(quota!.windows?.["window_5h"], "should surface a 5h window from the scrape");
+  // Only monthlyUsage is present in this fixture, so window_monthly is the
+  // only populated window. window_5h / window_weekly stay at 0 / null.
+  assert.ok(
+    quota!.windows?.["window_monthly"],
+    "should surface the monthly window from the scrape"
+  );
+  assert.equal(
+    Math.round((quota!.windowMonthly.percentUsed ?? 0) * 100),
+    42,
+    "windowMonthly.percentUsed should be 0.42"
+  );
+  assert.equal(
+    quota!.windowWeekly.percentUsed,
+    0,
+    "weekly window should default to 0 when not in the dashboard"
+  );
+  assert.equal(
+    quota!.window5h.percentUsed,
+    0,
+    "5h window should default to 0 when not in the dashboard"
+  );
 
   invalidateOpencodeQuotaCache(connectionId);
 });
@@ -666,6 +686,137 @@ test("fetchOpencodeQuota sets limitReached when dashboard usage is 100%", async 
   assert.ok(quota !== null);
   assert.equal(quota!.limitReached, true, "limitReached should be true at 100%");
   assert.ok(Math.abs(quota!.percentUsed - 1.0) < 0.001, "percentUsed should be 1.0");
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+// ─── openchamber-style fixtures (nested objects, quoted numbers, all windows) ─
+
+test("fetchOpencodeQuota handles nested usageLimit:{} in the dashboard body (openchamber shape)", async () => {
+  const connectionId = `oc-dash-nested-${Date.now()}`;
+
+  // Mirrors the live openchamber opencode-go.js plugin — `usageLimit:{}` is a
+  // nested object that the previous regex `\{([^}]+)\}` truncated prematurely.
+  const html = `
+    <script>
+    monthlyUsage:$R[1]={usagePercent:42,resetInSec:86400,usageLimit:{used:0,limit:0,resetAt:null},label:"Monthly"}
+    </script>
+  `;
+
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie",
+    },
+  });
+
+  assert.ok(quota !== null, "must parse despite the nested usageLimit object");
+  assert.equal(
+    Math.round((quota!.windowMonthly.percentUsed ?? 0) * 100),
+    42,
+    "usagePercent should be 42% even when a nested usageLimit object is present"
+  );
+  assert.ok(
+    quota!.windowMonthly.resetAt,
+    "resetAt should be present (resetInSec 86400 ≈ 1 day from now)"
+  );
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota parses quoted numeric fields in the dashboard body", async () => {
+  const connectionId = `oc-dash-quoted-${Date.now()}`;
+
+  // SolidJS sometimes emits quoted values for serialized props; the parser
+  // must still extract the numbers.
+  const html = `<script>weeklyUsage:$R[0]={"usagePercent":"73","resetInSec":"259200"}</script>`;
+
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie",
+    },
+  });
+
+  assert.ok(quota !== null);
+  assert.equal(
+    Math.round((quota!.windowWeekly.percentUsed ?? 0) * 100),
+    73,
+    "quoted usagePercent should be parsed as 73"
+  );
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota surfaces all three windows independently when present", async () => {
+  const connectionId = `oc-dash-three-${Date.now()}`;
+
+  // All three windows present with the same shape as the live dashboard —
+  // rollingUsage is the 5h rolling window, not hourlyUsage.
+  const html = `
+    <script>
+    monthlyUsage:$R[1]={usagePercent:30,resetInSec:86400}
+    weeklyUsage:$R[2]={usagePercent:55,resetInSec:259200}
+    rollingUsage:$R[3]={usagePercent:10,resetInSec:18000}
+    </script>
+  `;
+
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie",
+    },
+  });
+
+  assert.ok(quota !== null);
+  assert.equal(
+    Math.round((quota!.window5h.percentUsed ?? 0) * 100),
+    10,
+    "rollingUsage should map to window_5h"
+  );
+  assert.equal(Math.round((quota!.windowWeekly.percentUsed ?? 0) * 100), 55);
+  assert.equal(Math.round((quota!.windowMonthly.percentUsed ?? 0) * 100), 30);
+  assert.ok(quota!.windows?.["window_5h"]);
+  assert.ok(quota!.windows?.["window_weekly"]);
+  assert.ok(quota!.windows?.["window_monthly"]);
+  // worst window is weekly at 55% → dominant reset = weekly's resetAt
+  assert.ok(
+    Math.abs(quota!.percentUsed - 0.55) < 0.001,
+    `percentUsed should be 0.55 (worst window), got ${quota!.percentUsed}`
+  );
+
+  invalidateOpencodeQuotaCache(connectionId);
+});
+
+test("fetchOpencodeQuota handles JSON-in-__next_f shape with quoted field names", async () => {
+  const connectionId = `oc-dash-json-${Date.now()}`;
+
+  // Shape #1 from openchamber's parseWindow: embedded JSON object literal
+  // with double-quoted field names. The brace-balanced captureObjectBody
+  // must still extract the full body.
+  const html = `<script>"rollingUsage":{"usagePercent":7,"resetInSec":1234,"label":"5h"}</script>`;
+
+  globalThis.fetch = async () =>
+    new Response(html, { status: 200, headers: { "content-type": "text/html" } });
+
+  const quota = await fetchOpencodeQuota(connectionId, {
+    providerSpecificData: {
+      workspaceId: "wrk_test",
+      authCookie: "cookie",
+    },
+  });
+
+  assert.ok(quota !== null);
+  assert.equal(Math.round((quota!.window5h.percentUsed ?? 0) * 100), 7);
 
   invalidateOpencodeQuotaCache(connectionId);
 });
