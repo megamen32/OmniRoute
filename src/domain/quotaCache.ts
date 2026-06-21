@@ -60,10 +60,14 @@ let tickRunning = false;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+function isQuotaWindowExhausted(quota: QuotaInfo): boolean {
+  return quota.remainingPercentage <= 0;
+}
+
 function isExhausted(quotas: Record<string, QuotaInfo>): boolean {
   const entries = Object.values(quotas);
   if (entries.length === 0) return false;
-  return entries.every((q) => q.remainingPercentage <= 0);
+  return entries.every(isQuotaWindowExhausted);
 }
 
 /**
@@ -207,7 +211,12 @@ export function setQuotaCache(
           connection_id: connectionId,
           window_key: windowKey,
           remaining_percentage: remainingPercentage,
-          is_exhausted: entry.exhausted ? 1 : 0,
+          is_exhausted: isQuotaWindowExhausted({
+            remainingPercentage,
+            resetAt: quotaInfo.resetAt ?? null,
+          })
+            ? 1
+            : 0,
           next_reset_at: quotaInfo.resetAt ?? null,
           window_duration_ms: entry.windowDurationMs ?? null,
           raw_data: null,

@@ -300,6 +300,30 @@ test("quotaCache covers normalized windows, stale exhaustion, stats and refresh 
     reachedThreshold: false,
   });
 
+  const mixedWindowId = "quota-mixed-glm-windows";
+  quotaCache.setQuotaCache(mixedWindowId, "glm", {
+    weekly: { remainingPercentage: 0, resetAt: isoFromNow(120_000) },
+    mcp_monthly: { remainingPercentage: 100, resetAt: isoFromNow(2_400_000) },
+  });
+  assert.equal(quotaCache.isAccountQuotaExhausted(mixedWindowId), false);
+
+  const mixedRows = (
+    core
+      .getDbInstance()
+      .prepare(
+        "SELECT window_key, remaining_percentage, is_exhausted FROM quota_snapshots WHERE connection_id = ? ORDER BY window_key"
+      )
+      .all(mixedWindowId) as Array<{
+      window_key: string;
+      remaining_percentage: number;
+      is_exhausted: number;
+    }>
+  ).map((row) => ({ ...row }));
+  assert.deepEqual(mixedRows, [
+    { window_key: "mcp_monthly", remaining_percentage: 100, is_exhausted: 0 },
+    { window_key: "weekly", remaining_percentage: 0, is_exhausted: 1 },
+  ]);
+
   const expiredWindowId = "quota-expired-window";
   quotaCache.setQuotaCache(expiredWindowId, "cursor", {
     session: { remainingPercentage: 5, resetAt: isoFromNow(-1_000) },
