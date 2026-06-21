@@ -44,7 +44,12 @@ import {
 import { extractSessionAffinityKey } from "@/sse/services/auth";
 import { resolveModelLockoutSettings } from "../../src/lib/resilience/modelLockoutSettings";
 import { fetchCodexQuota } from "./codexQuotaFetcher.ts";
-import { getQuotaFetcher } from "./quotaPreflight.ts";
+import {
+  evaluateQuotaCutoff,
+  getQuotaFetcher,
+  type PreflightQuotaThresholds,
+  type QuotaInfo,
+} from "./quotaPreflight.ts";
 import * as semaphore from "./rateLimitSemaphore.ts";
 import { getCircuitBreaker } from "../../src/shared/utils/circuitBreaker";
 import { fisherYatesShuffle, getNextFromDeck } from "../../src/shared/utils/shuffleDeck";
@@ -224,11 +229,89 @@ function getBootstrapLatencyMs(modelId: string): number {
   return DEFAULT_MODEL_P95_MS[normalized] ?? 1500;
 }
 
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 100;
+  return Math.max(0, Math.min(100, value));
+}
+
+function asThresholdMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(raw);
+    if (key && Number.isFinite(numeric)) result[key] = numeric;
+  }
+  return result;
+}
+
+function quotaWindowLookupNames(provider: string, windowName: string): string[] {
+  const names = [windowName];
+  const lower = windowName.toLowerCase();
+  if (lower !== windowName) names.push(lower);
+  if (provider === "codex") {
+    if (lower.includes("session") || lower === "5h" || lower === "five_hour") names.push("session");
+    if (lower.includes("weekly") || lower === "7d" || lower === "seven_day") names.push("weekly");
+    if (lower.includes("monthly") || lower === "30d") names.push("monthly");
+  }
+  return [...new Set(names)];
+}
+
+function buildAutoQuotaThresholds(
+  provider: string,
+  connection: Record<string, unknown> | undefined,
+  resilienceSettings: ResilienceSettings | null | undefined
+): PreflightQuotaThresholds {
+  const quotaPreflight = (resilienceSettings ?? resolveResilienceSettings(null))?.quotaPreflight;
+  const defaultThresholdPercent = quotaPreflight?.defaultThresholdPercent ?? 2;
+  const warnThresholdPercent = quotaPreflight?.warnThresholdPercent ?? 20;
+  const providerWindowMap = asThresholdMap(quotaPreflight?.providerWindowDefaults?.[provider]);
+  const perConnectionWindowOverrides = asThresholdMap(connection?.quotaWindowThresholds);
+
+  return {
+    resolveMinRemainingPercent: (windowName: string | null): number => {
+      if (windowName !== null) {
+        for (const lookupWindowName of quotaWindowLookupNames(provider, windowName)) {
+          const override = perConnectionWindowOverrides[lookupWindowName];
+          if (typeof override === "number") return override;
+          const providerDefault = providerWindowMap[lookupWindowName];
+          if (typeof providerDefault === "number") return providerDefault;
+        }
+      }
+      return defaultThresholdPercent;
+    },
+    resolveWarnRemainingPercent: () => warnThresholdPercent,
+  };
+}
+
+function quotaRemainingPercentFromQuota(quota: unknown): number {
+  if (!quota || typeof quota !== "object") return 100;
+  const record = quota as Record<string, unknown>;
+  if (record.limitReached === true) return 0;
+
+  const windows = record.windows;
+  if (windows && typeof windows === "object" && !Array.isArray(windows)) {
+    let minRemaining: number | null = null;
+    for (const windowInfo of Object.values(windows as Record<string, unknown>)) {
+      if (!windowInfo || typeof windowInfo !== "object") continue;
+      const percentUsed = Number((windowInfo as Record<string, unknown>).percentUsed);
+      if (!Number.isFinite(percentUsed)) continue;
+      const remaining = clampPercent((1 - percentUsed) * 100);
+      minRemaining = minRemaining === null ? remaining : Math.min(minRemaining, remaining);
+    }
+    if (minRemaining !== null) return minRemaining;
+  }
+
+  const percentUsed = Number(record.percentUsed);
+  if (Number.isFinite(percentUsed)) return clampPercent((1 - percentUsed) * 100);
+  return 100;
+}
+
 export async function buildAutoCandidates(
   targets: ResolvedComboTarget[],
   comboName: string,
   sessionId: string | null | undefined = null,
-  resetWindowConfig: ResetWindowConfig = resolveResetWindowConfig(null)
+  resetWindowConfig: ResetWindowConfig = resolveResetWindowConfig(null),
+  resilienceSettings: ResilienceSettings | null = null
 ): Promise<AutoProviderCandidate[]> {
   const metrics = getComboMetrics(comboName);
   const { getPricingForModel } = await import("../../src/lib/localDb");
@@ -252,6 +335,7 @@ export async function buildAutoCandidates(
   );
   const connectionPoolCounts = new Map<string, number>();
   const connectionsByProvider = new Map<string, Array<Record<string, unknown>>>();
+  const connectionById = new Map<string, Record<string, unknown>>();
   await Promise.all(
     uniqueProviders.map(async (provider) => {
       try {
@@ -259,6 +343,11 @@ export async function buildAutoCandidates(
         const active = Array.isArray(connections) ? connections : [];
         connectionPoolCounts.set(provider, active.length);
         connectionsByProvider.set(provider, active);
+        for (const connection of active) {
+          if (connection && typeof connection === "object" && typeof connection.id === "string") {
+            connectionById.set(connection.id, connection as Record<string, unknown>);
+          }
+        }
       } catch {
         connectionPoolCounts.set(provider, 0);
         connectionsByProvider.set(provider, []);
@@ -353,7 +442,11 @@ export async function buildAutoCandidates(
         breakerStateRaw === "OPEN" || breakerStateRaw === "HALF_OPEN" ? breakerStateRaw : "CLOSED";
       const contextAffinity = calculateTargetContextAffinity(target, sessionId);
       let resetWindowAffinity = 0.5;
+      let quotaRemaining = 100;
+      let quotaCutoffBlocked = false;
+      let quotaCutoffReason: string | undefined;
       const fetcher = getQuotaFetcher(provider);
+      const connection = target.connectionId ? connectionById.get(target.connectionId) : undefined;
       if (fetcher && target.connectionId) {
         const quotaKey = `${provider}:${target.connectionId}`;
         if (!quotaPromises.has(quotaKey)) {
@@ -362,6 +455,7 @@ export async function buildAutoCandidates(
             fetchResetAwareQuotaWithCache({
               provider,
               connectionId: target.connectionId,
+              connection,
               fetcher,
               config: resetWindowConfig,
               log: {},
@@ -371,6 +465,15 @@ export async function buildAutoCandidates(
         }
         const quota = await quotaPromises.get(quotaKey)!;
         resetWindowAffinity = calculateResetWindowAffinity(quota, resetWindowConfig);
+        quotaRemaining = quotaRemainingPercentFromQuota(quota);
+        const cutoffDecision = evaluateQuotaCutoff(
+          quota as QuotaInfo | null,
+          buildAutoQuotaThresholds(provider, connection, resilienceSettings)
+        );
+        if (!cutoffDecision.proceed) {
+          quotaCutoffBlocked = true;
+          quotaCutoffReason = cutoffDecision.reason || "quota_exhausted";
+        }
       }
 
       return {
@@ -379,7 +482,7 @@ export async function buildAutoCandidates(
         modelStr,
         provider,
         model,
-        quotaRemaining: 100,
+        quotaRemaining,
         quotaTotal: 100,
         circuitBreakerState,
         costPer1MTokens,
@@ -390,6 +493,8 @@ export async function buildAutoCandidates(
         quotaResetIntervalSecs: 86400,
         contextAffinity,
         resetWindowAffinity,
+        quotaCutoffBlocked,
+        quotaCutoffReason,
         connectionPoolSize: connectionPoolCounts.get(provider) ?? 1,
         connectionId: target.connectionId ?? undefined,
       };
@@ -719,11 +824,28 @@ export async function handleComboChat({
       eligibleTargets,
       combo.name,
       relayOptions?.sessionId,
-      resetWindowConfig
+      resetWindowConfig,
+      resilienceSettings
     );
+    const routableCandidates = candidates.filter(
+      (candidate) => candidate.quotaCutoffBlocked !== true
+    );
+    const quotaBlockedCount = candidates.length - routableCandidates.length;
+    if (quotaBlockedCount > 0) {
+      log.info(
+        "COMBO",
+        `Auto strategy: quota cutoff skipped ${quotaBlockedCount}/${candidates.length} account candidates`
+      );
+    }
     // G2: Register candidates so chatCore can mark quotaSoftPenalty via setCandidateQuotaSoftPenalty.
-    _registerExecutionCandidates(candidates);
-    if (candidates.length > 0) {
+    _registerExecutionCandidates(routableCandidates);
+    if (candidates.length > 0 && routableCandidates.length === 0) {
+      return unavailableResponse(
+        429,
+        "All auto strategy candidates are below configured quota cutoffs"
+      );
+    }
+    if (routableCandidates.length > 0) {
       let selectedProvider: string | null = null;
       let selectedModel: string | null = null;
       let selectionReason = "";
@@ -731,7 +853,7 @@ export async function handleComboChat({
       if (routingStrategy !== "rules") {
         try {
           const decision = selectWithStrategy(
-            candidates,
+            routableCandidates,
             {
               taskType,
               requestHasTools,
@@ -764,7 +886,7 @@ export async function handleComboChat({
             budgetCap,
             explorationRate,
           },
-          candidates,
+          routableCandidates,
           taskType
         );
         selectedProvider = selection.provider;
@@ -786,7 +908,7 @@ export async function handleComboChat({
 
       const scoredTargets = scoreAutoTargets(
         eligibleTargets,
-        candidates,
+        routableCandidates,
         taskType,
         weights,
         autoManifestHint
@@ -797,12 +919,16 @@ export async function handleComboChat({
           const parsed = parseModel(entry.target.modelStr);
           const modelId = parsed.model || entry.target.modelStr;
           return entry.target.provider === selectedProvider && modelId === selectedModel;
-        })?.target ||
-        rankedTargets[0] ||
-        eligibleTargets[0];
+        })?.target || rankedTargets[0];
+      if (!selectedTarget) {
+        return unavailableResponse(
+          429,
+          "No auto strategy targets remained after quota cutoff filtering"
+        );
+      }
 
       orderedTargets = dedupeTargetsByExecutionKey(
-        [selectedTarget, ...rankedTargets, ...eligibleTargets].filter(
+        [selectedTarget, ...rankedTargets].filter(
           (entry): entry is ResolvedComboTarget => entry !== undefined && entry !== null
         )
       );
