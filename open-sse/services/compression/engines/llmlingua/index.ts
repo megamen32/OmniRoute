@@ -11,8 +11,8 @@
  * Promise<string>` contract (the opts carry model selection / compression rate /
  * offline model-path override; single-arg fakes remain assignable).
  * Tests inject a fake backend via `setLlmlinguaBackend()`. Production code uses
- * `workerBackend` from `./worker.ts` (a stub today — see that file for the L1
- * VPS-validation follow-up before the real ONNX model is wired).
+ * `workerBackend` from `./worker.ts` — the real MobileBERT ONNX worker-thread backend
+ * (strictly fail-open: missing optional deps or any error return the original text).
  *
  * ### Code-block protection (inviolable)
  * Before any prose segment reaches the backend, `extractPreservedBlocks` from
@@ -37,11 +37,11 @@
  * caveman=20) but before ultra (40). Semantic pruning is most effective after
  * simpler structural compression has already reduced noise.
  *
- * ### Production follow-up (L1 — not yet done)
- * Replace `workerBackend` stub in `./worker.ts` with real `@atjsh/llmlingua-2`
- * (MobileBERT ONNX, 99 MB) in a worker_threads.Worker. Gate by minimum token
- * count (≥2 k estimated). Validate on VPS per Hard Rule #18. See `./worker.ts`
- * for the exact spec.
+ * ### Real backend
+ * `./worker.ts` runs `@atjsh/llmlingua-2` (MobileBERT ONNX) in a worker_threads.Worker,
+ * gated by a minimum token count and strictly fail-open. The optional deps are not
+ * installed by default (CI / most installs), so the engine no-ops there; the real model
+ * is exercised on the VPS behind RUN_LLMLINGUA_INT (Hard Rule #18). See `./worker.ts`.
  */
 
 import { createCompressionStats, estimateCompressionTokens } from "../../stats.ts";
@@ -354,9 +354,13 @@ export const llmlinguaEngine: CompressionEngine = {
     inputScope: "messages",
     targetLatencyMs: 200,
     supportsPreview: false,
-    // Promoted to stable after VPS validation (2026-06-16): the deployed worker
-    // compressed real prose (209→107 ch, ok=true), and the bundle's walk-up
-    // resolution + optional-deps gate were confirmed against the live install.
+    // Stable. The worker model itself was VPS-validated (real prose 209→107 ch, ok=true),
+    // but the EARLIER "walk-up + optional-deps gate confirmed in the bundle" claim was
+    // wrong: the Next standalone bundle (webpack) froze `import.meta.url` to the build path
+    // and stubbed `createRequire`, so in production the gate was always false and the worker
+    // never spawned (it silently fell back to the aggressive summarizer). Fixed in B-SLM —
+    // worker.ts now resolves deps + worker file from runtime anchors (cwd / argv[1]). The
+    // optional deps must also be co-located into dist/node_modules (#4286) to actually run.
     stable: true,
   },
 

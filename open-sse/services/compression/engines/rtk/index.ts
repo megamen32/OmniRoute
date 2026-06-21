@@ -289,7 +289,7 @@ export function processRtkText(
       if (config.enabledFilters.length === 0 || config.enabledFilters.includes(filter.id)) {
         const filtered = applyLineFilter(result, {
           ...filter,
-          maxLines: filter.maxLines || config.maxLinesPerResult,
+          maxLines: effectiveMaxLines(filter.maxLines || config.maxLinesPerResult, config.intensity),
         });
         result = filtered.text;
         if (filtered.appliedRules.length > 0) {
@@ -306,7 +306,12 @@ export function processRtkText(
     result = result.replace(
       /```([A-Za-z0-9_+.-]*)\r?\n([\s\S]*?)```/g,
       (match, languageHint: string, code: string) => {
-        const stripped = stripCode(code, normalizeCodeLanguage(languageHint));
+        const stripped = stripCode(code, normalizeCodeLanguage(languageHint), {
+          // Opt-in comment removal (default off = no silent production change). Docstrings/JSDoc
+          // are preserved unless explicitly disabled.
+          removeComments: config.stripCodeComments === true,
+          preserveDocstrings: config.preserveDocstrings !== false,
+        });
         if (stripped.strippedLines <= 0 && stripped.text === code.trim()) return match;
         strippedCodeBlocks++;
         const fenceLanguage = languageHint?.trim() || stripped.language;
@@ -347,7 +352,7 @@ export function processRtkText(
     }
   });
   const truncated = smartTruncate(result, {
-    maxLines: config.maxLinesPerResult,
+    maxLines: effectiveMaxLines(config.maxLinesPerResult, config.intensity),
     maxChars: config.maxCharsPerResult,
     preserveHead: config.intensity === "aggressive" ? 16 : 24,
     preserveTail: config.intensity === "aggressive" ? 16 : 24,
@@ -451,6 +456,18 @@ function processRtkContent(
     rulesApplied,
     rawOutputPointers,
   };
+}
+
+/**
+ * Scale a line budget by intensity so minimal / standard / aggressive produce
+ * meaningfully different output on truncation-based filters (B-RTK-INTENSITY).
+ * Truncation always runs through smartTruncate with priorityPatterns, so error /
+ * failure lines survive at EVERY intensity. (Include/collapse filters like docker-logs
+ * compress by content, not line budget, so they are intensity-independent by nature.)
+ */
+export function effectiveMaxLines(base: number, intensity: string | undefined): number {
+  const factor = intensity === "aggressive" ? 0.5 : intensity === "minimal" ? 1.5 : 1;
+  return Math.max(1, Math.round(base * factor));
 }
 
 export function applyRtkCompression(
