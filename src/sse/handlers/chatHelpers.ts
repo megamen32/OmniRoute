@@ -13,6 +13,7 @@ import {
   PROVIDER_ID_TO_ALIAS,
 } from "@omniroute/open-sse/config/providerModels.ts";
 import { handleChatCore } from "@omniroute/open-sse/handlers/chatCore.ts";
+import { getBackgroundTaskReason } from "@omniroute/open-sse/services/backgroundTaskDetector.ts";
 import {
   errorResponse,
   modelCooldownResponse,
@@ -70,6 +71,27 @@ function isTruthyEnv(value: string | undefined | null): boolean {
 
 function isResponseModelPrefixEnabled(): boolean {
   return isTruthyEnv(process.env.OMNIROUTE_RESPONSE_MODEL_PREFIX);
+}
+
+function toStringHeaderRecord(
+  headers: Record<string, unknown> | null | undefined
+): Record<string, string> | null {
+  if (!headers || typeof headers !== "object") return null;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined || value === null) continue;
+    out[key] = Array.isArray(value) ? value.join(",") : String(value);
+  }
+  return out;
+}
+
+function getResponseModelPrefixSuppressionReason(
+  body: unknown,
+  headers: Record<string, unknown> | null | undefined
+): string | null {
+  if (!isResponseModelPrefixEnabled()) return null;
+  const reason = getBackgroundTaskReason(body, toStringHeaderRecord(headers));
+  return reason === "system_prompt_pattern" ? reason : null;
 }
 
 function shouldStripInputModelMarkers(): boolean {
@@ -224,10 +246,22 @@ async function addResponseModelPrefix(
   response: Response,
   provider: string,
   model: string,
-  body: any
+  body: any,
+  suppressionReason: string | null = null
 ): Promise<Response> {
   if (!isResponseModelPrefixEnabled()) return response;
   if (!body || !Array.isArray(body.messages)) return response;
+  if (suppressionReason) {
+    const nextHeaders = new Headers(response.headers);
+    nextHeaders.set("x-omniroute-response-model", `${provider}/${model}`);
+    nextHeaders.set("x-omniroute-response-model-prefix", "0");
+    nextHeaders.set("x-omniroute-response-model-prefix-suppressed", suppressionReason);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: nextHeaders,
+    });
+  }
   const marker = buildResponseModelMarker(provider, model);
   const contentType = response.headers.get("content-type") || "";
   const headers = withModelPrefixHeaders(response.headers, provider, model);
@@ -301,10 +335,17 @@ async function addResponseModelPrefixToResult(
   result: any,
   provider: string,
   model: string,
-  body: any
+  body: any,
+  suppressionReason: string | null = null
 ): Promise<any> {
   if (!result?.success || !(result.response instanceof Response)) return result;
-  const response = await addResponseModelPrefix(result.response, provider, model, body);
+  const response = await addResponseModelPrefix(
+    result.response,
+    provider,
+    model,
+    body,
+    suppressionReason
+  );
   return response === result.response ? result : { ...result, response };
 }
 
@@ -644,6 +685,11 @@ export async function executeChatWithBreaker({
 
   try {
     const upstreamBody = shouldStripInputModelMarkers() ? stripModelMarkersFromBody(body) : body;
+    const responseModelPrefixHeaders = clientRawRequest?.headers || null;
+    const responseModelPrefixSuppressionReason = getResponseModelPrefixSuppressionReason(
+      upstreamBody,
+      responseModelPrefixHeaders
+    );
     const chatFn = () =>
       capture(() =>
       runWithProxyContext(proxyInfo?.proxy || null, () =>
@@ -743,7 +789,8 @@ export async function executeChatWithBreaker({
             tracked.result,
             provider,
             model,
-            upstreamBody
+            upstreamBody,
+            responseModelPrefixSuppressionReason
           ),
           tlsFingerprintUsed: tracked.tlsFingerprintUsed,
         };
@@ -751,7 +798,13 @@ export async function executeChatWithBreaker({
 
       const result = await chatFn();
       return {
-        result: await addResponseModelPrefixToResult(result, provider, model, upstreamBody),
+        result: await addResponseModelPrefixToResult(
+          result,
+          provider,
+          model,
+          upstreamBody,
+          responseModelPrefixSuppressionReason
+        ),
         tlsFingerprintUsed: false,
       };
     }
@@ -764,7 +817,8 @@ export async function executeChatWithBreaker({
             tracked.result,
             provider,
             model,
-            upstreamBody
+            upstreamBody,
+            responseModelPrefixSuppressionReason
           ),
           tlsFingerprintUsed: tracked.tlsFingerprintUsed,
         };
@@ -772,7 +826,13 @@ export async function executeChatWithBreaker({
 
       const result = await chatFn();
       return {
-        result: await addResponseModelPrefixToResult(result, provider, model, upstreamBody),
+        result: await addResponseModelPrefixToResult(
+          result,
+          provider,
+          model,
+          upstreamBody,
+          responseModelPrefixSuppressionReason
+        ),
         tlsFingerprintUsed: false,
       };
     }
@@ -780,14 +840,26 @@ export async function executeChatWithBreaker({
     if (!proxyInfo?.proxy && isTlsFingerprintActive()) {
       const tracked = await breaker.execute(async () => runWithTlsTracking(chatFn));
       return {
-        result: await addResponseModelPrefixToResult(tracked.result, provider, model, upstreamBody),
+        result: await addResponseModelPrefixToResult(
+          tracked.result,
+          provider,
+          model,
+          upstreamBody,
+          responseModelPrefixSuppressionReason
+        ),
         tlsFingerprintUsed: tracked.tlsFingerprintUsed,
       };
     }
 
     const result = await breaker.execute(chatFn);
     return {
-      result: await addResponseModelPrefixToResult(result, provider, model, upstreamBody),
+      result: await addResponseModelPrefixToResult(
+        result,
+        provider,
+        model,
+        upstreamBody,
+        responseModelPrefixSuppressionReason
+      ),
       tlsFingerprintUsed: false,
     };
   } catch (cbErr: any) {
