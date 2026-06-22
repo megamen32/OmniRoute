@@ -57,6 +57,251 @@ type ExecuteChatWithBreakerOptions = {
   [key: string]: any;
 };
 
+function isTruthyEnv(value: string | undefined | null): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function isResponseModelPrefixEnabled(): boolean {
+  return isTruthyEnv(process.env.OMNIROUTE_RESPONSE_MODEL_PREFIX);
+}
+
+function shouldStripInputModelMarkers(): boolean {
+  if (!isResponseModelPrefixEnabled()) return false;
+  const raw = process.env.OMNIROUTE_RESPONSE_MODEL_PREFIX_STRIP_INPUT;
+  return (
+    raw === undefined ||
+    raw === null ||
+    raw === "" ||
+    !["0", "false", "no", "off"].includes(raw.trim().toLowerCase())
+  );
+}
+
+export function stripModelMarkersFromText(text: string): string {
+  return text.replace(/^(?:\s*<model\s+[^>\r\n]{1,240}>\s*(?:\r?\n)?)+/i, "");
+}
+
+function stripModelMarkersFromContentValue(value: any): any {
+  if (typeof value === "string") return stripModelMarkersFromText(value);
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      let out = part;
+      if (typeof part.text === "string") {
+        const stripped = stripModelMarkersFromText(part.text);
+        if (stripped !== part.text) {
+          out = { ...out, text: stripped };
+          changed = true;
+        }
+      }
+      if (typeof part.content === "string") {
+        const stripped = stripModelMarkersFromText(part.content);
+        if (stripped !== part.content) {
+          out = { ...out, content: stripped };
+          changed = true;
+        }
+      }
+      return out;
+    });
+    return changed ? next : value;
+  }
+  return value;
+}
+
+export function stripModelMarkersFromBody(body: any): any {
+  if (!body || typeof body !== "object") return body;
+  let changed = false;
+  let next = body;
+  const ensureNext = () => {
+    if (next === body) next = { ...body };
+    changed = true;
+  };
+
+  if (Array.isArray(body.messages)) {
+    const messages = body.messages.map((message: any) => {
+      if (!message || typeof message !== "object") return message;
+      const stripped = stripModelMarkersFromContentValue(message.content);
+      if (stripped !== message.content) {
+        changed = true;
+        return { ...message, content: stripped };
+      }
+      return message;
+    });
+    if (changed) {
+      ensureNext();
+      next.messages = messages;
+    }
+  }
+
+  if (typeof body.input === "string") {
+    const stripped = stripModelMarkersFromText(body.input);
+    if (stripped !== body.input) {
+      ensureNext();
+      next.input = stripped;
+    }
+  } else if (Array.isArray(body.input)) {
+    let inputChanged = false;
+    const input = body.input.map((item: any) => {
+      if (!item || typeof item !== "object") return item;
+      const stripped = stripModelMarkersFromContentValue(item.content);
+      if (stripped !== item.content) {
+        inputChanged = true;
+        return { ...item, content: stripped };
+      }
+      return item;
+    });
+    if (inputChanged) {
+      ensureNext();
+      next.input = input;
+    }
+  }
+
+  return changed || next !== body ? next : body;
+}
+
+function buildResponseModelMarker(provider: string, model: string): string {
+  const providerModel = `${provider}/${model}`;
+  const template =
+    process.env.OMNIROUTE_RESPONSE_MODEL_PREFIX_FORMAT || "<model {provider}/{model}>";
+  return `${template.replaceAll("{provider}", provider).replaceAll("{model}", model).replaceAll("{providerModel}", providerModel)}\n`;
+}
+
+function withModelPrefixHeaders(headers: Headers, provider: string, model: string): Headers {
+  const next = new Headers(headers);
+  next.delete("content-length");
+  next.set("x-omniroute-response-model", `${provider}/${model}`);
+  next.set("x-omniroute-response-model-prefix", "1");
+  return next;
+}
+
+function prependMarkerToJsonPayload(payload: any, marker: string): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  let changed = false;
+  if (Array.isArray(payload.choices)) {
+    payload.choices = payload.choices.map((choice: any, index: number) => {
+      if (!choice || typeof choice !== "object") return choice;
+      const message = choice.message;
+      if (message && typeof message === "object" && typeof message.content === "string") {
+        if (stripModelMarkersFromText(message.content) !== message.content) return choice;
+        changed = true;
+        return { ...choice, message: { ...message, content: `${marker}${message.content}` } };
+      }
+      if (index === 0 && choice.text && typeof choice.text === "string") {
+        if (stripModelMarkersFromText(choice.text) !== choice.text) return choice;
+        changed = true;
+        return { ...choice, text: `${marker}${choice.text}` };
+      }
+      return choice;
+    });
+  }
+  if (!changed && typeof payload.output_text === "string") {
+    if (stripModelMarkersFromText(payload.output_text) === payload.output_text) {
+      payload.output_text = `${marker}${payload.output_text}`;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function buildOpenAiPrefixChunk(provider: string, model: string, marker: string): string {
+  return `data: ${JSON.stringify({
+    id: "omniroute-model-prefix",
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: `${provider}/${model}`,
+    choices: [{ index: 0, delta: { content: marker }, finish_reason: null }],
+  })}\n\n`;
+}
+
+async function addResponseModelPrefix(
+  response: Response,
+  provider: string,
+  model: string,
+  body: any
+): Promise<Response> {
+  if (!isResponseModelPrefixEnabled()) return response;
+  if (!body || !Array.isArray(body.messages)) return response;
+  const marker = buildResponseModelMarker(provider, model);
+  const contentType = response.headers.get("content-type") || "";
+  const headers = withModelPrefixHeaders(response.headers, provider, model);
+
+  if (contentType.includes("text/event-stream") && response.body) {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(buildOpenAiPrefixChunk(provider, model, marker));
+    let injected = false;
+    const upstream = response.body;
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = upstream.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!injected) {
+              controller.enqueue(prefix);
+              injected = true;
+            }
+            controller.enqueue(value);
+          }
+          if (!injected) controller.enqueue(prefix);
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        } finally {
+          reader.releaseLock();
+        }
+      },
+      cancel(reason) {
+        try {
+          return upstream.cancel(reason);
+        } catch {
+          return undefined;
+        }
+      },
+    });
+    return new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  if (contentType.includes("application/json")) {
+    const text = await response.text();
+    try {
+      const payload = JSON.parse(text);
+      if (prependMarkerToJsonPayload(payload, marker)) {
+        return new Response(JSON.stringify(payload), {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      }
+    } catch {
+      // Fall through to the original payload text if the upstream lied about JSON.
+    }
+    return new Response(text, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  return response;
+}
+
+async function addResponseModelPrefixToResult(
+  result: any,
+  provider: string,
+  model: string,
+  body: any
+): Promise<any> {
+  if (!result?.success || !(result.response instanceof Response)) return result;
+  const response = await addResponseModelPrefix(result.response, provider, model, body);
+  return response === result.response ? result : { ...result, response };
+}
+
 function getHeaderValue(headers: Record<string, unknown> | null | undefined, name: string) {
   if (!headers || typeof headers !== "object") return "";
   const lowerName = name.toLowerCase();
@@ -381,10 +626,11 @@ export async function executeChatWithBreaker({
   const isShadowTraffic = normalizedTrafficType === "shadow";
 
   try {
+    const upstreamBody = shouldStripInputModelMarkers() ? stripModelMarkersFromBody(body) : body;
     const chatFn = () =>
       runWithProxyContext(proxyInfo?.proxy || null, () =>
         (handleChatCore as any)({
-          body: { ...body, model: `${provider}/${model}` },
+          body: { ...upstreamBody, model: `${provider}/${model}` },
           modelInfo: { provider, model, extendedContext, apiFormat: modelApiFormat },
           credentials: refreshedCredentials,
           log: handlerLog,
@@ -465,30 +711,58 @@ export async function executeChatWithBreaker({
 
       if (!proxyInfo?.proxy && isTlsFingerprintActive()) {
         const tracked = await runWithTlsTracking(chatFn);
-        return { result: tracked.result, tlsFingerprintUsed: tracked.tlsFingerprintUsed };
+        return {
+          result: await addResponseModelPrefixToResult(
+            tracked.result,
+            provider,
+            model,
+            upstreamBody
+          ),
+          tlsFingerprintUsed: tracked.tlsFingerprintUsed,
+        };
       }
 
       const result = await chatFn();
-      return { result, tlsFingerprintUsed: false };
+      return {
+        result: await addResponseModelPrefixToResult(result, provider, model, upstreamBody),
+        tlsFingerprintUsed: false,
+      };
     }
 
     if (bypassCircuitBreaker) {
       if (!proxyInfo?.proxy && isTlsFingerprintActive()) {
         const tracked = await runWithTlsTracking(chatFn);
-        return { result: tracked.result, tlsFingerprintUsed: tracked.tlsFingerprintUsed };
+        return {
+          result: await addResponseModelPrefixToResult(
+            tracked.result,
+            provider,
+            model,
+            upstreamBody
+          ),
+          tlsFingerprintUsed: tracked.tlsFingerprintUsed,
+        };
       }
 
       const result = await chatFn();
-      return { result, tlsFingerprintUsed: false };
+      return {
+        result: await addResponseModelPrefixToResult(result, provider, model, upstreamBody),
+        tlsFingerprintUsed: false,
+      };
     }
 
     if (!proxyInfo?.proxy && isTlsFingerprintActive()) {
       const tracked = await breaker.execute(async () => runWithTlsTracking(chatFn));
-      return { result: tracked.result, tlsFingerprintUsed: tracked.tlsFingerprintUsed };
+      return {
+        result: await addResponseModelPrefixToResult(tracked.result, provider, model, upstreamBody),
+        tlsFingerprintUsed: tracked.tlsFingerprintUsed,
+      };
     }
 
     const result = await breaker.execute(chatFn);
-    return { result, tlsFingerprintUsed: false };
+    return {
+      result: await addResponseModelPrefixToResult(result, provider, model, upstreamBody),
+      tlsFingerprintUsed: false,
+    };
   } catch (cbErr: any) {
     if (cbErr instanceof CircuitBreakerOpenError) {
       log.warn("CIRCUIT", `${provider} circuit open during retry: ${cbErr.message}`);
@@ -596,10 +870,7 @@ export function handleNoCredentials(
     // all disabled. log level is `warn` rather than `error` because zero active
     // credentials is an expected operator-driven state, not a server fault.
     log.warn("AUTH", `No active credentials for provider: ${provider}`);
-    return errorResponse(
-      HTTP_STATUS.NOT_FOUND,
-      `No active credentials for provider: ${provider}`
-    );
+    return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
   }
   log.warn("CHAT", "No more accounts available", { provider });
   return errorResponse(
