@@ -716,19 +716,11 @@ export async function getUnifiedModelsResponse(
       if (typeof combo.name !== "string" || combo.name.length === 0) continue;
       if (listedIds.has(combo.name)) continue; // #4164: don't shadow a built-in auto/* id
 
-      // Skip combos whose any underlying target model is hidden
-      const comboTargets = resolveNestedComboTargets(
-        combo as Parameters<typeof resolveNestedComboTargets>[0],
-        combos as Parameters<typeof resolveNestedComboTargets>[1]
-      ) as ComboCatalogTarget[];
-      if (
-        comboTargets.some((target) => {
-          const resolved = getComboTargetModelId(target);
-          return resolved ? getModelIsHidden(resolved.providerId, resolved.modelId) : false;
-        })
-      ) {
-        continue;
-      }
+      // Do not hide the combo just because one of its underlying models is hidden.
+      // The combo itself is a first-class routable model, and its own isHidden/isActive
+      // flags are the only catalog-level visibility switches. Otherwise a renamed or
+      // edited combo can silently disappear from /v1/models when one leaf target is
+      // hidden for direct use.
 
       const comboMetadata = buildComboCatalogMetadata(combo, combos);
 
