@@ -1,4 +1,4 @@
-const CACHE_NAME = "omniroute-pwa-v2";
+const CACHE_NAME = "omniroute-pwa-v3-20260628";
 const APP_SHELL = [
   "/",
   "/offline",
