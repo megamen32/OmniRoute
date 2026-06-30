@@ -61,9 +61,10 @@ jobs:
               | tail -1)
           fi
           if [ -z "$TARGET" ]; then echo "No release/v* branch found"; exit 1; fi
-          # Strict format guard — reject anything that isn't release/vX.Y.Z (blocks
-          # ref/command injection via the workflow_dispatch input).
-          if ! printf '%s' "$TARGET" | grep -qE '^release/v[0-9]+\.[0-9]+\.[0-9]+$'; then
+          # Strict format guard — allow canonical release/vX.Y.Z branches and
+          # our generated release/vX.Y.Z-<safe-suffix> work branches while still
+          # blocking ref/command injection via the workflow_dispatch input.
+          if ! printf '%s' "$TARGET" | grep -qE '^release/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9._-]*)?$'; then
             echo "Refusing non-canonical branch name: $TARGET"; exit 1
           fi
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
