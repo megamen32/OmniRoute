@@ -136,13 +136,23 @@ jobs:
             echo "_Ratchet drift (eslint warnings / cognitive-complexity / file-size) listed above is expected mid-cycle and is rebaselined at release — it is NOT a contributor concern and did not, on its own, open this issue._"
           } > issue-body.md
 
-          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --search "in:title $TITLE" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if ! EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title $TITLE" --json number --jq '.[0].number' 2>/dev/null); then
+            echo "Issue tracking is unavailable for $GITHUB_REPOSITORY; skipping issue update."
+            exit 0
+          fi
           if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
-            echo "Updated existing issue #$EXISTING"
+            if gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md; then
+              echo "Updated existing issue #$EXISTING"
+            else
+              echo "Failed to update issue #$EXISTING; continuing because release-green is non-blocking."
+            fi
           else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file issue-body.md
+            if gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file issue-body.md; then
+              echo "Created release-green tracking issue"
+            else
+              echo "Issue creation failed or issues are disabled; continuing because release-green is non-blocking."
+            fi
           fi
 
       - name: Upload report artifact
