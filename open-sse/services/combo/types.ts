@@ -87,6 +87,9 @@ export type HandleComboChatOptions = {
   relayOptions?: ComboRelayOptions | null;
   signal?: AbortSignal | null;
   apiKeyAllowedConnections?: string[] | null;
+  requestId?: string | null;
+  sessionId?: string | null;
+  requestedModel?: string | null;
   nesting?: ComboNestingContext | null;
 };
 

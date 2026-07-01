@@ -60,6 +60,7 @@ import { phaseComboSetup } from "./combo/comboSetup.ts";
 import { checkCredentialGate, logCredentialSkip } from "./credentialGate.ts";
 import { emit } from "../../src/lib/events/eventBus";
 import { notifyWebhookEvent } from "../../src/lib/webhookDispatcher";
+import { recordComboResolvedModel } from "../../src/domain/comboResolvedModelRegistry";
 import { classifyWithConfig } from "./intentClassifier.ts";
 import { selectProvider as selectAutoProvider } from "./autoCombo/engine.ts";
 import { selectWithStrategy } from "./autoCombo/routerStrategy.ts";
@@ -717,6 +718,9 @@ export async function handleComboChat({
   relayOptions,
   signal,
   apiKeyAllowedConnections = null,
+  requestId = null,
+  sessionId = null,
+  requestedModel = null,
   nesting = null,
 }: HandleComboChatOptions): Promise<Response> {
   const comboCtx = createComboContext({ body, combo, settings, relayOptions, log });
@@ -2051,6 +2055,32 @@ export async function handleComboChat({
               strategy,
               target: toRecordedTarget(target),
             });
+            const responseRequestId =
+              result.headers?.get("X-OmniRoute-Request-Id") ||
+              result.headers?.get("x-omniroute-request-id") ||
+              requestId;
+            const resolvedModelRecord = {
+              sessionId: sessionId || effectiveSessionId || relayOptions?.sessionId || null,
+              comboName: combo.name,
+              requestedModel: requestedModel || combo.name,
+              resolvedModel: modelStr,
+              provider,
+              providerId: target.providerId ?? null,
+              connectionId: effectiveConnectionId || target.connectionId || null,
+              targetIndex: i,
+              strategy,
+              latencyMs,
+            };
+            recordComboResolvedModel({
+              ...resolvedModelRecord,
+              requestId: responseRequestId,
+            });
+            if (requestId && responseRequestId && responseRequestId !== requestId) {
+              recordComboResolvedModel({
+                ...resolvedModelRecord,
+                requestId,
+              });
+            }
             recordedAttempts++;
 
             // Reset cooldown on success
