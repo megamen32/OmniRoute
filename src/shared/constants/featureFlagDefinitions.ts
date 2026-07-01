@@ -326,6 +326,18 @@ export const FEATURE_FLAG_DEFINITIONS: FeatureFlagDefinition[] = [
     warningLevel: "caution",
   },
   {
+    key: "OMNIROUTE_RESPONSE_MODEL_PREFIX",
+    label: "Response Model Prefix",
+    description:
+      "Prepend the resolved provider/model marker to text chat responses and expose x-omniroute-response-model headers. Useful for debugging combo routing; disable for clients that should see only assistant content.",
+    descriptionI18nKey: "featureFlagOmnirouteResponseModelPrefixDescription",
+    category: "runtime",
+    defaultValue: "false",
+    type: "boolean",
+    requiresRestart: false,
+    warningLevel: "info",
+  },
+  {
     key: "STREAM_RECOVERY_ENABLED",
     label: "Stream Recovery",
     description:

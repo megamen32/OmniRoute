@@ -40,6 +40,7 @@ import { resolveUseUpstream429BreakerHints } from "../../shared/utils/providerHi
 import { logProxyEvent } from "../../lib/proxyLogger";
 import { logTranslationEvent } from "../../lib/translatorEvents";
 import { getRuntimeProviderProfile } from "@omniroute/open-sse/services/accountFallback.ts";
+import { resolveFeatureFlag } from "@/shared/utils/featureFlags";
 
 // Models that explicitly cannot run on the codex/ChatGPT-Pro OAuth pool — when
 // a caller writes `codex/deepseek-v4-pro` we transparently reroute to the
@@ -70,7 +71,17 @@ function isTruthyEnv(value: string | undefined | null): boolean {
 }
 
 function isResponseModelPrefixEnabled(): boolean {
-  return isTruthyEnv(process.env.OMNIROUTE_RESPONSE_MODEL_PREFIX);
+  try {
+    return isTruthyEnv(resolveFeatureFlag("OMNIROUTE_RESPONSE_MODEL_PREFIX"));
+  } catch (error) {
+    log.warn(
+      "FEATURE_FLAGS",
+      `Failed to resolve OMNIROUTE_RESPONSE_MODEL_PREFIX, falling back to env: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return isTruthyEnv(process.env.OMNIROUTE_RESPONSE_MODEL_PREFIX);
+  }
 }
 
 function toStringHeaderRecord(
