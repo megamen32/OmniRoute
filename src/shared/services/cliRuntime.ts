@@ -507,12 +507,39 @@ const getExtraPaths = () =>
       return true;
     });
 
+const pushUniquePath = (paths: string[], candidate: string | null | undefined) => {
+  if (!candidate) return;
+  const normalized = path.normalize(candidate);
+  if (!paths.some((existing) => path.normalize(existing) === normalized)) {
+    paths.push(candidate);
+  }
+};
+
+const getClaudeVersionInstallPaths = (home: string): string[] => {
+  const versionsDir = path.join(home, ".local", "share", "claude", "versions");
+  try {
+    return fsSync
+      .readdirSync(versionsDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() || entry.isSymbolicLink())
+      .map((entry) => path.join(versionsDir, entry.name))
+      .sort((a, b) => {
+        try {
+          return fsSync.statSync(b).mtimeMs - fsSync.statSync(a).mtimeMs;
+        } catch {
+          return b.localeCompare(a);
+        }
+      });
+  } catch {
+    return [];
+  }
+};
+
 /**
  * Get known installation paths for a specific CLI tool.
  * Checks npm global prefix, NVM locations, standalone installer paths.
  * Works on all platforms — Windows checks .cmd wrappers, Linux/macOS checks bare names.
  */
-const getKnownToolPaths = (toolId: string): string[] => {
+export const getKnownToolPaths = (toolId: string): string[] => {
   const home = os.homedir();
   const paths: string[] = [];
 
@@ -549,6 +576,31 @@ const getKnownToolPaths = (toolId: string): string[] => {
 
   const bins = toolBins[toolId] || [];
 
+  if (toolId === "codex") {
+    // Codex frequently runs from the managed standalone install even when PATH
+    // lost ~/.local/bin, ~/.npm-global/bin, or /usr/local/bin. Check those
+    // canonical locations before falling back to PATH.
+    pushUniquePath(
+      paths,
+      path.join(home, ".codex", "packages", "standalone", "current", "bin", "codex")
+    );
+    pushUniquePath(paths, path.join(home, ".codex", "packages", "standalone", "current", "codex"));
+    pushUniquePath(paths, path.join(home, ".npm-global", "bin", "codex"));
+  }
+
+  if (toolId === "claude") {
+    // Claude Code's installer stores versioned binaries under
+    // ~/.local/share/claude/versions/<version> and normally exposes a symlink
+    // at ~/.local/bin/claude. Check both so service PATH drift does not hide it.
+    pushUniquePath(paths, path.join(home, ".local", "bin", "claude"));
+    pushUniquePath(paths, path.join(home, ".local", "share", "claude", "claude"));
+    pushUniquePath(paths, path.join(home, ".claude", "local", "claude"));
+    pushUniquePath(paths, path.join(home, ".claude", "bin", "claude"));
+    for (const candidate of getClaudeVersionInstallPaths(home)) {
+      pushUniquePath(paths, candidate);
+    }
+  }
+
   if (isWindows()) {
     const userProfile = process.env.USERPROFILE || home;
     const appData = validateEnvPath(process.env.APPDATA, [home, userProfile]);
@@ -559,64 +611,76 @@ const getKnownToolPaths = (toolId: string): string[] => {
     ]);
 
     if (toolId === "claude") {
-      paths.push(path.join(home, ".local", "bin", "claude.exe"));
+      pushUniquePath(paths, path.join(home, ".local", "bin", "claude.exe"));
       if (localAppData) {
-        paths.push(path.join(localAppData, "Programs", "Claude", "claude.exe"));
-        paths.push(path.join(localAppData, "claude-code", "claude.exe"));
+        pushUniquePath(paths, path.join(localAppData, "Programs", "Claude", "claude.exe"));
+        pushUniquePath(paths, path.join(localAppData, "claude-code", "claude.exe"));
       }
     }
 
+    if (toolId === "codex") {
+      pushUniquePath(
+        paths,
+        path.join(home, ".codex", "packages", "standalone", "current", "bin", "codex.exe")
+      );
+      pushUniquePath(
+        paths,
+        path.join(home, ".codex", "packages", "standalone", "current", "codex.exe")
+      );
+      pushUniquePath(paths, path.join(home, ".npm-global", "codex.cmd"));
+    }
+
     if (toolId === "droid") {
-      paths.push(path.join(home, "bin", "droid.exe"));
+      pushUniquePath(paths, path.join(home, "bin", "droid.exe"));
     }
 
     // Devin CLI installs to %LOCALAPPDATA%\devin\cli\bin\devin.exe
     if (toolId === "devin" && localAppData) {
-      paths.push(path.join(localAppData, "devin", "cli", "bin", "devin.exe"));
+      pushUniquePath(paths, path.join(localAppData, "devin", "cli", "bin", "devin.exe"));
     }
 
     for (const [winName] of bins) {
-      if (npmPrefix) paths.push(path.join(npmPrefix, winName));
+      if (npmPrefix) pushUniquePath(paths, path.join(npmPrefix, winName));
       if (appData) {
         const appDataPath = path.join(appData, "npm", winName);
         if (
           !npmPrefix ||
           path.normalize(appDataPath) !== path.normalize(path.join(npmPrefix, winName))
         ) {
-          paths.push(appDataPath);
+          pushUniquePath(paths, appDataPath);
         }
       }
-      if (nvmNodePath) paths.push(path.join(nvmNodePath, winName));
+      if (nvmNodePath) pushUniquePath(paths, path.join(nvmNodePath, winName));
     }
   } else {
     for (const [, posixName] of bins) {
       const nodeBinDir = path.dirname(process.execPath);
-      paths.push(path.join(nodeBinDir, posixName));
+      pushUniquePath(paths, path.join(nodeBinDir, posixName));
 
       if (npmPrefix) {
-        paths.push(path.join(npmPrefix, "bin", posixName));
+        pushUniquePath(paths, path.join(npmPrefix, "bin", posixName));
       }
 
-      paths.push(path.join(home, ".local", "bin", posixName));
+      pushUniquePath(paths, path.join(home, ".local", "bin", posixName));
       // Only add system paths if they exist (avoids unnecessary stat calls)
       if (fsSync.existsSync("/usr/local/bin")) {
-        paths.push(path.join("/usr", "local", "bin", posixName));
+        pushUniquePath(paths, path.join("/usr", "local", "bin", posixName));
       }
       if (fsSync.existsSync("/usr/bin")) {
-        paths.push(path.join("/usr", "bin", posixName));
+        pushUniquePath(paths, path.join("/usr", "bin", posixName));
       }
 
       if (toolId === "opencode") {
-        paths.push(path.join(home, ".opencode", "bin", posixName));
+        pushUniquePath(paths, path.join(home, ".opencode", "bin", posixName));
       }
       if (toolId === "claude") {
-        paths.push(path.join(home, ".claude", "bin", posixName));
+        pushUniquePath(paths, path.join(home, ".claude", "bin", posixName));
       }
       // Devin CLI installs to ~/.local/share/devin/bin/devin (Linux)
       // or via shell installer to ~/.devin/bin/devin
       if (toolId === "devin") {
-        paths.push(path.join(home, ".local", "share", "devin", "bin", "devin"));
-        paths.push(path.join(home, ".devin", "bin", "devin"));
+        pushUniquePath(paths, path.join(home, ".local", "share", "devin", "bin", "devin"));
+        pushUniquePath(paths, path.join(home, ".devin", "bin", "devin"));
       }
     }
   }

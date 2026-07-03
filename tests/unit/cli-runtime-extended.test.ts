@@ -93,6 +93,41 @@ test("CLI config helpers enforce safe config homes and expose per-tool config pa
   });
 });
 
+test("getKnownToolPaths includes Codex and Claude default installer locations outside PATH", async () => {
+  const cliRuntime = await importFresh("default-installer-paths");
+  const homeDir = os.homedir();
+
+  const codexPaths = cliRuntime.getKnownToolPaths("codex");
+  assert.ok(
+    codexPaths.includes(
+      path.join(homeDir, ".codex", "packages", "standalone", "current", "bin", "codex")
+    ),
+    "Codex standalone current/bin/codex should be checked before PATH"
+  );
+  assert.ok(
+    codexPaths.includes(path.join(homeDir, ".codex", "packages", "standalone", "current", "codex")),
+    "Codex standalone current/codex wrapper should be checked before PATH"
+  );
+  assert.ok(
+    codexPaths.includes(path.join(homeDir, ".npm-global", "bin", "codex")),
+    "npm-global Codex wrapper should be checked before PATH"
+  );
+
+  const claudePaths = cliRuntime.getKnownToolPaths("claude");
+  assert.ok(
+    claudePaths.includes(path.join(homeDir, ".local", "bin", "claude")),
+    "Claude ~/.local/bin symlink should be checked before PATH"
+  );
+  assert.ok(
+    claudePaths.includes(path.join(homeDir, ".local", "share", "claude", "claude")),
+    "Claude local-share default binary should be checked before PATH"
+  );
+  assert.ok(
+    claudePaths.includes(path.join(homeDir, ".claude", "local", "claude")),
+    "Claude ~/.claude/local binary should be checked before PATH"
+  );
+});
+
 test("getCliRuntimeStatus rejects unsafe env overrides and reports validated runtime mode", async () => {
   process.env.CLI_MODE = "container";
   process.env.CLI_CLAUDE_BIN = "relative/claude";
@@ -247,39 +282,39 @@ test("shouldUseShellForCommand never uses the shell on non-Windows platforms", a
 
 test("getCliRuntimeStatus discovers binaries from CLI_EXTRA_PATHS during PATH lookup", async () => {
   const tempDir = createTempDir("omniroute-cli-extra-path-");
-  const scriptName = process.platform === "win32" ? "qodercli.cmd" : "qodercli";
+  const scriptName = process.platform === "win32" ? "openclaw.cmd" : "openclaw";
   writeScript(
     tempDir,
     scriptName,
     process.platform === "win32"
-      ? "@echo off\r\necho qodercli 1.2.3\r\nREM padding padding padding\r\n"
-      : "#!/bin/sh\necho qodercli 1.2.3\n# padding padding padding\n"
+      ? "@echo off\r\necho openclaw 1.2.3\r\nREM padding padding padding\r\n"
+      : "#!/bin/sh\necho openclaw 1.2.3\n# padding padding padding\n"
   );
 
   process.env.CLI_EXTRA_PATHS = tempDir;
   process.env.PATH = process.platform === "win32" ? process.env.PATH || "" : "/bin:/usr/bin";
 
   const cliRuntime = await importFresh("extra-paths");
-  const status = await cliRuntime.getCliRuntimeStatus("qoder");
+  const status = await cliRuntime.getCliRuntimeStatus("openclaw");
 
   assert.equal(status.installed, true);
   assert.equal(status.runnable, true);
   assert.equal(status.reason, null);
   assert.equal(
     path.basename(String(status.commandPath)).toLowerCase(),
-    process.platform === "win32" ? "qodercli.cmd" : "qodercli"
+    process.platform === "win32" ? "openclaw.cmd" : "openclaw"
   );
 });
 
 test("getCliRuntimeStatus resolves known binaries from npm global prefix discovered via npm config", async () => {
   const prefixDir = createTempDir("omniroute-cli-prefix-");
-  const scriptName = process.platform === "win32" ? "qodercli.cmd" : "qodercli";
+  const scriptName = process.platform === "win32" ? "openclaw.cmd" : "openclaw";
   const scriptPath = writeScript(
     path.join(prefixDir, process.platform === "win32" ? "" : "bin"),
     scriptName,
     process.platform === "win32"
-      ? "@echo off\r\necho qodercli 1.2.3\r\nREM padding padding padding\r\n"
-      : "#!/bin/sh\necho qodercli 1.2.3\n# padding padding padding\n"
+      ? "@echo off\r\necho openclaw 1.2.3\r\nREM padding padding padding\r\n"
+      : "#!/bin/sh\necho openclaw 1.2.3\n# padding padding padding\n"
   );
 
   delete process.env.npm_config_prefix;
@@ -292,7 +327,7 @@ test("getCliRuntimeStatus resolves known binaries from npm global prefix discove
   syncBuiltinESMExports();
 
   const cliRuntime = await importFresh("npm-prefix-known-path");
-  const status = await cliRuntime.getCliRuntimeStatus("qoder");
+  const status = await cliRuntime.getCliRuntimeStatus("openclaw");
 
   assert.equal(status.installed, true);
   assert.equal(status.runnable, true);
@@ -303,7 +338,7 @@ test("getCliRuntimeStatus resolves known binaries from npm global prefix discove
 test("getCliRuntimeStatus ignores suspicious known-path binaries and symlink escapes", async () => {
   const prefixDir = createTempDir("omniroute-cli-suspicious-");
   const binDir = path.join(prefixDir, process.platform === "win32" ? "" : "bin");
-  const scriptName = process.platform === "win32" ? "qodercli.exe" : "qodercli";
+  const scriptName = process.platform === "win32" ? "openclaw.cmd" : "openclaw";
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(path.join(binDir, scriptName), "");
 
@@ -311,7 +346,7 @@ test("getCliRuntimeStatus ignores suspicious known-path binaries and symlink esc
   process.env.PATH = process.platform === "win32" ? process.env.PATH || "" : "/bin:/usr/bin";
 
   const cliRuntime = await importFresh("suspicious-size");
-  const suspiciousStatus = await cliRuntime.getCliRuntimeStatus("qoder");
+  const suspiciousStatus = await cliRuntime.getCliRuntimeStatus("openclaw");
 
   assert.equal(suspiciousStatus.installed, false);
   assert.equal(suspiciousStatus.reason, "suspicious_size");
@@ -322,16 +357,16 @@ test("getCliRuntimeStatus ignores suspicious known-path binaries and symlink esc
     const outsideDir = createTempDir("omniroute-cli-outside-");
     const outsideTarget = writeScript(
       outsideDir,
-      "qodercli",
-      "#!/bin/sh\necho qodercli 9.9.9\n# padding padding padding\n"
+      "openclaw",
+      "#!/bin/sh\necho openclaw 9.9.9\n# padding padding padding\n"
     );
 
     fs.mkdirSync(escapeBinDir, { recursive: true });
-    fs.symlinkSync(outsideTarget, path.join(escapeBinDir, "qodercli"));
+    fs.symlinkSync(outsideTarget, path.join(escapeBinDir, "openclaw"));
     process.env.npm_config_prefix = escapePrefix;
 
     const escapedRuntime = await importFresh("symlink-escape");
-    const escapedStatus = await escapedRuntime.getCliRuntimeStatus("qoder");
+    const escapedStatus = await escapedRuntime.getCliRuntimeStatus("openclaw");
 
     assert.equal(escapedStatus.installed, false);
     assert.equal(escapedStatus.reason, "symlink_escape");
