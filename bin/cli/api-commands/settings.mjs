@@ -30,6 +30,15 @@ export function register_settings(parent) {
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });
+  tag.command("post-api-settings-purge-request-history")
+    .description("Clear request log history")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/settings/purge-request-history";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
   tag.command("get-api-settings-payload-rules")
     .description("Get payload rules configuration")
     .action(async (opts, cmd) => {
@@ -222,6 +231,15 @@ export function register_settings(parent) {
           : JSON.parse(opts.body);
       }
       const res = await apiFetch(url, { method: "PUT", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-settings-purge-usage-history")
+    .description("Purge usage history")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/settings/purge-usage-history";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });

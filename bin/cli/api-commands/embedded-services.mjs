@@ -182,6 +182,167 @@ export function register_embedded_services(parent) {
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });
+  tag.command("post-api-services-mux-install")
+    .description("Install Mux from npm")
+    .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/install";
+      let body;
+      if (opts.body) {
+        body = opts.body.startsWith("@")
+          ? JSON.parse(readFileSync(opts.body.slice(1), "utf8"))
+          : JSON.parse(opts.body);
+      }
+      const res = await apiFetch(url, { method: "POST", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-mux-start")
+    .description("Start Mux")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/start";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-mux-stop")
+    .description("Stop Mux")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/stop";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-mux-restart")
+    .description("Restart Mux")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/restart";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-mux-update")
+    .description("Update Mux to a newer npm version")
+    .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/update";
+      let body;
+      if (opts.body) {
+        body = opts.body.startsWith("@")
+          ? JSON.parse(readFileSync(opts.body.slice(1), "utf8"))
+          : JSON.parse(opts.body);
+      }
+      const res = await apiFetch(url, { method: "POST", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("get-api-services-mux-status")
+    .description("Get Mux status")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/status";
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-mux-auto-start")
+    .description("Toggle Mux auto-start")
+    .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/mux/auto-start";
+      let body;
+      if (opts.body) {
+        body = opts.body.startsWith("@")
+          ? JSON.parse(readFileSync(opts.body.slice(1), "utf8"))
+          : JSON.parse(opts.body);
+      }
+      const res = await apiFetch(url, { method: "POST", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-bifrost-install")
+    .description("Install Bifrost")
+    .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/install";
+      let body;
+      if (opts.body) {
+        body = opts.body.startsWith("@")
+          ? JSON.parse(readFileSync(opts.body.slice(1), "utf8"))
+          : JSON.parse(opts.body);
+      }
+      const res = await apiFetch(url, { method: "POST", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-bifrost-start")
+    .description("Start Bifrost")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/start";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-bifrost-stop")
+    .description("Stop Bifrost")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/stop";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-bifrost-restart")
+    .description("Restart Bifrost")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/restart";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-bifrost-update")
+    .description("Update Bifrost")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/update";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("get-api-services-bifrost-status")
+    .description("Get Bifrost status")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/status";
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-services-bifrost-auto-start")
+    .description("Toggle Bifrost auto-start")
+    .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/services/bifrost/auto-start";
+      let body;
+      if (opts.body) {
+        body = opts.body.startsWith("@")
+          ? JSON.parse(readFileSync(opts.body.slice(1), "utf8"))
+          : JSON.parse(opts.body);
+      }
+      const res = await apiFetch(url, { method: "POST", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
   tag.command("get-api-services-name-logs")
     .description("Stream service logs via SSE")
     .requiredOption("--name <name>", "")

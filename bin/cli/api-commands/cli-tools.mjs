@@ -358,4 +358,58 @@ export function register_cli_tools(parent) {
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });
+  tag.command("get-api-cli-tools-crush-settings")
+    .description("Read Crush CLI OmniRoute config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/cli-tools/crush-settings";
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-cli-tools-crush-settings")
+    .description("Write Crush CLI OmniRoute config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/cli-tools/crush-settings";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("delete-api-cli-tools-crush-settings")
+    .description("Remove OmniRoute from Crush CLI config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/cli-tools/crush-settings";
+      const res = await apiFetch(url, { method: "DELETE", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("get-api-cli-tools-codewhale-settings")
+    .description("Read CodeWhale CLI OmniRoute config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/cli-tools/codewhale-settings";
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("post-api-cli-tools-codewhale-settings")
+    .description("Write CodeWhale CLI OmniRoute config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/cli-tools/codewhale-settings";
+      const res = await apiFetch(url, { method: "POST", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("delete-api-cli-tools-codewhale-settings")
+    .description("Remove OmniRoute from CodeWhale CLI config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/cli-tools/codewhale-settings";
+      const res = await apiFetch(url, { method: "DELETE", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
 }

@@ -145,4 +145,26 @@ export function register_providers(parent) {
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });
+  tag.command("get-api-v1-providers-suggested-models")
+    .description("Suggested media models")
+    .option("--type <type>", "Media kind to search for (e.g. `image`, `audio`, `video`).")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/v1/providers/suggested-models";
+      const qs = new URLSearchParams();
+      if (opts.type != null) qs.set("type", String(opts.type));
+      if (qs.toString()) url += "?" + qs.toString();
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("get-api-v1-provider-plugin-manifest")
+    .description("Provider plugin manifest")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/v1/provider-plugin-manifest";
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
 }

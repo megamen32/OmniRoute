@@ -30,6 +30,31 @@ export function register_compression(parent) {
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });
+  tag.command("get-api-settings-compression-mcp-accessibility")
+    .description("Get the MCP tool-output accessibility (trimming) config")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/settings/compression/mcp-accessibility";
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
+  tag.command("put-api-settings-compression-mcp-accessibility")
+    .description("Update the MCP tool-output accessibility (trimming) config")
+    .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/settings/compression/mcp-accessibility";
+      let body;
+      if (opts.body) {
+        body = opts.body.startsWith("@")
+          ? JSON.parse(readFileSync(opts.body.slice(1), "utf8"))
+          : JSON.parse(opts.body);
+      }
+      const res = await apiFetch(url, { method: "PUT", body, baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
   tag.command("post-api-compression-preview")
     .description("Preview compression for a message payload")
     .option("--body <jsonOrPath>", "JSON body or @path/to/file.json")

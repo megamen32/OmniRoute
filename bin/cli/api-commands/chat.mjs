@@ -21,6 +21,19 @@ export function register_chat(parent) {
       const data = res.ok ? await res.json() : await res.text();
       emit(data, gOpts);
     });
+  tag.command("get-api-v1-ws")
+    .description("Chat completion over WebSocket (handshake + upgrade)")
+    .option("--handshake <handshake>", "Set to `1` to receive the JSON connection descriptor instead of upgrading.")
+    .action(async (opts, cmd) => {
+      const gOpts = cmd.optsWithGlobals();
+      let url = "/api/v1/ws";
+      const qs = new URLSearchParams();
+      if (opts.handshake != null) qs.set("handshake", String(opts.handshake));
+      if (qs.toString()) url += "?" + qs.toString();
+      const res = await apiFetch(url, { method: "GET", baseUrl: gOpts.baseUrl, apiKey: gOpts.apiKey });
+      const data = res.ok ? await res.json() : await res.text();
+      emit(data, gOpts);
+    });
   tag.command("post-api-v1-providers-provider-chat-completions")
     .description("Create chat completion (provider-specific)")
     .requiredOption("--provider <provider>", "")
