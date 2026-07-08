@@ -106,7 +106,10 @@ export async function POST(request: Request) {
   // Re-read body.model so the response echoes the caller's requested identifier.
   let requestedModel: string | undefined;
   try {
-    const bodyForModel = await request.clone().json().catch(() => null);
+    const bodyForModel = await request
+      .clone()
+      .json()
+      .catch(() => null);
     if (bodyForModel && typeof bodyForModel.model === "string") {
       requestedModel = bodyForModel.model;
     }

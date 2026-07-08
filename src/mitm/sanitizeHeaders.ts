@@ -31,7 +31,7 @@ function isSecretHeader(name: string): boolean {
  * - Returns a plain Record<string, string> (never undefined values)
  */
 export function sanitizeHeaders(
-  headers: IncomingHttpHeaders | Record<string, string | string[] | undefined>,
+  headers: IncomingHttpHeaders | Record<string, string | string[] | undefined>
 ): Record<string, string> {
   const result: Record<string, string> = {};
 

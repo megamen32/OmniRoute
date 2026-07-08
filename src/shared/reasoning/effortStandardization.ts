@@ -95,18 +95,13 @@ export function normalizeReasoningRequest<T>(body: T): T {
 
   const reasoning = body.reasoning;
   const clientSetReasoningEffort = body.reasoning_effort !== undefined;
-  const clientSetReasoningObjEffort =
-    isPlainObject(reasoning) && reasoning.effort !== undefined;
+  const clientSetReasoningObjEffort = isPlainObject(reasoning) && reasoning.effort !== undefined;
 
   const next: Record<string, unknown> = { ...body };
 
   // Canonical effort → the fields the mappers read. Skip entirely if the client already
   // expressed a reasoning effort (either shape) so client intent is preserved.
-  if (
-    canonicalEffort !== undefined &&
-    !clientSetReasoningEffort &&
-    !clientSetReasoningObjEffort
-  ) {
+  if (canonicalEffort !== undefined && !clientSetReasoningEffort && !clientSetReasoningObjEffort) {
     next.reasoning_effort = canonicalEffort;
     next.reasoning = {
       ...(isPlainObject(reasoning) ? reasoning : {}),

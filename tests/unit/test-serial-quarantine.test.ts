@@ -14,7 +14,7 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
 const scripts: Record<string, string> = pkg.scripts;
 
-const SERIAL_GLOB = 'tests/unit/serial/**/*.test.ts';
+const SERIAL_GLOB = "tests/unit/serial/**/*.test.ts";
 
 test("test:unit:serial existe e roda o diretório de quarentena com concurrency=1", () => {
   const s = scripts["test:unit:serial"];

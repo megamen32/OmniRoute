@@ -107,7 +107,7 @@ function convertContent(content: GeminiContent): InternalMessage | null {
     if (part.functionResponse) {
       const fr = part.functionResponse;
       const payload =
-        fr.response && "result" in fr.response ? fr.response.result : fr.response ?? {};
+        fr.response && "result" in fr.response ? fr.response.result : (fr.response ?? {});
       return {
         role: "tool",
         tool_call_id: fr.id || fr.name || "",

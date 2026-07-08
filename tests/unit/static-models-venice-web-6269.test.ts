@@ -17,8 +17,5 @@ test("#6269 venice-web resolves a non-empty static local catalog", () => {
   const models = getStaticModelsForProvider("venice-web");
   assert.ok(models && models.length > 0, "venice-web should expose a static catalog");
   const ids = models.map((m) => m.id);
-  assert.ok(
-    ids.includes("venice-uncensored"),
-    `expected venice-uncensored in [${ids.join(", ")}]`
-  );
+  assert.ok(ids.includes("venice-uncensored"), `expected venice-uncensored in [${ids.join(", ")}]`);
 });

@@ -9,15 +9,10 @@ import path from "node:path";
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-effort-6241-"));
 process.env.DATA_DIR = TEST_DATA_DIR;
 
-const {
-  CANONICAL_EFFORT_VALUES,
-  normalizeEffort,
-  effortRequestSchema,
-  normalizeReasoningRequest,
-} = await import("../../src/shared/reasoning/effortStandardization.ts");
-const { providerChatCompletionSchema } = await import(
-  "../../src/shared/validation/schemas/apiV1.ts"
-);
+const { CANONICAL_EFFORT_VALUES, normalizeEffort, effortRequestSchema, normalizeReasoningRequest } =
+  await import("../../src/shared/reasoning/effortStandardization.ts");
+const { providerChatCompletionSchema } =
+  await import("../../src/shared/validation/schemas/apiV1.ts");
 const core = await import("../../src/lib/db/core.ts");
 const modelsDevSync = await import("../../src/lib/modelsDevSync.ts");
 const registry = await import("../../src/lib/modelMetadataRegistry.ts");

@@ -11,10 +11,7 @@ import { createResponsesWsProxy } from "./responses-ws-proxy.mjs";
 import { ensurePeerStampToken, stampPeerIp } from "./peer-stamp.mjs";
 import methodGuard from "./http-method-guard.cjs";
 import { ensureNativeSqlite } from "./ensure-native-sqlite.mjs";
-import {
-  isTurbopackCacheCorruption,
-  purgeAllTurbopackCaches,
-} from "./turbopackCacheHeal.mjs";
+import { isTurbopackCacheCorruption, purgeAllTurbopackCaches } from "./turbopackCacheHeal.mjs";
 import { randomUUID } from "node:crypto";
 
 const { maybeHandleDisallowedMethod } = methodGuard;
@@ -117,7 +114,8 @@ async function prepareWithHeal() {
   try {
     await nextApp.prepare();
   } catch (error) {
-    const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+    const detail =
+      error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
     if (!useTurbopack || !isTurbopackCacheCorruption(detail)) throw error;
     console.warn(
       "[Next] Turbopack dev cache looks corrupted (Windows mmap / os error 1455 — known upstream bug). Purging and retrying once…"

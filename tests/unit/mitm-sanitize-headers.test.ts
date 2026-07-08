@@ -28,7 +28,10 @@ test("sanitizeHeaders — Set-Cookie header name is matched case-insensitively",
 
 test("sanitizeHeaders — authorization bearer token is still masked, not leaked", () => {
   const out = sanitizeHeaders({ authorization: "Bearer sk-proj-abcdefghijklmnop" });
-  assert.ok(!out["authorization"].includes("sk-proj-abcdefghijklmnop"), "bearer token must be masked");
+  assert.ok(
+    !out["authorization"].includes("sk-proj-abcdefghijklmnop"),
+    "bearer token must be masked"
+  );
 });
 
 test("sanitizeHeaders — non-secret headers pass through unchanged", () => {

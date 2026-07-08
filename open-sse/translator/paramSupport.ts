@@ -25,8 +25,7 @@ const STRIP_RULES: StripRule[] = [
   // GitHub Copilot Claude (except opus/sonnet 4.6): thinking + reasoning_effort rejected. #713
   {
     provider: "github",
-    match: (m: string) =>
-      /claude/i.test(m) && !/claude.*(opus|sonnet).*4\.6/i.test(m),
+    match: (m: string) => /claude/i.test(m) && !/claude.*(opus|sonnet).*4\.6/i.test(m),
     drop: ["thinking", "reasoning_effort"],
   },
   // NVIDIA NIM z-ai/glm-5.2: OpenAI-compatible wrapper rejects BOTH the `reasoning`

@@ -17,10 +17,7 @@ import {
 } from "@/shared/constants/providers";
 import { pickDefaultModel, resolveModelFilterKey } from "./modelSelection";
 import ReasoningControls from "./ReasoningControls";
-import {
-  resolveReasoningControls,
-  type ReasoningControlSpec,
-} from "./reasoningControls";
+import { resolveReasoningControls, type ReasoningControlSpec } from "./reasoningControls";
 
 export interface ConfigState {
   endpoint: PlaygroundEndpoint;
@@ -88,8 +85,11 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
     selectedProviderOption?.modelPrefix,
     isCompatibleConnectionId
   );
-  const { availableModels, modelCapabilities, loading: loadingModels } =
-    useAvailableModels(modelFilterKey);
+  const {
+    availableModels,
+    modelCapabilities,
+    loading: loadingModels,
+  } = useAvailableModels(modelFilterKey);
 
   // #6241: resolve the reasoning controls for the currently selected model from the capability
   // flags the /models catalog exposes (supportsThinking / effort_tiers).

@@ -7,9 +7,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const { shouldStubMitmManager, mitmManagerAliasFor } = await import(
-  "../../scripts/build/mitm-stub-flag.mjs"
-);
+const { shouldStubMitmManager, mitmManagerAliasFor } =
+  await import("../../scripts/build/mitm-stub-flag.mjs");
 
 describe("mitm manager stub alias (#6344)", () => {
   it("default env does NOT stub the manager (npm/Electron/VPS builds get the real module)", () => {

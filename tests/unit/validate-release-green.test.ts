@@ -15,23 +15,25 @@ const {
 } = mod;
 
 test("eslintCounts sums errors + warnings across files", () => {
-  const parsed = [
-    { errorCount: 2, warningCount: 5 },
-    { errorCount: 0, warningCount: 3 },
-    {},
-  ];
+  const parsed = [{ errorCount: 2, warningCount: 5 }, { errorCount: 0, warningCount: 3 }, {}];
   assert.deepEqual(eslintCounts(parsed), { errors: 2, warnings: 8 });
 });
 
 test("parseEslintJson tolerates a leading non-JSON banner", () => {
-  const out = "npm warn something\n[{\"errorCount\":0,\"warningCount\":1}]";
+  const out = 'npm warn something\n[{"errorCount":0,"warningCount":1}]';
   assert.deepEqual(parseEslintJson(out), [{ errorCount: 0, warningCount: 1 }]);
   assert.equal(parseEslintJson("no json here"), null);
 });
 
 test("parseCognitiveCount reads the gate's count (en + pt)", () => {
-  assert.equal(parseCognitiveCount("[cognitive-complexity] 797 function(s) exceed the threshold (15)."), 797);
-  assert.equal(parseCognitiveCount("[cognitive-complexity] REGRESSÃO — 801 violações > baseline 797"), 801);
+  assert.equal(
+    parseCognitiveCount("[cognitive-complexity] 797 function(s) exceed the threshold (15)."),
+    797
+  );
+  assert.equal(
+    parseCognitiveCount("[cognitive-complexity] REGRESSÃO — 801 violações > baseline 797"),
+    801
+  );
   assert.equal(parseCognitiveCount("no number"), null);
 });
 
@@ -139,8 +141,16 @@ test("pre-flight wires the test-masking PR-context gate against origin/main (v3.
   );
   // run() must honor a per-gate env override so GITHUB_BASE_REF actually reaches the child
   // (routed through buildGateEnv since the --hermetic scrub was added).
-  assert.match(src, /env:\s*buildGateEnv\(opts\.env\)/, "run() must merge opts.env into the child env");
-  assert.match(src, /\.\.\.\(extra \|\| \{\}\)/, "buildGateEnv must spread the per-gate env override");
+  assert.match(
+    src,
+    /env:\s*buildGateEnv\(opts\.env\)/,
+    "run() must merge opts.env into the child env"
+  );
+  assert.match(
+    src,
+    /\.\.\.\(extra \|\| \{\}\)/,
+    "buildGateEnv must spread the per-gate env override"
+  );
 });
 
 test("pre-flight --hermetic scrubs the live-test trigger vars (2026-07-05 false-positive fix)", async () => {

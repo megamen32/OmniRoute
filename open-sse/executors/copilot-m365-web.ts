@@ -107,7 +107,9 @@ export class CopilotM365WebExecutor extends BaseExecutor {
             settled = true;
             cleanup();
             const message = sanitizeErrorMessage(reason);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message } })}\n\n`));
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ error: { message } })}\n\n`)
+            );
             controller.close();
           };
 
@@ -120,7 +122,9 @@ export class CopilotM365WebExecutor extends BaseExecutor {
 
           try {
             const wsUrlParts = new URL(input.wsUrl);
-            const traceId = wsUrlParts.searchParams.get("clientrequestid") ?? crypto.randomUUID().replace(/-/g, "");
+            const traceId =
+              wsUrlParts.searchParams.get("clientrequestid") ??
+              crypto.randomUUID().replace(/-/g, "");
             const sessionId = wsUrlParts.searchParams.get("X-SessionId") ?? crypto.randomUUID();
 
             log?.debug?.("M365_WS", `connecting → ${redactWsUrl(input.wsUrl)}`);

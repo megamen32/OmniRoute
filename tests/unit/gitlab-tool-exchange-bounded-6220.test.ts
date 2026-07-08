@@ -21,8 +21,7 @@ import assert from "node:assert/strict";
 import { GitlabExecutor, buildPrompt } from "../../open-sse/executors/gitlab.ts";
 
 // A tool result large enough to blow the small_file generation contract if unbounded.
-const HUGE_TOOL_RESULT =
-  "TOOLRESULT_START " + "x".repeat(60_000) + " TOOLRESULT_END";
+const HUGE_TOOL_RESULT = "TOOLRESULT_START " + "x".repeat(60_000) + " TOOLRESULT_END";
 
 function buildLongToolConversation() {
   const messages: Array<Record<string, unknown>> = [

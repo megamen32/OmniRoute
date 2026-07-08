@@ -78,9 +78,7 @@ test("#6407: string model still routes normally (guard is not over-broad)", asyn
     return Response.json({
       id: "x",
       object: "chat.completion",
-      choices: [
-        { index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" },
-      ],
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
     });
   };
 

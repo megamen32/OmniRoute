@@ -300,11 +300,7 @@ export async function handleChat(
       }
     }
     if (b.max_tokens !== undefined) {
-      if (
-        typeof b.max_tokens !== "number" ||
-        !Number.isInteger(b.max_tokens) ||
-        b.max_tokens < 1
-      ) {
+      if (typeof b.max_tokens !== "number" || !Number.isInteger(b.max_tokens) || b.max_tokens < 1) {
         return badParam("max_tokens", "must be a positive integer");
       }
     }

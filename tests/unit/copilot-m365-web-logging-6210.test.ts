@@ -80,9 +80,7 @@ test("copilot-m365-web: WS path emits debug logs for handshake + first frame [#6
     { type: 1, target: "update", arguments: [{ messages: [{ text: "Hi there", author: "bot" }] }] },
     { type: 3 },
   ];
-  const restore = __setCopilotM365WebSocketForTesting(
-    makeFakeWsCtor(frames, captured) as never
-  );
+  const restore = __setCopilotM365WebSocketForTesting(makeFakeWsCtor(frames, captured) as never);
   const sink: LogEntry[] = [];
   try {
     await drainStream(new CopilotM365WebExecutor(), makeCapturingLog(sink));
@@ -107,9 +105,7 @@ test("copilot-m365-web: WS path emits debug logs for handshake + first frame [#6
 test("copilot-m365-web: logged WS URL is redacted — access_token never leaks [#6210]", async () => {
   const captured: { url?: string } = {};
   const frames = [{ type: 3 }];
-  const restore = __setCopilotM365WebSocketForTesting(
-    makeFakeWsCtor(frames, captured) as never
-  );
+  const restore = __setCopilotM365WebSocketForTesting(makeFakeWsCtor(frames, captured) as never);
   const sink: LogEntry[] = [];
   try {
     await drainStream(new CopilotM365WebExecutor(), makeCapturingLog(sink));
@@ -122,9 +118,7 @@ test("copilot-m365-web: logged WS URL is redacted — access_token never leaks [
   // the executor redacts before logging.
   assert.ok(captured.url?.includes(SECRET), "sanity: raw WS URL should contain the token");
 
-  const connectLog = sink.find(
-    (e) => e.tag === "M365_WS" && e.message.startsWith("connecting")
-  );
+  const connectLog = sink.find((e) => e.tag === "M365_WS" && e.message.startsWith("connecting"));
   assert.ok(connectLog, "expected a 'connecting' debug log");
   assert.ok(
     connectLog.message.includes("access_token=REDACTED"),

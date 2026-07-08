@@ -16,28 +16,29 @@ test("403 'has not been used in project' (antigravity) -> PROJECT_ROUTE_ERROR", 
     error: {
       code: 403,
       status: "PERMISSION_DENIED",
-      message:
-        "Cloud AI Companion API has not been used in project 123 before or it is disabled.",
+      message: "Cloud AI Companion API has not been used in project 123 before or it is disabled.",
     },
   };
   assert.equal(
     classifyProviderError(403, body, "antigravity"),
-    PROVIDER_ERROR_TYPES.PROJECT_ROUTE_ERROR,
+    PROVIDER_ERROR_TYPES.PROJECT_ROUTE_ERROR
   );
 });
 
 test("403 SERVICE_DISABLED / PERMISSION_DENIED (gemini-cli) -> PROJECT_ROUTE_ERROR", () => {
-  const body = { error: { status: "PERMISSION_DENIED", details: [{ reason: "SERVICE_DISABLED" }] } };
+  const body = {
+    error: { status: "PERMISSION_DENIED", details: [{ reason: "SERVICE_DISABLED" }] },
+  };
   assert.equal(
     classifyProviderError(403, body, "gemini-cli"),
-    PROVIDER_ERROR_TYPES.PROJECT_ROUTE_ERROR,
+    PROVIDER_ERROR_TYPES.PROJECT_ROUTE_ERROR
   );
 });
 
 test("403 on a cloud-code provider with a bare body -> still recoverable PROJECT_ROUTE_ERROR", () => {
   assert.equal(
     classifyProviderError(403, "forbidden", "antigravity-cloudcode"),
-    PROVIDER_ERROR_TYPES.PROJECT_ROUTE_ERROR,
+    PROVIDER_ERROR_TYPES.PROJECT_ROUTE_ERROR
   );
 });
 
@@ -45,6 +46,6 @@ test("403 real ban signal -> still ACCOUNT_DEACTIVATED (ban detection preserved)
   const body = "This service has been disabled in this account for violation of policy.";
   assert.equal(
     classifyProviderError(403, body, "antigravity"),
-    PROVIDER_ERROR_TYPES.ACCOUNT_DEACTIVATED,
+    PROVIDER_ERROR_TYPES.ACCOUNT_DEACTIVATED
   );
 });

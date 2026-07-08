@@ -40,7 +40,10 @@ describe("compressionHeaderEcho (#6422)", () => {
   it("echoes the request header value onto the response when missing", () => {
     const inner = new Response("body", { status: 200 });
     const wrapped = withCompressionHeaderEcho(inner, "engine:rtk");
-    assert.equal(wrapped.headers.get("X-OmniRoute-Compression"), "engine:rtk; source=request-header");
+    assert.equal(
+      wrapped.headers.get("X-OmniRoute-Compression"),
+      "engine:rtk; source=request-header"
+    );
     assert.equal(wrapped.status, 200);
   });
 

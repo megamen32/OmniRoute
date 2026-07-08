@@ -172,7 +172,10 @@ export async function handlePipelineChat({
       prevOutput = extractPanelText(json);
     } catch {
       log.warn("PIPELINE", `Step ${i + 1} (${step.model}) returned an unparseable body`);
-      return errorResponse(502, `Pipeline step ${i + 1} (${step.model}) returned an unparseable body`);
+      return errorResponse(
+        502,
+        `Pipeline step ${i + 1} (${step.model}) returned an unparseable body`
+      );
     }
     if (!prevOutput.trim()) {
       log.warn("PIPELINE", `Step ${i + 1} (${step.model}) returned empty output`);

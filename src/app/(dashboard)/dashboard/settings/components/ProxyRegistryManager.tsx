@@ -1151,7 +1151,9 @@ export default function ProxyRegistryManager() {
             </div>
             {poolScope !== "global" && (
               <div>
-                <label className="text-xs text-text-muted mb-1 block">{t("poolScopeIdLabel")}</label>
+                <label className="text-xs text-text-muted mb-1 block">
+                  {t("poolScopeIdLabel")}
+                </label>
                 <input
                   className="w-full px-3 py-2 rounded bg-bg-subtle border border-border"
                   value={poolScopeId}
@@ -1183,14 +1185,14 @@ export default function ProxyRegistryManager() {
           {poolLoaded && (
             <>
               <div>
-                <label className="text-xs text-text-muted mb-1 block">{t("poolStrategyLabel")}</label>
+                <label className="text-xs text-text-muted mb-1 block">
+                  {t("poolStrategyLabel")}
+                </label>
                 <select
                   className="w-full px-3 py-2 rounded bg-bg-subtle border border-border"
                   value={poolStrategy}
                   onChange={(e) =>
-                    handlePoolStrategyChange(
-                      e.target.value as "round-robin" | "random" | "sticky"
-                    )
+                    handlePoolStrategyChange(e.target.value as "round-robin" | "random" | "sticky")
                   }
                   data-testid="proxy-registry-pool-strategy"
                 >

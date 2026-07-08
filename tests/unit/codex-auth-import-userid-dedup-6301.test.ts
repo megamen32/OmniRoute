@@ -12,9 +12,8 @@ const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-codex-use
 process.env.DATA_DIR = TEST_DATA_DIR;
 
 const core = await import("../../src/lib/db/core.ts");
-const { parseAndValidateCodexAuth, createConnectionFromAuthFile } = await import(
-  "../../src/lib/oauth/utils/codexAuthImport.ts"
-);
+const { parseAndValidateCodexAuth, createConnectionFromAuthFile } =
+  await import("../../src/lib/oauth/utils/codexAuthImport.ts");
 
 type JsonRecord = Record<string, unknown>;
 

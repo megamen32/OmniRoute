@@ -12,9 +12,7 @@ import assert from "node:assert/strict";
  * every HTTP method.
  */
 
-const catchAll = await import(
-  "../../../src/app/api/[...omnirouteApiCatchAll]/route.ts"
-);
+const catchAll = await import("../../../src/app/api/[...omnirouteApiCatchAll]/route.ts");
 
 function makeReq(pathname: string, method = "GET"): Request {
   return new Request(`http://localhost:20128${pathname}`, { method });
@@ -35,13 +33,13 @@ test("/api catchall returns application/json 404 with not_found type on GET", as
 
 test("/api catchall returns JSON 404 on POST / PUT / PATCH / DELETE / HEAD", async () => {
   for (const method of ["POST", "PUT", "PATCH", "DELETE", "HEAD"] as const) {
-    const res = await (catchAll as Record<string, (r: Request) => Promise<Response>>)[
-      method
-    ](makeReq(`/api/settings/nope/${method.toLowerCase()}`, method));
+    const res = await (catchAll as Record<string, (r: Request) => Promise<Response>>)[method](
+      makeReq(`/api/settings/nope/${method.toLowerCase()}`, method)
+    );
     assert.equal(res.status, 404, `${method} status`);
     assert.ok(
       (res.headers.get("content-type") || "").includes("application/json"),
-      `${method} content-type`,
+      `${method} content-type`
     );
   }
 });
@@ -50,6 +48,6 @@ test("/api catchall OPTIONS preflight returns CORS headers", async () => {
   const res = await catchAll.OPTIONS();
   assert.ok(
     res.headers.get("access-control-allow-methods"),
-    "OPTIONS must expose CORS methods header",
+    "OPTIONS must expose CORS methods header"
   );
 });

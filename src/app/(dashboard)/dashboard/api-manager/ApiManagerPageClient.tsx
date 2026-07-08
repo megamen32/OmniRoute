@@ -518,7 +518,8 @@ export default function ApiManagerPageClient() {
             const res = await fetch(`/api/keys/${encodeURIComponent(key.id)}/devices`);
             if (!res.ok) return [key.id, 0] as const;
             const data = await res.json();
-            const count = typeof data?.count === "number" && Number.isFinite(data.count) ? data.count : 0;
+            const count =
+              typeof data?.count === "number" && Number.isFinite(data.count) ? data.count : 0;
             return [key.id, count] as const;
           } catch {
             return [key.id, 0] as const;
