@@ -722,7 +722,7 @@ const getNvmNodePath = (): string | null => {
   return null;
 };
 
-const getLookupEnv = () => {
+export const getLookupEnv = () => {
   const env = { ...process.env };
   const extraPaths = getExtraPaths();
   const basePath = env.PATH || env.Path || "";
@@ -1145,7 +1145,7 @@ export const getCliRuntimeStatus = async (toolId: string) => {
   }
 
   const healthcheck = await checkRunnable(
-    located.commandPath,
+    located.commandPath || command || "", // located + executable ⇒ commandPath set
     env,
     Number(tool.healthcheckTimeoutMs || 4000)
   );
