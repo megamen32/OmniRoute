@@ -196,7 +196,12 @@ export const bulkProxyAssignmentSchema = z
 // #6365 proxy pools — a scope may hold MULTIPLE proxies (a rotation pool). These
 // schemas gate the pool-membership add/remove and the per-scope rotation strategy.
 // Kept in lockstep with `ProxyRotationStrategy` in src/lib/db/proxies/types.ts.
-export const PROXY_POOL_ROTATION_STRATEGY_VALUES = ["round-robin", "random", "sticky"] as const;
+export const PROXY_POOL_ROTATION_STRATEGY_VALUES = [
+  "round-robin",
+  "random",
+  "sticky",
+  "latency",
+] as const;
 
 // Add/remove one proxy to/from a scope's pool. proxyId is REQUIRED (unlike the
 // single-assign schema where a null proxyId clears the assignment).

@@ -8,6 +8,7 @@
 import {
   checkFallbackError,
   classifyLockoutReason,
+  CONTEXT_OVERFLOW_PATTERNS,
   decayModelFailureCount,
   formatRetryAfter,
   getModelLockoutInfo,
@@ -18,7 +19,12 @@ import {
   recordProviderFailure,
   selectLockoutCooldownMs,
 } from "./accountFallback.ts";
-import { errorResponse, unavailableResponse } from "../utils/error.ts";
+import {
+  errorResponse,
+  unavailableResponse,
+  errorResponseWithComboDiagnostics,
+} from "../utils/error.ts";
+import type { ComboDiagnostics } from "../utils/error.ts";
 import { buildTargetTimeoutRunner } from "./combo/targetTimeoutRunner.ts";
 import { recordComboRequest, recordComboShadowRequest, getComboMetrics } from "./comboMetrics.ts";
 import {
@@ -68,6 +74,8 @@ import { getSessionConnection } from "./sessionManager.ts";
 import {
   applySessionStickiness,
   recordStickyBinding,
+  clearStickyBinding,
+  peekStickyConnectionId,
   resolveDisableSessionStickiness,
 } from "./combo/sessionStickiness.ts";
 import { selectQuotaShareTarget } from "./combo/quotaShareStrategy.ts";
@@ -113,6 +121,7 @@ import {
   recordStickyRoundRobinSuccess,
   getStickyWeightedExecutionKey,
   recordStickyWeightedSuccess,
+  resolveComboStickyRoundRobinLimit,
 } from "./combo/rrState.ts";
 import {
   validateResponseQuality,
@@ -204,6 +213,26 @@ export {
   resolveNestedComboTargets,
   validateComboDAG,
 } from "./combo/comboStructure.ts";
+
+/**
+ * #6692: release a session-stickiness pin the moment its bound connection is
+ * the one that just failed. applySessionStickiness() only re-checks health on
+ * the NEXT turn (lazily) — without this, a terminal/quality-rejected
+ * connection stays pinned until that lazy recheck fires, and a masked
+ * daily-cap 200-body rejection never trips the lazy recheck's DB-backed
+ * testStatus gate at all (the connection row itself isn't marked unhealthy).
+ * Exported for the two failure branches in handleComboChat + handleRoundRobinCombo.
+ * peekStickyConnectionId guards against clearing an unrelated pin when the
+ * failing target isn't actually the currently sticky-bound connection.
+ */
+export function releaseStickyPinOnFailure(
+  messageHash: string | null | undefined,
+  failedConnectionId: string | null | undefined
+): void {
+  if (!messageHash || !failedConnectionId) return;
+  if (peekStickyConnectionId(messageHash) !== failedConnectionId) return;
+  clearStickyBinding(messageHash);
+}
 
 const DEFAULT_MODEL_P95_MS: Record<string, number> = {
   "grok-4-fast-non-reasoning": 1143,
@@ -641,7 +670,12 @@ export function isContextOverflow400(errorText) {
   return (
     /\bcontext.*(?:length_exceeded|too long|overflow|exceeded|window|limit)\b/i.test(errorText) ||
     /exceeds.*context/i.test(errorText) ||
-    /your input exceeds/i.test(errorText)
+    /your input exceeds/i.test(errorText) ||
+    // Reuse accountFallback.ts's CONTEXT_OVERFLOW_PATTERNS (single source of truth)
+    // so wording like Kimi's "exceeded model token limit" — which never says the
+    // literal word "context" — is still recognized as an overflow/fallback-worthy
+    // 400 instead of halting the whole combo (issue #6637).
+    CONTEXT_OVERFLOW_PATTERNS.some((p) => p.test(errorText))
   );
 }
 /** @param {string} errorText */
@@ -779,6 +813,18 @@ export async function handleComboChat({
   // Fusion strategy: parallel panel + judge synthesis. Handled in a separate module
   // because it neither iterates targets in order nor needs the failover/retry/credential
   // gate machinery that follows — it fans out, then synthesizes once.
+  const cfg = config as Record<string, unknown>;
+  const judgeModel = typeof cfg.judgeModel === "string" ? cfg.judgeModel : undefined;
+  const fusionTuning =
+    cfg.fusionTuning && typeof cfg.fusionTuning === "object"
+      ? (cfg.fusionTuning as FusionTuning)
+      : undefined;
+  if (strategy !== "fusion" && (judgeModel || fusionTuning)) {
+    log.warn(
+      "COMBO",
+      `Combo "${combo.name}" sets config.judgeModel/fusionTuning but strategy is "${strategy}" — these fields are only consumed by the fusion strategy and will be ignored (#6455)`
+    );
+  }
   if (strategy === "fusion") {
     const fusionModels = (combo.models || [])
       .map((m) => {
@@ -790,12 +836,6 @@ export async function handleComboChat({
         return null;
       })
       .filter((m): m is string => Boolean(m));
-    const cfg = config as Record<string, unknown>;
-    const judgeModel = typeof cfg.judgeModel === "string" ? cfg.judgeModel : undefined;
-    const tuning =
-      cfg.fusionTuning && typeof cfg.fusionTuning === "object"
-        ? (cfg.fusionTuning as FusionTuning)
-        : undefined;
     return handleFusionChat({
       body,
       models: fusionModels,
@@ -803,7 +843,7 @@ export async function handleComboChat({
       log,
       comboName: combo.name,
       judgeModel,
-      tuning,
+      tuning: fusionTuning,
     });
   }
 
@@ -896,10 +936,9 @@ export async function handleComboChat({
     let runtimeStickyTargets: ResolvedComboUnit[] = runtimeUnits;
     if (strategy === "round-robin") {
       const perComboStickyLimit = (config as Record<string, unknown>).stickyRoundRobinLimit;
-      runtimeStickyLimit = clampStickyRoundRobinTargetLimit(
-        perComboStickyLimit !== undefined && perComboStickyLimit !== null
-          ? perComboStickyLimit
-          : (settings as Record<string, unknown> | null)?.stickyRoundRobinLimit
+      runtimeStickyLimit = resolveComboStickyRoundRobinLimit(
+        perComboStickyLimit,
+        settings as Record<string, unknown> | null
       );
       const { startIndex, counter } = getStickyRoundRobinStartIndex(
         combo.name,
@@ -1225,8 +1264,24 @@ export async function handleComboChat({
   // 16 strategies (priority, weighted, etc.) that funnel through executeTarget.
   const quotaCutoffResetWindowConfig = resolveResetWindowConfig(config as Record<string, unknown>);
 
+  // QA P0 diagnostics: record the order in which targets were actually attempted
+  // (provider/model ids only) so a terminal combo failure can report the attempt
+  // sequence alongside pool size + exhaustion reasons. Accumulates across set retries.
+  const comboAttemptOrder: Array<{ provider: string; model: string }> = [];
+
   if (orderedTargets.length === 0) {
-    return comboModelNotFoundResponse("Combo has no executable targets");
+    return errorResponseWithComboDiagnostics(
+      404,
+      "Combo has no executable targets",
+      {
+        poolSize: 0,
+        attempted: 0,
+        excluded: [],
+        attemptOrder: [],
+        terminalReason: "no_executable_targets",
+      },
+      { code: "model_not_found", type: "invalid_request_error" }
+    );
   }
 
   scheduleShadowRouting(
@@ -1308,6 +1363,23 @@ export async function handleComboChat({
       const startTime = Date.now();
       let fallbackCount = 0;
       let recordedAttempts = 0;
+
+      // QA P0: assemble a sanitized diagnostic trace from the state already in scope
+      // (pool size + this set-try's exhausted providers/connections + attempt order +
+      // a terminal-reason code). Never touches keys/tokens — provider/model ids only.
+      const buildComboDiag = (terminalReason: string): ComboDiagnostics => ({
+        poolSize: orderedTargets.length,
+        attempted: recordedAttempts,
+        excluded: [
+          ...[...exhaustedProviders].map((p) => ({ provider: p, reason: "exhausted" })),
+          ...[...exhaustedConnections].map((c) => ({
+            provider: "unknown",
+            reason: `exhausted_connection:${String(c).slice(0, 8)}`,
+          })),
+        ],
+        attemptOrder: comboAttemptOrder,
+        terminalReason,
+      });
 
       let globalResolve: ((res: Response) => void) | null = null;
       const globalPromise = new Promise<Response>((res) => {
@@ -1445,7 +1517,23 @@ export async function handleComboChat({
               "COMBO",
               `Maximum combo attempts (${MAX_GLOBAL_ATTEMPTS}) exceeded across all targets and fallbacks. Terminating loop to prevent runaway background requests.`
             );
-            return { ok: false, response: errorResponse(503, "Maximum combo retry limit reached") };
+            // Actionable failure instead of an opaque 503 when every candidate
+            // failed the same recoverable way. If the dominant cause was reasoning
+            // models exhausting a too-small max_tokens budget (no content output),
+            // retrying other models can't help — tell the caller to raise max_tokens.
+            const reasoningExhausted = /reasoning consumed \d+\/\d+ tokens/.test(lastError || "");
+            return {
+              ok: false,
+              response: errorResponseWithComboDiagnostics(
+                503,
+                reasoningExhausted
+                  ? "All combo candidates exhausted their token budget on reasoning without producing content. Increase max_tokens — reasoning models need a larger budget to emit content."
+                  : "Maximum combo retry limit reached",
+                buildComboDiag(
+                  reasoningExhausted ? "reasoning_budget_exhausted" : "max_attempts_exceeded"
+                )
+              ),
+            };
           }
 
           // Predictive TTFT Circuit Breaker (skip slow models)
@@ -1503,6 +1591,8 @@ export async function handleComboChat({
             timestamp: Date.now(),
             strategy,
           });
+          // QA P0 diagnostics: capture the attempt order (provider/model ids only).
+          comboAttemptOrder.push({ provider: provider ?? "unknown", model: modelStr });
 
           // Deep clone the body to ensure context preservation and prevent mutations
           // from affecting other targets in the combo. structuredClone avoids the
@@ -1616,6 +1706,10 @@ export async function handleComboChat({
                 "COMBO",
                 `Model ${modelStr} returned 200 but failed quality check: ${quality.reason}`
               );
+              // #6692: a quality-rejected 200 never marks the connection row
+              // unhealthy, so the sticky pin's lazy headroom recheck would never
+              // catch it either — release it here, on the failing response.
+              releaseStickyPinOnFailure(_sticky.messageHash, effectiveConnectionId);
               recordComboRequest(combo.name, modelStr, {
                 success: false,
                 latencyMs: Date.now() - startTime,
@@ -2000,6 +2094,10 @@ export async function handleComboChat({
             exhaustedLogLevel: "info",
             structuredError,
           });
+          // #6692: this connection was just classified as provider/connection-level
+          // exhausted — if it's the currently sticky-bound one, release the pin now
+          // rather than waiting for the next turn's lazy headroom/status recheck.
+          releaseStickyPinOnFailure(_sticky.messageHash, targetWithConnection.connectionId);
 
           // #2101: Prevent infinite fallback loops with 400 Bad Request errors that are genuinely
           // body-specific (malformed JSON, bad format, missing required fields).
@@ -2273,15 +2371,11 @@ export async function handleComboChat({
           latencyMs,
           fallbackCount,
         });
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: "Service temporarily unavailable: all upstream accounts are inactive",
-              type: "service_unavailable",
-              code: "ALL_ACCOUNTS_INACTIVE",
-            },
-          }),
-          { status: 503, headers: { "Content-Type": "application/json" } }
+        return errorResponseWithComboDiagnostics(
+          503,
+          "Service temporarily unavailable: all upstream accounts are inactive",
+          buildComboDiag("all_accounts_inactive"),
+          { code: "ALL_ACCOUNTS_INACTIVE", type: "service_unavailable" }
         );
       }
 
@@ -2332,10 +2426,11 @@ export async function handleComboChat({
       }
 
       log.warn("COMBO", `All models failed | ${msg}`);
-      return new Response(JSON.stringify({ error: { message: msg } }), {
+      return errorResponseWithComboDiagnostics(
         status,
-        headers: { "Content-Type": "application/json" },
-      });
+        msg,
+        buildComboDiag(lastError ?? "all_models_failed")
+      );
     }
 
     return errorResponse(503, "Combo routing completed without an upstream response");
@@ -2469,10 +2564,9 @@ async function handleRoundRobinCombo({
   // sticky batching for both account fallback and combo targets. Values <= 1 preserve
   // the historical one-request-per-target rotation.
   const perComboStickyLimit = (config as Record<string, unknown>).stickyRoundRobinLimit;
-  const stickyLimit = clampStickyRoundRobinTargetLimit(
-    perComboStickyLimit !== undefined && perComboStickyLimit !== null
-      ? perComboStickyLimit
-      : (settings as Record<string, unknown> | null)?.stickyRoundRobinLimit
+  const stickyLimit = resolveComboStickyRoundRobinLimit(
+    perComboStickyLimit,
+    settings as Record<string, unknown> | null
   );
   const stickyRoundRobinEnabled = stickyLimit > 1;
   // Exhaustion-aware sticky: if the currently sticky target is no longer
@@ -2733,6 +2827,19 @@ async function handleRoundRobinCombo({
               "COMBO-RR",
               `${modelStr} returned 200 but failed quality check: ${quality.reason}`
             );
+            // #6692: same rationale as handleComboChat's quality-fail branch —
+            // a quality-rejected 200 never marks the connection row unhealthy,
+            // so release the sticky pin here rather than on the next turn.
+            {
+              const rrSelectedConnectionId =
+                result.headers?.get("X-OmniRoute-Selected-Connection-Id") ||
+                result.headers?.get("x-omniroute-selected-connection-id") ||
+                undefined;
+              releaseStickyPinOnFailure(
+                _rrSessionSticky.messageHash,
+                rrSelectedConnectionId || target.connectionId
+              );
+            }
             recordComboRequest(combo.name, modelStr, {
               success: false,
               latencyMs: Date.now() - startTime,
@@ -2959,6 +3066,8 @@ async function handleRoundRobinCombo({
           exhaustedLogLevel: "debug",
           structuredError,
         });
+        // #6692: mirrors handleComboChat's exhaustion-point release above.
+        releaseStickyPinOnFailure(_rrSessionSticky.messageHash, targetWithConnection.connectionId);
 
         // Transient errors → mark in semaphore so round-robin stops stampeding this target.
         if (

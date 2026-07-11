@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import {
   isClaudeCodeCompatibleProvider,
   isAnthropicCompatibleProvider,
@@ -99,6 +97,12 @@ import {
   type ProviderModelsConfigEntry,
   PROVIDER_MODELS_CONFIG,
 } from "./discovery/providerModelsConfig";
+import {
+  enrichCodexModelsFromGithubCatalog,
+  fetchCodexDiscoveryModels,
+  fetchCodexGithubCatalogModels,
+  mergeCodexLiveModelsWithLocalCatalog,
+} from "./discovery/codex";
 
 /**
  * GET /api/providers/[id]/models - Get models list from provider
@@ -332,14 +336,16 @@ export async function GET(
     const buildDiscoveryFallbackResponse = ({
       cacheWarning = "API unavailable — using cached catalog",
       localWarning = "API unavailable — using local catalog",
+      localIntentional = false,
     }: {
       cacheWarning?: string;
       localWarning?: string;
+      localIntentional?: boolean;
     } = {}) => {
       if (cachedDiscoveryModels.length > 0) {
         return buildCachedDiscoveryResponse(cacheWarning);
       }
-      return buildLocalCatalogResponse(localWarning);
+      return buildLocalCatalogResponse(localWarning, localIntentional);
     };
 
     const buildDiscoveryErrorFallbackResponse = (
@@ -456,6 +462,13 @@ export async function GET(
     if (provider === "reka") {
       // reka has no remote model-discovery endpoint — the local catalog is the
       // intended source, not a degraded fallback (#5460).
+      const localCatalog = buildLocalCatalogResponse(undefined, true);
+      if (localCatalog) return localCatalog;
+    }
+
+    if (provider === "lmarena") {
+      // Direct-chat allowlist is the intended source — no arena.ai HTML scrape
+      // (avoids CF bot burn and thrashy initialModels rows).
       const localCatalog = buildLocalCatalogResponse(undefined, true);
       if (localCatalog) return localCatalog;
     }
@@ -1684,44 +1697,6 @@ export async function GET(
       return buildApiDiscoveryResponse(models);
     }
 
-    // Codex has no public OAuth-compatible /models endpoint. The official Codex CLI
-    // maintains the account-specific live catalog in ~/.codex/models_cache.json;
-    // prefer that cache so newly entitled models appear immediately in Import Models.
-    if (provider === "codex") {
-      try {
-        const cachePath = path.join(process.env.HOME || "", ".codex", "models_cache.json");
-        const cache = JSON.parse(await readFile(cachePath, "utf8")) as {
-          models?: Array<Record<string, unknown>>;
-        };
-        const liveModels = Array.isArray(cache.models)
-          ? cache.models
-              .map((model) => {
-                const id = toNonEmptyString(model.slug) || toNonEmptyString(model.id);
-                if (!id) return null;
-                return {
-                  id,
-                  name: toNonEmptyString(model.display_name) || toNonEmptyString(model.name) || id,
-                  owned_by: "codex",
-                  ...(typeof model.context_window === "number"
-                    ? { contextLength: model.context_window }
-                    : {}),
-                };
-              })
-              .filter((model): model is NonNullable<typeof model> => model !== null)
-          : [];
-        if (liveModels.length > 0) {
-          return buildResponse({
-            provider,
-            connectionId,
-            models: liveModels,
-            source: "cache",
-          });
-        }
-      } catch (error) {
-        console.warn("[models] Codex CLI model cache unavailable; using local catalog", error);
-      }
-    }
-
     const config =
       provider in PROVIDER_MODELS_CONFIG
         ? PROVIDER_MODELS_CONFIG[provider as keyof typeof PROVIDER_MODELS_CONFIG]
@@ -1742,6 +1717,71 @@ export async function GET(
         // #5460/#5465 — Qwen OAuth has no OAuth-compatible remote /models list;
         // the static catalog is intentional, so model-sync should import it.
         intentional: true,
+      });
+    }
+
+    if (provider === "codex") {
+      const cachedResponse = maybeReturnCachedDiscovery();
+      if (cachedResponse) return cachedResponse;
+
+      const autoFetchDisabledResponse = maybeReturnAutoFetchDisabled();
+      if (autoFetchDisabledResponse) return autoFetchDisabledResponse;
+
+      const liveModels = await fetchCodexDiscoveryModels({
+        accessToken: accessToken || null,
+        providerSpecificData: connection.providerSpecificData,
+        fetchImpl: (url, init) =>
+          safeOutboundFetch(url, {
+            ...SAFE_OUTBOUND_FETCH_PRESETS.modelsDiscovery,
+            guard: getProviderOutboundGuard(),
+            proxyConfig: proxy,
+            ...init,
+          }),
+      });
+      const githubCatalogModels = await fetchCodexGithubCatalogModels({
+        fetchImpl: (url, init) =>
+          safeOutboundFetch(url, {
+            ...SAFE_OUTBOUND_FETCH_PRESETS.modelsDiscovery,
+            guard: "public-only",
+            proxyConfig: proxy,
+            ...init,
+          }),
+      });
+      const staticCodexCatalog = mergeLocalCatalogModels(
+        getModelsByProviderId("codex") || [],
+        getStaticModelsForProvider("codex") || []
+      );
+
+      if (liveModels && liveModels.length > 0) {
+        const enrichedLiveModels =
+          githubCatalogModels && githubCatalogModels.length > 0
+            ? enrichCodexModelsFromGithubCatalog(liveModels, githubCatalogModels)
+            : liveModels;
+        return buildApiDiscoveryResponse(
+          mergeCodexLiveModelsWithLocalCatalog(enrichedLiveModels, staticCodexCatalog)
+        );
+      }
+
+      if (githubCatalogModels && githubCatalogModels.length > 0) {
+        return buildApiDiscoveryResponse(
+          mergeCodexLiveModelsWithLocalCatalog(githubCatalogModels, staticCodexCatalog),
+          "Codex live catalog unavailable — using GitHub model catalog"
+        );
+      }
+
+      const fallback = buildDiscoveryFallbackResponse({
+        cacheWarning: "Codex live catalog unavailable — using cached catalog",
+        localWarning: "Codex live and GitHub catalogs unavailable — using local catalog",
+        localIntentional: true,
+      });
+      if (fallback) return fallback;
+      return buildResponse({
+        provider,
+        connectionId,
+        models: [],
+        source: "local_catalog",
+        intentional: true,
+        warning: "Codex live and GitHub catalogs unavailable — using local catalog",
       });
     }
 
@@ -1846,8 +1886,8 @@ export async function GET(
     }
 
     // Build headers
-    const headers = { ...config.headers };
-    if (config.authHeader && !config.authQuery) {
+    const headers = config.buildHeaders ? config.buildHeaders(token) : { ...config.headers };
+    if (!config.buildHeaders && config.authHeader && !config.authQuery) {
       headers[config.authHeader] = (config.authPrefix || "") + token;
     }
 
