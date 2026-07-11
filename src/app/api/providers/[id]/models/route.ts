@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import {
   isClaudeCodeCompatibleProvider,
   isAnthropicCompatibleProvider,
@@ -1680,6 +1682,44 @@ export async function GET(
       const models = data.data || data.models || [];
 
       return buildApiDiscoveryResponse(models);
+    }
+
+    // Codex has no public OAuth-compatible /models endpoint. The official Codex CLI
+    // maintains the account-specific live catalog in ~/.codex/models_cache.json;
+    // prefer that cache so newly entitled models appear immediately in Import Models.
+    if (provider === "codex") {
+      try {
+        const cachePath = path.join(process.env.HOME || "", ".codex", "models_cache.json");
+        const cache = JSON.parse(await readFile(cachePath, "utf8")) as {
+          models?: Array<Record<string, unknown>>;
+        };
+        const liveModels = Array.isArray(cache.models)
+          ? cache.models
+              .map((model) => {
+                const id = toNonEmptyString(model.slug) || toNonEmptyString(model.id);
+                if (!id) return null;
+                return {
+                  id,
+                  name: toNonEmptyString(model.display_name) || toNonEmptyString(model.name) || id,
+                  owned_by: "codex",
+                  ...(typeof model.context_window === "number"
+                    ? { contextLength: model.context_window }
+                    : {}),
+                };
+              })
+              .filter((model): model is NonNullable<typeof model> => model !== null)
+          : [];
+        if (liveModels.length > 0) {
+          return buildResponse({
+            provider,
+            connectionId,
+            models: liveModels,
+            source: "cache",
+          });
+        }
+      } catch (error) {
+        console.warn("[models] Codex CLI model cache unavailable; using local catalog", error);
+      }
     }
 
     const config =
