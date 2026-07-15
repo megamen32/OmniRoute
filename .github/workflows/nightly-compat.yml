@@ -70,7 +70,15 @@ jobs:
         with:
           node-version: "26"
           cache: npm
-      - uses: ./.github/actions/npm-ci-retry
+      - name: Install dependencies with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            npm ci && exit 0
+            [ "$attempt" -eq 3 ] && exit 1
+            sleep $((attempt * 10))
+          done
       - run: npm run build
 
   compat-tests:
@@ -97,7 +105,15 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - uses: ./.github/actions/npm-ci-retry
+      - name: Install dependencies with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            npm ci && exit 0
+            [ "$attempt" -eq 3 ] && exit 1
+            sleep $((attempt * 10))
+          done
       - run: npm run check:node-runtime
       - run: npm run test:unit:ci:shard
 
@@ -117,6 +133,10 @@ jobs:
         run: |
           set -euo pipefail
           TITLE="🌙 nightly-compat: Node 24/26 failures on $TARGET"
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues')" != "true" ]; then
+            echo "Issues are disabled; skipping failure tracking issue."
+            exit 0
+          fi
           EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$TITLE in:title" --json number --jq '.[0].number')
           BODY="Nightly Node-compat run failed on \`$TARGET\`: $RUN_URL — triage which Node version/shard broke (fail-fast off, all versions reported)."
           if [ -n "$EXISTING" ]; then
