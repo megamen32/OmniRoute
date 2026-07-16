@@ -30,13 +30,13 @@ const {
   isControlPlaneProxyDirectFallbackEnabled,
 } = await import("../../src/shared/utils/featureFlags.ts");
 
-const EXPECTED_FEATURE_FLAG_COUNT = 41;
+const EXPECTED_FEATURE_FLAG_COUNT = 42;
 
 // ──────────────────────────────────────────────────────
 // Test group 1 — Flag definitions registry
 // ──────────────────────────────────────────────────────
 describe("featureFlagDefinitions", () => {
-  it("has exactly 41 flag definitions", () => {
+  it("has exactly 42 flag definitions", () => {
     assert.strictEqual(FEATURE_FLAG_DEFINITIONS.length, EXPECTED_FEATURE_FLAG_COUNT);
   });
 
@@ -147,6 +147,15 @@ describe("featureFlagDefinitions", () => {
     assert.strictEqual(midstream.defaultValue, "false");
     assert.strictEqual(midstream.requiresRestart, false);
     assert.strictEqual(midstream.warningLevel, "danger");
+  });
+
+  it("defines proxy label port visibility as a network boolean flag disabled by default", () => {
+    const flag = FEATURE_FLAG_DEFINITIONS.find((d) => d.key === "SHOW_PROXY_PORT_IN_LABELS");
+    assert.ok(flag);
+    assert.equal(flag.category, "network");
+    assert.equal(flag.type, "boolean");
+    assert.equal(flag.defaultValue, "false");
+    assert.equal(flag.requiresRestart, false);
   });
 
   it("defines control-plane proxy direct fallback as a network boolean flag disabled by default", () => {
@@ -312,7 +321,7 @@ describe("resolveFeatureFlag", () => {
   });
 
   describe("resolveAllFeatureFlags", () => {
-    it("returns all 41 flags", () => {
+    it("returns all 42 flags", () => {
       const all = resolveAllFeatureFlags();
       assert.strictEqual(all.length, EXPECTED_FEATURE_FLAG_COUNT);
     });

@@ -7,6 +7,7 @@ import {
 } from "@/lib/api/proxyRegistryRouteHandlers";
 import { createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
+import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";
 import {
   isRelayAuthMissing,
   isRelayProxyType,
@@ -43,6 +44,7 @@ export async function GET(request: Request) {
       // probes have run, and how many came back alive.
       relayProbeStats: getRelayProbeStats(),
       // Default ON (opt-out): only an explicit falsey value disables SOCKS5.
+      showProxyPortInLabels: isFeatureFlagEnabled("SHOW_PROXY_PORT_IN_LABELS"),
       socks5Enabled: !["false", "0", "no", "off"].includes(
         (process.env.ENABLE_SOCKS5_PROXY ?? "").trim().toLowerCase()
       ),

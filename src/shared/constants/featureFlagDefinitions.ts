@@ -129,6 +129,18 @@ export const FEATURE_FLAG_DEFINITIONS: FeatureFlagDefinition[] = [
     warningLevel: "info",
   },
   {
+    key: "SHOW_PROXY_PORT_IN_LABELS",
+    label: "Show Proxy Port in Labels",
+    description:
+      "Append the proxy port to proxy names in dashboard assignment selectors and account proxy tooltips. Useful when several proxies share one IP address.",
+    descriptionI18nKey: "settings.featureFlags.showProxyPortInLabels",
+    category: "network",
+    defaultValue: "false",
+    type: "boolean",
+    requiresRestart: false,
+    warningLevel: "info",
+  },
+  {
     key: "PROXY_AUTO_SELECT_ENABLED",
     label: "Proxy Auto-Selection Fallback",
     description:

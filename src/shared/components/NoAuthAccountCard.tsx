@@ -101,6 +101,7 @@ export default function NoAuthAccountCard({
   const [proxyAccountId, setProxyAccountId] = useState<string | null>(null);
   const [proxyMode, setProxyMode] = useState<"saved" | "custom">("saved");
   const [savedProxies, setSavedProxies] = useState<SavedProxy[]>([]);
+  const [showProxyPortInLabels, setShowProxyPortInLabels] = useState(false);
   const [selectedProxyId, setSelectedProxyId] = useState("");
   const [proxyType, setProxyType] = useState("socks5");
   const [proxyHost, setProxyHost] = useState("");
@@ -133,6 +134,7 @@ export default function NoAuthAccountCard({
       if (res.ok) {
         const data = await res.json();
         setSavedProxies(Array.isArray(data?.items) ? data.items : []);
+        setShowProxyPortInLabels(data?.showProxyPortInLabels === true);
       }
     } catch (err) {
       console.error("Failed to fetch saved proxies:", err);
@@ -370,7 +372,10 @@ export default function NoAuthAccountCard({
             className="grid max-h-72 grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3"
           >
             {allAccountIds.map((id, i) => {
-              const proxy = getDisplayProxy(getEntryForFingerprint(accountProxies, id), savedProxies);
+              const proxy = getDisplayProxy(
+                getEntryForFingerprint(accountProxies, id),
+                savedProxies
+              );
               return (
                 <div
                   key={id}
@@ -389,7 +394,7 @@ export default function NoAuthAccountCard({
                     className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${proxy ? "text-blue-400" : "text-text-muted"}`}
                     title={
                       proxy
-                        ? `Proxy: ${proxy.type}://${proxy.host}:${proxy.port}`
+                        ? `Proxy: ${proxy.type}://${proxy.host}${showProxyPortInLabels ? `:${proxy.port}` : ""}`
                         : "Configure proxy"
                     }
                     aria-label={proxy ? `Proxy configured: ${proxy.host}` : "Configure proxy"}
@@ -465,7 +470,8 @@ export default function NoAuthAccountCard({
                     </option>
                     {savedProxies.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {(p.name || p.host) ?? p.id} ({p.type || "socks5"}://{p.host}:{p.port})
+                        {(p.name || p.host) ?? p.id}
+                        {showProxyPortInLabels && p.port ? ` (:${p.port})` : ""}
                       </option>
                     ))}
                   </select>

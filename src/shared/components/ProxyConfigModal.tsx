@@ -23,7 +23,9 @@ const BUILD_TIME_SOCKS5 = !["false", "0", "no", "off"].includes(
   (process.env.NEXT_PUBLIC_ENABLE_SOCKS5_PROXY ?? "").trim().toLowerCase()
 );
 export function buildProxyTypes(socks5Enabled: boolean) {
-  return socks5Enabled ? ALL_PROXY_TYPES : ALL_PROXY_TYPES.filter((type) => type.value !== "socks5");
+  return socks5Enabled
+    ? ALL_PROXY_TYPES
+    : ALL_PROXY_TYPES.filter((type) => type.value !== "socks5");
 }
 
 type ProxyConfigLevel = "global" | "provider" | "combo" | "key";
@@ -125,6 +127,7 @@ export default function ProxyConfigModal({
   const t = useTranslations("proxyConfigModal");
   const [mode, setMode] = useState("saved");
   const [savedProxies, setSavedProxies] = useState<ProxyRegistryItem[]>([]);
+  const [showProxyPortInLabels, setShowProxyPortInLabels] = useState(false);
   const [selectedProxyId, setSelectedProxyId] = useState("");
   const [socks5Enabled, setSocks5Enabled] = useState(BUILD_TIME_SOCKS5);
   const proxyTypes = useMemo(() => buildProxyTypes(socks5Enabled), [socks5Enabled]);
@@ -165,6 +168,7 @@ export default function ProxyConfigModal({
           const registryPayload = await registryRes.json();
           registryItems = Array.isArray(registryPayload?.items) ? registryPayload.items : [];
           setSavedProxies(registryItems);
+          setShowProxyPortInLabels(registryPayload?.showProxyPortInLabels === true);
           if (typeof registryPayload?.socks5Enabled === "boolean") {
             runtimeSocks5 = registryPayload.socks5Enabled;
           }
@@ -192,7 +196,9 @@ export default function ProxyConfigModal({
             const assignedProxy = registryItems.find((item) => item.id === target.proxyId);
             if (assignedProxy?.source === DASHBOARD_CUSTOM_PROXY_SOURCE) {
               const normalizedType = String(assignedProxy.type || "http").toLowerCase();
-              const hasTypeOption = runtimeProxyTypes.some((entry) => entry.value === normalizedType);
+              const hasTypeOption = runtimeProxyTypes.some(
+                (entry) => entry.value === normalizedType
+              );
               setMode("custom");
               setProxyType(hasTypeOption ? normalizedType : runtimeProxyTypes[0]?.value || "http");
               setHost(assignedProxy.host || "");
@@ -586,7 +592,8 @@ export default function ProxyConfigModal({
                 <option value="">{t("selectSavedProxyPlaceholder")}</option>
                 {savedProxies.map((item: any) => (
                   <option key={item.id} value={item.id}>
-                    {item.name} ({item.type}://{item.host}:{item.port})
+                    {item.name || item.host}
+                    {showProxyPortInLabels && item.port ? ` (:${item.port})` : ""}
                   </option>
                 ))}
               </select>
