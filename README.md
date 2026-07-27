@@ -11,6 +11,27 @@
 
 </div>
 
+## Roomhacker integration boundary
+
+The deployed `release/v3.8.49` branch is kept aligned with OmniRoute's public
+release and does not carry a separate user-specific OmniRoute core patch. The
+custom behavior used with this release lives in companion components:
+
+- [`opencode-omniroute-models`](../../../opencode-omniroute-models/README.md)
+  exposes the live catalog with exact IDs, the
+  `minimax/MiniMax-M3:512k` alias, selector flags, and actual combo-model
+  telemetry.
+- The OpenCode fork adds configurable retries, timeouts, ordered fallbacks,
+  opt-in auto-resume, actual-model runtime metadata, and direct Task/MCP
+  endpoints.
+- The OpenChamber fork adds settings for those controls, failed-turn
+  `Возобновить`/`Перезапуск`, next-request model switching, the composer
+  Task/MCP menu, and opt-in subagent workspace layouts.
+
+This boundary is intentional: OmniRoute remains the upstream-compatible
+gateway, while the client-specific UX and runtime overlays are documented in
+the companion repositories.
+
 <div align="center">
 
 ## 💰 ~1.53B Free Tokens / Month
