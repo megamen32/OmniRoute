@@ -1,7 +1,6 @@
 import { handleChat } from "@/sse/handlers/chat";
 import {
   withEarlyStreamKeepalive,
-  RESPONSES_STARTUP_THINKING_FRAME,
   OPENAI_RESPONSES_ERROR_FRAME,
 } from "@omniroute/open-sse/utils/earlyStreamKeepalive";
 import { withInjectionGuard } from "@/middleware/promptInjectionGuard";
@@ -102,7 +101,8 @@ async function postHandler(request: any, context: any, preParsedBody: any = null
     return await withEarlyStreamKeepalive(handleChat(resolved, null, resolvedBody), {
       signal: request.signal,
       thresholdMs,
-      startupFrame: RESPONSES_STARTUP_THINKING_FRAME,
+      // Default to an SSE comment: the Responses client needs a byte, not a
+      // synthetic reasoning item that would be persisted in the conversation.
       errorFrame: OPENAI_RESPONSES_ERROR_FRAME,
     });
   }

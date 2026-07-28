@@ -8,7 +8,6 @@ import { acceptHeaderForcesStream } from "@omniroute/open-sse/utils/aiSdkCompat.
 import {
   OPENAI_CHAT_ERROR_FRAME,
   OPENAI_KEEPALIVE_FRAME,
-  OPENAI_STARTUP_THINKING_FRAME,
   withEarlyStreamKeepalive,
 } from "@omniroute/open-sse/utils/earlyStreamKeepalive";
 import { resolveKeepaliveThreshold } from "@omniroute/open-sse/utils/keepaliveThreshold";
@@ -160,7 +159,10 @@ export async function POST(request) {
         signal: request.signal,
         thresholdMs: resolveKeepaliveThreshold(parsedBody?.model),
         keepaliveFrame: OPENAI_KEEPALIVE_FRAME,
-        startupFrame: OPENAI_STARTUP_THINKING_FRAME,
+        // A content-bearing startup frame is rendered by OpenCode/OpenChamber as
+        // reasoning and becomes part of the assistant turn. Keep the connection
+        // alive without inventing a model token.
+        startupFrame: OPENAI_KEEPALIVE_FRAME,
         errorFrame: OPENAI_CHAT_ERROR_FRAME,
         extraHeaders: { "X-Correlation-Id": reqId },
       });
