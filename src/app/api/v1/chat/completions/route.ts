@@ -11,12 +11,7 @@ import {
   withEarlyStreamKeepalive,
 } from "@omniroute/open-sse/utils/earlyStreamKeepalive";
 import { resolveKeepaliveThreshold } from "@omniroute/open-sse/utils/keepaliveThreshold";
-import {
-  admitChatRequest,
-  admitChatStructure,
-  releaseChatAdmissionAfterHandler,
-  releaseChatAdmissionWhenDone,
-} from "@/shared/middleware/chatBodyAdmission";
+import { admitChatRequest, admitChatStructure } from "@/shared/middleware/chatBodyAdmission";
 import {
   readCompressionRequestHeader,
   withCompressionHeaderEcho,
@@ -70,15 +65,12 @@ export async function POST(request) {
     );
   }
 
-  // Reserve heavyweight capacity atomically and ingest the body with a hard byte bound
-  // BEFORE JSON parsing. Missing or dishonest Content-Length values cannot bypass
-  // the actual-byte limit. Capacity exhaustion is retryable rather than process-fatal.
+  // Ingest the body with a hard byte bound BEFORE JSON parsing. Missing or dishonest
+  // Content-Length values cannot bypass the actual-byte limit. Concurrency is acquired later
+  // by chatCore for the selected provider account, never globally at this edge.
   const admissionResult = await admitChatRequest(request);
   if (admissionResult.admit === false) return admissionResult.response;
-  const admission = admissionResult;
-  request = admission.request;
-  const finishAdmission = (response: Response) =>
-    releaseChatAdmissionWhenDone(response, admission.lease);
+  request = admissionResult.request;
 
   try {
     // One-line marker for diagnosing 413 / Server-Action interceptions.
@@ -102,27 +94,23 @@ export async function POST(request) {
     try {
       parsedBody = await request.json().catch(() => null);
       if (parsedBody) {
-        const structuralAdmission = admitChatStructure(parsedBody, admission.lease);
+        const structuralAdmission = admitChatStructure(parsedBody, null);
         if (structuralAdmission.admit === false) {
-          admission.lease?.release();
           return structuralAdmission.response;
         }
-        admission.lease = structuralAdmission.lease;
 
         const { blocked, result } = injectionGuard(parsedBody);
         if (blocked) {
-          return finishAdmission(
-            new Response(
-              JSON.stringify({
-                error: {
-                  message: "Request blocked: potential prompt injection detected",
-                  type: "injection_detected",
-                  code: "SECURITY_001",
-                  detections: result.detections.length,
-                },
-              }),
-              { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
-            )
+          return new Response(
+            JSON.stringify({
+              error: {
+                message: "Request blocked: potential prompt injection detected",
+                type: "injection_detected",
+                code: "SECURITY_001",
+                detections: result.detections.length,
+              },
+            }),
+            { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
           );
         }
       }
@@ -150,11 +138,8 @@ export async function POST(request) {
       const reqId = generateRequestId();
       // Wrap the real handler response, not the synthetic early-keepalive response. If the
       // client cancels while handleChat is still pending, earlyStreamKeepalive will cancel the
-      // eventual handler body; only that confirmed cleanup releases heavyweight capacity.
-      const handlerResponse = releaseChatAdmissionAfterHandler(
-        handleChat(request, null, parsedBody, reqId),
-        admission.lease
-      );
+      // eventual handler body; chatCore owns the selected account's semaphore lifecycle.
+      const handlerResponse = handleChat(request, null, parsedBody, reqId);
       const streamedResponse = await withEarlyStreamKeepalive(handlerResponse, {
         signal: request.signal,
         thresholdMs: resolveKeepaliveThreshold(parsedBody?.model),
@@ -169,14 +154,11 @@ export async function POST(request) {
       return withCompressionHeaderEcho(streamedResponse, compressionRequestHeader);
     }
 
-    return finishAdmission(
-      withCompressionHeaderEcho(
-        await handleChat(request, null, parsedBody),
-        compressionRequestHeader
-      )
+    return withCompressionHeaderEcho(
+      await handleChat(request, null, parsedBody),
+      compressionRequestHeader
     );
   } catch (error) {
-    admission.lease?.release();
     throw error;
   }
 }

@@ -13,6 +13,20 @@ function toFiniteNumberOrNull(value: unknown): number | null {
   return null;
 }
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Default concurrency is deliberately account-scoped. A connection's positive
+ * `maxConcurrent` still wins; zero retains its existing explicit-unlimited meaning.
+ */
+export const ACCOUNT_DEFAULT_MAX_CONCURRENT = parsePositiveInt(
+  process.env.OMNIROUTE_ACCOUNT_MAX_CONCURRENT,
+  1
+);
+
 export function resolveAccountSemaphoreAccountKey(
   connectionId: string | null | undefined,
   credentials: Record<string, unknown> | null | undefined
@@ -41,7 +55,7 @@ export function resolveAccountSemaphoreAccountKey(
 export function resolveAccountSemaphoreMaxConcurrency(
   credentials: Record<string, unknown> | null | undefined
 ): number | null {
-  return toFiniteNumberOrNull(credentials?.maxConcurrent);
+  return toFiniteNumberOrNull(credentials?.maxConcurrent) ?? ACCOUNT_DEFAULT_MAX_CONCURRENT;
 }
 
 export function resolveAccountSemaphoreKey({
