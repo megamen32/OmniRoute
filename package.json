@@ -91,7 +91,7 @@
     "build:secure": "OMNIROUTE_BUILD_PROFILE=minimal node scripts/build/build-next-isolated.mjs",
     "build:backend": "cross-env OMNIROUTE_BUILD_BACKEND_ONLY=1 node scripts/build/build-next-isolated.mjs",
     "build:cli": "node --import tsx scripts/build/prepublish.ts",
-    "build:release": "rm -rf .build dist && OMNIROUTE_BUILD_SHA=$(git rev-parse --short HEAD) npm run build && npm run build:cli && node scripts/build/write-build-sha.mjs",
+    "build:release": "npm rebuild better-sqlite3 && node -e \"const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.close();\" && rm -rf .build dist && OMNIROUTE_BUILD_SHA=$(git rev-parse --short HEAD) npm run build && npm run build:cli && node scripts/build/write-build-sha.mjs",
     "build:native:tproxy": "cd src/mitm/tproxy/native && npx --yes node-gyp rebuild",
     "start": "node scripts/dev/run-next.mjs start",
     "homolog": "node scripts/homolog/run.mjs",
