@@ -3704,7 +3704,7 @@
     "modelsCount": "{count, plural, one {# model} other {# models}}",
     "sectionTitle": "Integration Surface",
     "sectionDescription": "OpenAI-compatible APIs and operational protocol endpoints",
-    "tabApis": "OpenAI-compatible APIs",
+    "tabApis": "__MISSING__:APIs",
     "tabProtocols": "Protocols",
     "tabsAria": "Endpoint sections",
     "protocolsTitle": "Protocols",
@@ -5409,8 +5409,8 @@
     "t3ChatWebCookieHint": "Open t3.chat → DevTools → Applicatie → Lokale opslag → https://t3.chat, kopieer 'convex-session-id'. Open vervolgens DevTools → Netwerk en kopieer de volledige Cookie-header van elk chatverzoek. Plak beide waarden in de onderstaande velden.",
     "t3ChatWebCookiePlaceholder": "convexe-sessie-id=abc123...",
     "grokWebCookieHint": "Grok Web Cookie Hint",
-    "blockClaudeExtraUsageDescription": "Block Claude Extra Usage Description",
-    "blockClaudeExtraUsageLabel": "Block Claude Extra Usage Label",
+    "blockClaudeExtraUsageDescription": "__MISSING__:When enabled, OmniRoute marks this Claude connection unavailable as soon as the usage API reports queued extra usage, so fallback switches to another connection instead of continuing on pay-as-you-go extra billing.",
+    "blockClaudeExtraUsageLabel": "__MISSING__:Block extra Claude usage",
     "disableCoolingDescription": "Sla de tijdelijke afkoelperiode over, zodat deze verbinding in aanmerking blijft komen, zelfs na herstelbare fouten (definitieve statussen zoals verbannen/verlopen zijn nog steeds van toepassing).",
     "disableCoolingLabel": "Afkoelperiode uitschakelen voor deze verbinding",
     "bulkPasteAdded": "{count, plural, one {1 key added} other {# keys added}}",
@@ -5589,13 +5589,13 @@
     "importGrokAuth": "Grok Build-authenticatie importeren",
     "zedImportTitle": "Importeren uit Zed-sleutelhanger",
     "zedImportDescription": "Ontdek inloggegevens van AI-providers (OpenAI, Anthropic, Google, Mistral, xAI) die door Zed IDE zijn opgeslagen in de sleutelhanger van het besturingssysteem en importeer ze als verbindingen. Zed IDE moet op deze machine zijn geïnstalleerd.",
-    "zedImportButton": "Zed Import Button",
-    "zedImportFailed": "Zed Import Failed",
+    "zedImportButton": "__MISSING__:Import from Zed",
+    "zedImportFailed": "__MISSING__:Zed import failed",
     "zedImportHint": "Zed Import Hint",
     "zedImportNetworkError": "Zed Import Network Error",
     "zedImportNone": "Zed Import None",
-    "zedImportSuccess": "Zed Import Success",
-    "zedImporting": "Zed Importing",
+    "zedImportSuccess": "__MISSING__:Imported {credentials} credential(s) from Zed for {providers} provider(s)",
+    "zedImporting": "__MISSING__:Importing…",
     "zedNoCredentials": "Geen Zed-inloggegevens gevonden in de sleutelhanger",
     "zedUnsupportedCredentials": "{count} inloggegeven(s) in de sleutelhanger gevonden, maar geen enkele kwam overeen met ondersteunde providers",
     "zedManualTitle": "Handmatige tokenimport",
@@ -6748,7 +6748,7 @@
     "howPricingWorks": "Hoe prijzen werken",
     "cacheWrite": "Cache schrijven",
     "unsaved": "niet opgeslagen",
-    "resetDefaults": "Standaardwaarden opnieuw instellen",
+    "resetDefaults": "__MISSING__:Reset defaults",
     "saveProvider": "Aanbieder opslaan",
     "model": "Model",
     "models": "modellen",
@@ -7297,6 +7297,10 @@
       "less-code": {
         "label": "Minder code",
         "description": "YAGNI-ladder: kleinste werkende wijziging, geen ongevraagde abstracties."
+      },
+      "ponytail": {
+        "label": "Ponytail (lazy senior dev)",
+        "description": "Lazy senior-dev discipline: climb the YAGNI ladder, fix root cause, smallest working diff."
       },
       "terse-cjk": {
         "label": "Beknopt CJK (文言)",
@@ -10518,7 +10522,9 @@
     "deleteGroupConfirm": "Deze groep verwijderen? De pools moeten eerst opnieuw worden toegewezen of worden verwijderd.",
     "deleteGroupHasPools": "Deze groep heeft nog pools — wijs ze eerst opnieuw toe of verwijder ze.",
     "ungroupedTitle": "Niet gegroepeerd",
-    "ungroupedHint": "Deze pools zijn niet toegewezen aan een bekende groep. Bewerk een pool om deze naar een echte groep te verplaatsen."
+    "ungroupedHint": "Deze pools zijn niet toegewezen aan een bekende groep. Bewerk een pool om deze naar een echte groep te verplaatsen.",
+    "removeFailed": "Could not remove this pool.",
+    "dismiss": "Dismiss"
   },
   "plugins": {
     "title": "Plugins",

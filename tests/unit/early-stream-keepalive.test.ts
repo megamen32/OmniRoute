@@ -5,6 +5,7 @@ import {
   withEarlyStreamKeepalive,
   ANTHROPIC_PING_FRAME,
   OPENAI_KEEPALIVE_FRAME,
+  OPENAI_STARTUP_FRAME,
   RESPONSES_STARTUP_THINKING_FRAME,
   OPENAI_CHAT_ERROR_FRAME,
   OPENAI_RESPONSES_ERROR_FRAME,
@@ -100,7 +101,17 @@ test("slow handler emits the custom OpenAI keepalive chunk before the body", asy
   assert.match(body, /data: \[DONE\]/);
 });
 
-test("slow handler emits an empty keepalive first, then forwards the real body", async () => {
+test("OPENAI_STARTUP_FRAME is a parseable empty delta", () => {
+  const decoded = new TextDecoder().decode(OPENAI_STARTUP_FRAME);
+  assert.match(decoded, /^data: /);
+  assert.doesNotMatch(decoded, /^:/, "must not be an SSE comment");
+
+  const payload = JSON.parse(decoded.slice("data: ".length).trim());
+  assert.equal(payload.object, "chat.completion.chunk");
+  assert.deepEqual(payload.choices, [{ index: 0, delta: {}, finish_reason: null }]);
+});
+
+test("slow handler emits startupFrame once, then falls back to keepaliveFrame on later ticks", async () => {
   // intervalMs is floored at 250ms (see withEarlyStreamKeepalive), so the handler
   // must resolve well past one full tick to reliably observe an interval keepalive
   // before the real body arrives.
@@ -112,7 +123,7 @@ test("slow handler emits an empty keepalive first, then forwards the real body",
     thresholdMs: 20,
     intervalMs: 250,
     keepaliveFrame: OPENAI_KEEPALIVE_FRAME,
-    startupFrame: OPENAI_KEEPALIVE_FRAME,
+    startupFrame: OPENAI_STARTUP_FRAME,
   });
 
   const body = await readAll(result);

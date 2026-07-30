@@ -1,17 +1,25 @@
+import { z } from "zod";
 import { CORS_HEADERS, handleCorsOptions } from "@/shared/utils/cors";
 import { callCloudWithMachineId } from "@/shared/utils/cloud";
 import { handleChat } from "@/sse/handlers/chat";
 import { generateRequestId } from "@/shared/utils/requestId";
+import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import { initTranslators } from "@omniroute/open-sse/translator/index.ts";
 import { createInjectionGuard } from "@/middleware/promptInjectionGuard";
 import { acceptHeaderForcesStream } from "@omniroute/open-sse/utils/aiSdkCompat.ts";
 import {
   OPENAI_CHAT_ERROR_FRAME,
   OPENAI_KEEPALIVE_FRAME,
+  OPENAI_STARTUP_FRAME,
   withEarlyStreamKeepalive,
 } from "@omniroute/open-sse/utils/earlyStreamKeepalive";
 import { resolveKeepaliveThreshold } from "@omniroute/open-sse/utils/keepaliveThreshold";
-import { admitChatRequest, admitChatStructure } from "@/shared/middleware/chatBodyAdmission";
+import {
+  admitChatRequest,
+  admitChatStructure,
+  releaseChatAdmissionAfterHandler,
+  releaseChatAdmissionWhenDone,
+} from "@/shared/middleware/chatBodyAdmission";
 import {
   readCompressionRequestHeader,
   withCompressionHeaderEcho,
@@ -37,6 +45,28 @@ function ensureInitialized() {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+// Minimal request-shape validation (Rule #7 / T06 gate). This is the hottest path in the
+// proxy, and the body is already parsed exactly once above into `parsedBody` (see the
+// #4380/#7862 comment on the single `request.json()` call) — so this only runs `.safeParse()`
+// over that already-parsed object, it does NOT read the body again.
+//
+// Deliberately permissive: `src/sse/handlers/chat.ts` (deeper in `handleChat`) owns the real
+// validation of this payload — messages/model/temperature/top_p/max_tokens/n — and accepts
+// shapes this schema must not newly reject, e.g. a `model` that is entirely absent (resolved
+// later via `input`/antigravity) or `null`, and message `role`s such as `"developer"` (see
+// `open-sse/services/roleNormalizer.ts`) that a stricter enum would exclude. `.passthrough()`
+// keeps every other field (stream, tools, reasoning, provider-specific extras, ...) intact.
+// This schema only asserts what the route already assumes before handing `parsedBody` to
+// `handleChat`: a non-null object, `model` a nullable string when present, `messages` an
+// array when present — so `.safeParse()` failing here is always a shape the deep validation
+// would already have rejected with its own 400, never a new rejection.
+const chatCompletionsRouteShapeSchema = z
+  .object({
+    model: z.string().nullable().optional(),
+    messages: z.array(z.unknown()).optional(),
+  })
+  .passthrough();
 
 /**
  * Handle CORS preflight
@@ -65,12 +95,15 @@ export async function POST(request) {
     );
   }
 
-  // Ingest the body with a hard byte bound BEFORE JSON parsing. Missing or dishonest
-  // Content-Length values cannot bypass the actual-byte limit. Concurrency is acquired later
-  // by chatCore for the selected provider account, never globally at this edge.
+  // Reserve heavyweight capacity atomically and ingest the body with a hard byte bound
+  // BEFORE JSON parsing. Missing or dishonest Content-Length values cannot bypass
+  // the actual-byte limit. Capacity exhaustion is retryable rather than process-fatal.
   const admissionResult = await admitChatRequest(request);
   if (admissionResult.admit === false) return admissionResult.response;
-  request = admissionResult.request;
+  const admission = admissionResult;
+  request = admission.request;
+  const finishAdmission = (response: Response) =>
+    releaseChatAdmissionWhenDone(response, admission.lease);
 
   try {
     // One-line marker for diagnosing 413 / Server-Action interceptions.
@@ -94,23 +127,39 @@ export async function POST(request) {
     try {
       parsedBody = await request.json().catch(() => null);
       if (parsedBody) {
-        const structuralAdmission = admitChatStructure(parsedBody, null);
+        // Route-level shape gate (T06) — validates the object already parsed above; it
+        // never reads the request body a second time. See chatCompletionsRouteShapeSchema
+        // for why this stays scoped to record-shaped bodies and deliberately permissive.
+        if (isRecord(parsedBody)) {
+          const shapeCheck = chatCompletionsRouteShapeSchema.safeParse(parsedBody);
+          if (!shapeCheck.success) {
+            const issue = shapeCheck.error.issues[0];
+            const field = issue?.path?.length ? issue.path.join(".") : "body";
+            return finishAdmission(errorResponse(400, `${field}: ${issue?.message ?? "Invalid request"}`));
+          }
+        }
+
+        const structuralAdmission = admitChatStructure(parsedBody, admission.lease);
         if (structuralAdmission.admit === false) {
+          admission.lease?.release();
           return structuralAdmission.response;
         }
+        admission.lease = structuralAdmission.lease;
 
         const { blocked, result } = injectionGuard(parsedBody);
         if (blocked) {
-          return new Response(
-            JSON.stringify({
-              error: {
-                message: "Request blocked: potential prompt injection detected",
-                type: "injection_detected",
-                code: "SECURITY_001",
-                detections: result.detections.length,
-              },
-            }),
-            { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+          return finishAdmission(
+            new Response(
+              JSON.stringify({
+                error: {
+                  message: "Request blocked: potential prompt injection detected",
+                  type: "injection_detected",
+                  code: "SECURITY_001",
+                  detections: result.detections.length,
+                },
+              }),
+              { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+            )
           );
         }
       }
@@ -138,27 +187,30 @@ export async function POST(request) {
       const reqId = generateRequestId();
       // Wrap the real handler response, not the synthetic early-keepalive response. If the
       // client cancels while handleChat is still pending, earlyStreamKeepalive will cancel the
-      // eventual handler body; chatCore owns the selected account's semaphore lifecycle.
-      const handlerResponse = handleChat(request, null, parsedBody, reqId);
+      // eventual handler body; only that confirmed cleanup releases heavyweight capacity.
+      const handlerResponse = releaseChatAdmissionAfterHandler(
+        handleChat(request, null, parsedBody, reqId),
+        admission.lease
+      );
       const streamedResponse = await withEarlyStreamKeepalive(handlerResponse, {
         signal: request.signal,
         thresholdMs: resolveKeepaliveThreshold(parsedBody?.model),
         keepaliveFrame: OPENAI_KEEPALIVE_FRAME,
-        // A content-bearing startup frame is rendered by OpenCode/OpenChamber as
-        // reasoning and becomes part of the assistant turn. Keep the connection
-        // alive without inventing a model token.
-        startupFrame: OPENAI_KEEPALIVE_FRAME,
+        startupFrame: OPENAI_STARTUP_FRAME,
         errorFrame: OPENAI_CHAT_ERROR_FRAME,
         extraHeaders: { "X-Correlation-Id": reqId },
       });
       return withCompressionHeaderEcho(streamedResponse, compressionRequestHeader);
     }
 
-    return withCompressionHeaderEcho(
-      await handleChat(request, null, parsedBody),
-      compressionRequestHeader
+    return finishAdmission(
+      withCompressionHeaderEcho(
+        await handleChat(request, null, parsedBody),
+        compressionRequestHeader
+      )
     );
   } catch (error) {
+    admission.lease?.release();
     throw error;
   }
 }

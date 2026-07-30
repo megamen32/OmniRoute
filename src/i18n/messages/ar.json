@@ -3704,7 +3704,7 @@
     "modelsCount": "النماذج: {count, plural, one {نموذج واحد} other {# نماذج}}",
     "sectionTitle": "سطح التكامل",
     "sectionDescription": "واجهات برمجة التطبيقات المتوافقة مع OpenAI ونقاط نهاية البروتوكول التشغيلية",
-    "tabApis": "واجهات برمجة تطبيقات متوافقة مع OpenAI",
+    "tabApis": "__MISSING__:APIs",
     "tabProtocols": "البروتوكولات",
     "tabsAria": "أقسام نقطة النهاية",
     "protocolsTitle": "البروتوكولات",
@@ -6748,7 +6748,7 @@
     "howPricingWorks": "كيف يعمل التسعير",
     "cacheWrite": "كتابة ذاكرة التخزين المؤقت",
     "unsaved": "غير محفوظ",
-    "resetDefaults": "إعادة تعيين الإعدادات الافتراضية",
+    "resetDefaults": "__MISSING__:Reset defaults",
     "saveProvider": "حفظ المزود",
     "model": "نموذج",
     "models": "نماذج",
@@ -7297,6 +7297,10 @@
       "less-code": {
         "label": "كود أقل",
         "description": "سلم YAGNI: أصغر تغيير فعال، بدون تجريدات غير مطلوبة."
+      },
+      "ponytail": {
+        "label": "Ponytail (lazy senior dev)",
+        "description": "Lazy senior-dev discipline: climb the YAGNI ladder, fix root cause, smallest working diff."
       },
       "terse-cjk": {
         "label": "CJK مقتضب (文言)",
@@ -10518,7 +10522,9 @@
     "deleteGroupConfirm": "هل تريد حذف هذه المجموعة؟ يجب إعادة تعيين مجمعاتها أو إزالتها أولاً.",
     "deleteGroupHasPools": "لا تزال هذه المجموعة تحتوي على مجمعات — أعد تعيينها أو احذفها أولاً.",
     "ungroupedTitle": "غير مجمع",
-    "ungroupedHint": "هذه المجمعات غير مخصصة لمجموعة معروفة. قم بتحرير مجمع لنقله إلى مجموعة حقيقية."
+    "ungroupedHint": "هذه المجمعات غير مخصصة لمجموعة معروفة. قم بتحرير مجمع لنقله إلى مجموعة حقيقية.",
+    "removeFailed": "Could not remove this pool.",
+    "dismiss": "Dismiss"
   },
   "plugins": {
     "title": "الإضافات",
