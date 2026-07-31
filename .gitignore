@@ -201,7 +201,11 @@ scripts/i18n/_pending-keys.json
 .codegraph/
 
 # Fumadocs generated source
-.source/
+# Keep local generated state out of Git, while preserving the two tracked
+# source-control files that lint-staged must be able to re-index.
+.source/*
+!.source/dynamic.ts
+!.source/source.config.mjs
 
 # AI agent local settings and configs
 .agents/
@@ -250,3 +254,4 @@ tests/homolog/.auth/
 tests/homolog/ui/.auth/
 homolog-report/
 docker-compose.yml.bak
+graphify-out/
