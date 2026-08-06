@@ -11,9 +11,11 @@ test("CLI_TOOLS registry contains all expected tools including rebuilt Qwen Code
   //   (CodeWhale is the actively-maintained successor to DeepSeek TUI).
   // omp + letta added by #6318 (agent-category CLI integrations).
   // grok-build added — xAI Grok Build TUI coding agent (ported from upstream decolua/9router#2571).
+  // zcode added — local native app-server backend for GLM Coding Plan.
   const expected = [
     "claude",
     "codex",
+    "zcode",
     "droid",
     "openclaw",
     "cursor",
