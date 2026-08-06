@@ -38,6 +38,8 @@ export const FREE_APIKEY_PROVIDER_IDS = new Set([
   // accepts an optional connection row for display/priority/testStatus tracking —
   // no apiKey is ever required or sent upstream.
   "auggie",
+  // zcode is a local app-server backend; auth stays in the ZCode profile.
+  "zcode",
 ]);
 
 export function supportsApiKeyOnFreeProvider(providerId: unknown): boolean {

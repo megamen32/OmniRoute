@@ -92,6 +92,17 @@ const CLI_TOOLS: Record<string, any> = {
       },
     },
   },
+  zcode: {
+    defaultCommand: "zcode",
+    envBinKey: "ZCODE_BIN",
+    requiresBinary: true,
+    // The app-server performs a local runtime handshake and can be slower on
+    // the first launch while the user's ZCode profile is loaded.
+    healthcheckTimeoutMs: 15000,
+    paths: {
+      config: ".zcode",
+    },
+  },
   cline: {
     defaultCommand: "cline",
     envBinKey: "CLI_CLINE_BIN",
