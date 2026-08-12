@@ -2,10 +2,9 @@
  * Bounded admission for POST /v1/chat/completions.
  *
  * Large chat bodies amplify into multiple transient representations while they are parsed,
- * translated, compressed, and dispatched. A heap snapshot alone cannot prevent two healthy
- * requests from entering that allocation-heavy path together. This module reserves process-
- * local heavyweight capacity before parsing and enforces the hard limit against bytes read,
- * not an untrusted Content-Length header.
+ * translated, compressed, and dispatched. This module enforces the hard limit against bytes
+ * read, not an untrusted Content-Length header. Dispatch concurrency is deliberately handled
+ * later, after routing selects a provider connection, so unrelated accounts never contend.
  */
 
 import { CORS_HEADERS } from "../utils/cors";
@@ -23,11 +22,6 @@ export const CHAT_LARGE_BODY_BYTES = parsePositiveInt(
 export const CHAT_HARD_MAX_BODY_BYTES = parsePositiveInt(
   process.env.OMNIROUTE_CHAT_HARD_MAX_BODY_BYTES,
   50 * 1024 * 1024
-);
-
-const CHAT_MAX_HEAVY_IN_FLIGHT = parsePositiveInt(
-  process.env.OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT,
-  1
 );
 
 export const CHAT_HEAVY_MESSAGE_COUNT = parsePositiveInt(
@@ -87,15 +81,12 @@ export class ChatAdmissionController {
   }
 }
 
-const defaultAdmissionController = new ChatAdmissionController(CHAT_MAX_HEAVY_IN_FLIGHT);
-
 export type ChatRequestAdmission =
   | { admit: true; request: Request; lease: ChatAdmissionLease | null }
   | { admit: false; response: Response };
 
 export type ChatStructureAdmission =
-  | { admit: true; lease: ChatAdmissionLease | null }
-  | { admit: false; response: Response };
+  { admit: true; lease: ChatAdmissionLease | null } | { admit: false; response: Response };
 
 function rejectionResponse(status: 413 | 503, hardMaxBytes: number): Response {
   const isPayload = status === 413;
@@ -232,10 +223,15 @@ export function admitChatStructure(
     estimatedTokens >= heavyTokens;
   if (!heavy || lease) return { admit: true, lease };
 
-  const acquired = (options.controller ?? defaultAdmissionController).tryAcquireHeavy();
+  // Production admission intentionally has no process-wide concurrency lease. Tests and
+  // specialized callers may inject a controller, but normal chat routing takes the account
+  // semaphore only after the selected provider connection is known.
+  const acquired = options.controller?.tryAcquireHeavy();
   return acquired
     ? { admit: true, lease: acquired }
-    : { admit: false, response: structuralRejectionResponse(503, maxMessages) };
+    : options.controller
+      ? { admit: false, response: structuralRejectionResponse(503, maxMessages) }
+      : { admit: true, lease: null };
 }
 
 function parseContentLength(header: string | null): number | null {
@@ -258,9 +254,9 @@ function rebuildRequest(request: Request, body: Uint8Array): Request {
 }
 
 /**
- * Reserve heavyweight capacity and ingest the body with a hard byte bound before JSON
- * parsing. Missing/invalid Content-Length is sniffed only up to the heavyweight threshold;
- * a lease is acquired atomically before retaining bytes at or beyond that threshold.
+ * Ingest the body with a hard byte bound before JSON parsing. A supplied controller remains
+ * available for isolated callers, but the production route supplies none: its concurrency
+ * limit is keyed later by the selected provider account.
  */
 export async function admitChatRequest(
   request: Request,
@@ -270,7 +266,7 @@ export async function admitChatRequest(
     hardMaxBytes?: number;
   } = {}
 ): Promise<ChatRequestAdmission> {
-  const controller = options.controller ?? defaultAdmissionController;
+  const controller = options.controller;
   const largeBodyBytes = options.largeBodyBytes ?? CHAT_LARGE_BODY_BYTES;
   const hardMaxBytes = options.hardMaxBytes ?? CHAT_HARD_MAX_BODY_BYTES;
   const contentLength = parseContentLength(request.headers.get("content-length"));
@@ -282,13 +278,13 @@ export async function admitChatRequest(
   let lease: ChatAdmissionLease | null = null;
   const reserve = (): boolean => {
     if (lease) return true;
-    lease = controller.tryAcquireHeavy();
-    return lease !== null;
+    lease = controller?.tryAcquireHeavy() ?? null;
+    return !controller || lease !== null;
   };
 
   // A known-large declaration can reserve before ingestion. Unknown lengths are boundedly
   // sniffed below; this avoids consuming scarce heavyweight capacity for small chunked bodies.
-  if (contentLength !== null && contentLength >= largeBodyBytes && !reserve()) {
+  if (controller && contentLength !== null && contentLength >= largeBodyBytes && !reserve()) {
     return { admit: false, response: rejectionResponse(503, hardMaxBytes) };
   }
 
@@ -307,7 +303,7 @@ export async function admitChatRequest(
         lease?.release();
         return { admit: false, response: rejectionResponse(413, hardMaxBytes) };
       }
-      if (totalBytes >= largeBodyBytes && !reserve()) {
+      if (controller && totalBytes >= largeBodyBytes && !reserve()) {
         await reader.cancel("chat admission capacity unavailable").catch(() => undefined);
         return { admit: false, response: rejectionResponse(503, hardMaxBytes) };
       }
