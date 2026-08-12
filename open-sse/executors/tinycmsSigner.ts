@@ -358,7 +358,16 @@ function decodeText(ptr, len) {
 
 const cachedTextEncoder = new TextEncoder();
 
-if (!('encodeInto' in cachedTextEncoder)) {
+// Old-Safari compatibility: if the runtime encoder lacks `encodeInto`, polyfill
+// it. TS (DOM lib) types encodeInto as an always-present member, so a direct
+// `'encodeInto' in cachedTextEncoder` guard would narrow the encoder to `never`
+// in the negative branch. Test a widened copy instead — the result narrows a
+// boolean, never `cachedTextEncoder`, so the polyfill body stays typeable.
+const needsEncodeIntoPolyfill = !(
+  "encodeInto" in (cachedTextEncoder as { encodeInto?: unknown })
+);
+
+if (needsEncodeIntoPolyfill) {
     cachedTextEncoder.encodeInto = function (arg, view) {
         const buf = cachedTextEncoder.encode(arg);
         view.set(buf);
@@ -449,7 +458,11 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('wasm_signer_bg.wasm', import.meta.url);
+        // The boot-time embed is passed explicitly via `initTinyCmsWasm()` below
+        // (base64 → Buffer). Do NOT fall back to `new URL('wasm_signer_bg.wasm',
+        // import.meta.url)`: no such asset exists in the tree (it is inlined as
+        // base64), and the static URL would make Turbopack/Next fail the bundle.
+        throw new Error("tinycmsSigner: wasm module not supplied; call initTinyCmsWasm() first");
     }
     const imports = __wbg_get_imports();
 

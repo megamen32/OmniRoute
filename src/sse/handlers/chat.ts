@@ -88,6 +88,7 @@ import {
 import { buildModalityBridgeHeader } from "@/lib/guardrails/modalityBridge/bridgeStats";
 import {
   isAntigravityMissingProjectError,
+  isProviderBreakerFailureStatus,
   PROVIDER_BREAKER_FAILURE_STATUSES,
   resolveStreamReadinessClassificationError,
   shouldTripProviderBreakerForResult,

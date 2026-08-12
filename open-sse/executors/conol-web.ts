@@ -525,7 +525,7 @@ async function uploadConolImages(
         },
         sessionId
       ),
-      body: image.data,
+      body: new Uint8Array(image.data),
       signal: signal ?? undefined,
     });
     if (!response.ok) {

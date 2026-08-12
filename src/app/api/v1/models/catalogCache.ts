@@ -200,12 +200,10 @@ function scheduleBackgroundRefresh(
         });
     }, 0);
   });
-  inFlight = { version: lastSeenCatalogCacheVersion, promise };
 
   // Nobody on the stale path awaits this, so pre-handle the rejection; a cold-path
   // caller that joins it via catalogInFlight attaches its own handler and still
   // observes the failure.
-  promise.catch(() => {});
 
   catalogInFlight.set(cacheKey, { generation, promise: refreshPromise });
   refreshPromise

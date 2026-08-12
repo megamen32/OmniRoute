@@ -116,9 +116,10 @@ export class TinyCmsExecutor extends BaseExecutor {
 
       const response = await fetch(CHAT_URL, fetchOptions);
       return {
-        status: response.status,
+        response,
+        url: CHAT_URL,
         headers: Object.fromEntries(response.headers.entries()),
-        body: response.body,
+        transformedBody: bodyObj,
       };
     } catch (err: any) {
       return makeErrorResult(
