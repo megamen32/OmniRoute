@@ -47,6 +47,41 @@ test("ZCode runs a local app-server turn and returns an OpenAI chat completion",
   assert.equal(body.choices?.[0]?.finish_reason, "stop");
 });
 
+test("ZCode creates one-shot sessions with supported immediate persistence", async () => {
+  const calls: Array<{ method: string; params: unknown[] }> = [];
+  const executor = new ZcodeExecutor({
+    clientFactory: () => ({
+      start: async () => undefined,
+      close: async () => undefined,
+      call: async (_service, method, params) => {
+        calls.push({ method, params });
+        if (method === "initialize") return { available: true };
+        if (method === "createSession") return { sessionId: "session-1" };
+        if (method === "setModel") return {};
+        if (method === "sendPrompt") {
+          return {
+            session: { sessionId: "session-1", status: "completed" },
+            messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "ok" }] }],
+          };
+        }
+        if (method === "disposeSession") return {};
+        throw new Error(`unexpected method: ${method}`);
+      },
+    }),
+  });
+
+  const result = await executor.execute({
+    model: "glm-5.2",
+    body: requestBody(),
+    stream: false,
+    credentials: {},
+  });
+  const response = "response" in result ? result.response : result;
+  assert.equal(response.status, 200);
+  const created = calls.find((call) => call.method === "createSession");
+  assert.equal((created?.params[0] as { persistence?: string }).persistence, "immediate");
+});
+
 test("ZCode buffers the completed turn into OpenAI SSE when stream=true", async () => {
   const executor = new ZcodeExecutor({
     command: process.execPath,

@@ -326,7 +326,10 @@ export class ZcodeExecutor extends BaseExecutor {
         ...workspace,
         sessionTraceId: randomUUID(),
         mode: "build",
-        persistence: "persistent",
+        // ZCode's current app-server schema accepts `immediate` or `deferred`.
+        // This adapter closes the session in `finally`, so immediate is the
+        // correct one-shot request lifecycle.
+        persistence: "immediate",
       }]), signal);
       sessionId = extractSessionId(created);
       if (!sessionId) throw new Error("ZCode createSession returned no sessionId");
