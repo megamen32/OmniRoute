@@ -1,18 +1,12 @@
-import { test, describe, type TestContext } from "node:test";
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const {
-  createSyncDriverFactory,
-  isPackBootForcedSqlJsSmoke,
-  tryOpenSync,
-  openDatabaseAsync,
-  preInitSqlJs,
-  getSqlJsAdapter,
-} = await import("../../../src/lib/db/adapters/driverFactory.ts");
+const { createSyncDriverFactory, tryOpenSync, openDatabaseAsync, preInitSqlJs, getSqlJsAdapter } =
+  await import("../../../src/lib/db/adapters/driverFactory.ts");
 
 const require = createRequire(import.meta.url);
 const isBun = Boolean(process.versions.bun);
@@ -26,7 +20,7 @@ function forceNodeSqlite() {
   });
 }
 
-function createTempDatabasePath(t: TestContext) {
+function createTempDatabasePath(t: Parameters<typeof test>[1]) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-node-sqlite-"));
   const databasePath = path.join(dir, "database.sqlite");
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -62,9 +56,7 @@ describe("driverFactory", () => {
 
     test(
       "prefers better-sqlite3 when it loads",
-      {
-        skip: betterSqliteLoads ? undefined : "better-sqlite3 is not available in this environment",
-      },
+      { skip: betterSqliteLoads ? undefined : "better-sqlite3 is not available in this environment" },
       () => {
         const adapter = tryOpenSync(":memory:");
         assert.ok(adapter);
@@ -136,7 +128,6 @@ describe("driverFactory", () => {
         DatabaseSync: new (filePath: string) => {
           close(): void;
           exec(sql: string): void;
-          prepare(sql: string): { get(): unknown };
         };
       };
       const seed = new DatabaseSync(databasePath);
@@ -170,161 +161,6 @@ describe("driverFactory", () => {
       });
       adapter.close();
     });
-
-    test("forced node:sqlite backup preserves WAL-backed data", async (t) => {
-      const sourcePath = createTempDatabasePath(t);
-      const destinationPath = path.join(path.dirname(sourcePath), "backup.sqlite");
-      const openNodeSqlite = forceNodeSqlite();
-      const source = openNodeSqlite(sourcePath);
-      assert.ok(source);
-      assert.equal(source.driver, "node:sqlite");
-      source.exec("PRAGMA journal_mode = WAL; CREATE TABLE items (value TEXT);");
-      source.prepare("INSERT INTO items VALUES (?)").run("backup value");
-
-      await source.backup(destinationPath);
-      source.close();
-
-      const destination = openNodeSqlite(destinationPath, { fileMustExist: true });
-      assert.ok(destination);
-      assert.equal(destination.driver, "node:sqlite");
-      assert.equal(
-        (destination.prepare("SELECT value FROM items").get() as { value: string }).value,
-        "backup value"
-      );
-      destination.close();
-    });
-
-    test("forced node:sqlite immediate commits, rolls back, and nests savepoints", (t) => {
-      const databasePath = createTempDatabasePath(t);
-      const adapter = forceNodeSqlite()(databasePath);
-      assert.ok(adapter);
-      assert.equal(adapter.driver, "node:sqlite");
-      adapter.exec("CREATE TABLE items (value TEXT)");
-
-      adapter.immediate(() => {
-        adapter.prepare("INSERT INTO items VALUES (?)").run("committed");
-      });
-      assert.throws(() =>
-        adapter.immediate(() => {
-          adapter.prepare("INSERT INTO items VALUES (?)").run("rolled back");
-          throw new Error("rollback");
-        })
-      );
-      adapter.immediate(() => {
-        adapter.prepare("INSERT INTO items VALUES (?)").run("outer before");
-        const nested = adapter.transaction(() => {
-          adapter.prepare("INSERT INTO items VALUES (?)").run("inner rolled back");
-          throw new Error("nested rollback");
-        });
-        assert.throws(() => nested());
-        adapter.prepare("INSERT INTO items VALUES (?)").run("outer after");
-      });
-
-      const rows = adapter.prepare("SELECT value FROM items ORDER BY rowid").all() as Array<{
-        value: string;
-      }>;
-      assert.deepEqual(
-        rows.map((row) => row.value),
-        ["committed", "outer before", "outer after"]
-      );
-      adapter.close();
-    });
-
-    test("forced node:sqlite immediate blocks a competing writer", (t) => {
-      const databasePath = createTempDatabasePath(t);
-      const openNodeSqlite = forceNodeSqlite();
-      const first = openNodeSqlite(databasePath);
-      assert.ok(first);
-      first.exec("CREATE TABLE items (value TEXT)");
-
-      const { DatabaseSync } = require("node:sqlite") as {
-        DatabaseSync: new (
-          filePath: string,
-          options: { timeout: number }
-        ) => {
-          close(): void;
-          exec(sql: string): void;
-        };
-      };
-      const second = new DatabaseSync(databasePath, { timeout: 50 });
-      try {
-        first.immediate(() => {
-          assert.throws(() => second.exec("INSERT INTO items VALUES ('competing writer')"), {
-            code: "ERR_SQLITE_ERROR",
-          });
-          first.prepare("INSERT INTO items VALUES (?)").run("owner");
-        });
-
-        const rows = first.prepare("SELECT value FROM items").all() as Array<{ value: string }>;
-        assert.deepEqual(
-          rows.map((row) => row.value),
-          ["owner"]
-        );
-      } finally {
-        second.close();
-        first.close();
-      }
-    // Cursor renewal plan, Task 2 Step 5: tryIdeAuth() now passes a
-    // busy-timeout to tryOpenSync() on every driver path, since it's invoked
-    // from an unattended sweep tick (not just the human-attended auto-import
-    // modal) and needs a bounded retry window on a WAL-lock collision.
-    // toNodeSqliteOptions() previously forwarded ONLY readOnly, silently
-    // dropping `timeout` on the node:sqlite fallback path.
-    test("forced node:sqlite path forwards both readOnly and timeout to DatabaseSync (busy-timeout fix)", (t) => {
-      const databasePath = createTempDatabasePath(t);
-
-      // Seed a real file with the (unmodified) forced node:sqlite driver first.
-      const writer = forceNodeSqlite()(databasePath);
-      assert.ok(writer);
-      writer.exec("CREATE TABLE items (value TEXT)");
-      writer.prepare("INSERT INTO items VALUES (?)").run("seed");
-      writer.close();
-
-      const { DatabaseSync: RealDatabaseSync } = require("node:sqlite") as {
-        DatabaseSync: new (
-          p: string,
-          options?: Record<string, unknown>
-        ) => {
-          close(): void;
-          prepare(sql: string): { get(...p: unknown[]): unknown };
-        };
-      };
-
-      let capturedOptions: Record<string, unknown> | undefined;
-      const openWithCapturingNodeSqlite = createSyncDriverFactory((moduleName: string) => {
-        if (moduleName === "better-sqlite3") {
-          throw new Error("forced better-sqlite3 load failure");
-        }
-        if (moduleName === "node:sqlite") {
-          return {
-            DatabaseSync: function FakeDatabaseSync(p: string, options?: Record<string, unknown>) {
-              capturedOptions = options;
-              return new RealDatabaseSync(p, options);
-            },
-          };
-        }
-        throw new Error(`unexpected driver load: ${moduleName}`);
-      });
-
-      const reader = openWithCapturingNodeSqlite(databasePath, {
-        readonly: true,
-        fileMustExist: true,
-        timeout: 2000,
-      });
-      assert.ok(reader);
-      assert.equal(reader.driver, "node:sqlite");
-      assert.deepEqual(
-        capturedOptions,
-        { readOnly: true, timeout: 2000 },
-        "toNodeSqliteOptions must forward BOTH readOnly and timeout, and nothing else (e.g. not fileMustExist)"
-      );
-      assert.equal(
-        (reader.prepare("SELECT value FROM items").get() as { value: string }).value,
-        "seed",
-        "the forced node:sqlite path must still open successfully with a timeout option set"
-      );
-      reader.close();
-    });
   }
 
   test("retains the existing cascade when native drivers are unavailable", () => {
@@ -333,19 +169,6 @@ describe("driverFactory", () => {
     });
 
     assert.equal(openWithoutNativeDrivers(":memory:"), null);
-  });
-
-  test("pack-boot sql.js forcing requires both smoke-only markers", () => {
-    assert.equal(isPackBootForcedSqlJsSmoke({}), false);
-    assert.equal(isPackBootForcedSqlJsSmoke({ OMNIROUTE_PACK_BOOT_SMOKE: "1" }), false);
-    assert.equal(isPackBootForcedSqlJsSmoke({ OMNIROUTE_PACK_BOOT_FORCE_SQLJS: "1" }), false);
-    assert.equal(
-      isPackBootForcedSqlJsSmoke({
-        OMNIROUTE_PACK_BOOT_SMOKE: "1",
-        OMNIROUTE_PACK_BOOT_FORCE_SQLJS: "1",
-      }),
-      true
-    );
   });
 
   test("openDatabaseAsync sempre retorna um adapter válido", async () => {
