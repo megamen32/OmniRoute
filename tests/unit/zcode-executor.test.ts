@@ -80,6 +80,11 @@ test("ZCode creates one-shot sessions with supported immediate persistence", asy
   assert.equal(response.status, 200);
   const created = calls.find((call) => call.method === "createSession");
   assert.equal((created?.params[0] as { persistence?: string }).persistence, "immediate");
+  const selected = calls.find((call) => call.method === "setModel");
+  assert.equal(
+    ((selected?.params[0] as { model?: { modelId?: string } }).model?.modelId),
+    "GLM-5.2"
+  );
 });
 
 test("ZCode buffers the completed turn into OpenAI SSE when stream=true", async () => {

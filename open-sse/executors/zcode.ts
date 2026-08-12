@@ -15,6 +15,9 @@ const DEFAULT_POLL_INTERVAL_MS = 250;
 const TERMINAL_STATUSES = new Set(["completed", "idle", "paused", "error"]);
 const ZCODE_MODEL_ALLOWLIST = new Set(GLM_SHARED_MODELS.map((model) => model.id));
 const DEFAULT_ZCODE_MODEL = GLM_SHARED_MODELS[0]?.id || "glm-5.2";
+// ZCode Coding Plan currently exposes its flagship model as `GLM-5.2`, while
+// OmniRoute's public GLM catalog uses lowercase IDs.
+const ZCODE_NATIVE_MODEL_IDS: Record<string, string> = { "glm-5.2": "GLM-5.2" };
 
 type JsonRecord = Record<string, unknown>;
 type OpenAIMsg = { role?: string; content?: unknown };
@@ -115,6 +118,10 @@ function extractStatus(value: unknown): string | undefined {
   const nested = asRecord(root.session);
   const status = nested.status ?? root.status;
   return typeof status === "string" ? status : undefined;
+}
+
+function toZcodeNativeModelId(model: string): string {
+  return ZCODE_NATIVE_MODEL_IDS[model] || model;
 }
 
 function extractTextFromMessage(value: unknown): { role?: string; text: string } {
@@ -337,7 +344,7 @@ export class ZcodeExecutor extends BaseExecutor {
       await raceAbort(client.call("zcode-agent", "setModel", [{
         ...workspace,
         sessionId,
-        model: { providerId, modelId: model },
+        model: { providerId, modelId: toZcodeNativeModelId(model) },
       }]), signal);
 
       let state: unknown = await raceAbort(client.call("zcode-agent", "sendPrompt", [{
