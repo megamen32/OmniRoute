@@ -186,15 +186,114 @@ test.describe("modelsDevSync-extended", { concurrency: 1 }, async () => {
     invalidInterval.stopPeriodicSync();
   });
 
-  test("transform helpers skip incomplete pricing entries and preserve partial capability defaults", async () => {
-    const modelsDev = await importFresh("transform-edge-cases");
-    const raw = {
-      sparse: {
-        id: "sparse",
-        models: {
-          "missing-cost": {
-            id: "missing-cost",
-            name: "Missing Cost",
+  modelsDev.saveModelsDevPricing(pricing);
+  const saved = modelsDev.getModelsDevPricing();
+  assert.equal(saved.openai["gpt-4o"].input, 2.5);
+  assert.equal(saved.cx["gpt-4o"].cache_creation, 2.5);
+
+  const db = core.getDbInstance();
+  db.prepare("INSERT INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
+    "models_dev_pricing",
+    "corrupted",
+    "{oops"
+  );
+
+  const withCorruption = modelsDev.getModelsDevPricing();
+  assert.equal(withCorruption.corrupted, undefined);
+
+  modelsDev.clearModelsDevPricing();
+  assert.deepEqual(modelsDev.getModelsDevPricing(), {});
+});
+
+test("getModelsDevPricing memoizes until save/clear (#9685)", async () => {
+  const modelsDev = await importFresh("pricing-memo");
+  const pricing = modelsDev.transformModelsDevToPricing(MOCK_MODELS_DEV_DATA);
+  modelsDev.saveModelsDevPricing(pricing);
+
+  const first = modelsDev.getModelsDevPricing();
+  const second = modelsDev.getModelsDevPricing();
+  assert.equal(first, second, "repeated reads must return the same memoized object");
+
+  // Mutating DB under the cache must not be visible until invalidation.
+  const db = core.getDbInstance();
+  db.prepare("DELETE FROM key_value WHERE namespace = 'models_dev_pricing'").run();
+  assert.equal(
+    modelsDev.getModelsDevPricing(),
+    first,
+    "raw SQL without save/clear must not bypass the memo"
+  );
+
+  modelsDev.clearModelsDevPricing();
+  assert.deepEqual(modelsDev.getModelsDevPricing(), {});
+
+  modelsDev.saveModelsDevPricing(pricing);
+  const afterSave = modelsDev.getModelsDevPricing();
+  assert.notEqual(afterSave, first, "save must invalidate the memo");
+  assert.equal(afterSave.openai["gpt-4o"].input, 2.5);
+
+  // Copilot review: DB reset must invalidate the memo so import/restore doesn't serve stale pricing.
+  const beforeReset = modelsDev.getModelsDevPricing();
+  core.resetDbInstance();
+  const afterReset = modelsDev.getModelsDevPricing();
+  assert.notEqual(
+    afterReset,
+    beforeReset,
+    "resetDbInstance must invalidate the memo (Copilot #10055)"
+  );
+  // Data is still on disk after resetDbInstance(), but the cache was cleared and re-read from fresh DB.
+  assert.equal(afterReset.openai["gpt-4o"].input, 2.5, "DB reset re-reads from fresh connection");
+});
+
+test("modelsDev capabilities helpers create the table, persist rows, filter by provider/model, and expose context limits", async () => {
+  const modelsDev = await importFresh("capabilities-storage");
+  const capabilities = modelsDev.transformModelsDevToCapabilities(MOCK_MODELS_DEV_DATA);
+
+  modelsDev.ensureCapabilitiesTable();
+  modelsDev.saveModelsDevCapabilities(capabilities);
+
+  const allCaps = modelsDev.getSyncedCapabilities();
+  const openaiOnly = modelsDev.getSyncedCapabilities("openai", "gpt-4o");
+
+  assert.equal(allCaps.openai["gpt-4o"].tool_call, true);
+  assert.equal(allCaps.anthropic["claude-sonnet-4-20250514"].attachment, true);
+  assert.deepEqual(Object.keys(openaiOnly), ["openai"]);
+  assert.equal(openaiOnly.openai["gpt-4o"].limit_context, 128000);
+  assert.equal("getModelContextLimit" in modelsDev, false);
+
+  modelsDev.clearModelsDevCapabilities();
+  assert.deepEqual(modelsDev.getSyncedCapabilities(), {});
+});
+
+test("modelsDev capability helpers coerce false/null values and ignore malformed rows", async () => {
+  const modelsDev = await importFresh("capabilities-malformed");
+  const db = core.getDbInstance();
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    if (String(sql).includes("SELECT * FROM model_capabilities")) {
+      return {
+        all: () => [
+          123,
+          { provider: null, model_id: "missing-provider" },
+          {
+            provider: "openai",
+            model_id: "coerced-model",
+            tool_call: 0,
+            reasoning: null,
+            attachment: 0,
+            structured_output: 0,
+            temperature: 0,
+            modalities_input: null,
+            modalities_output: 42,
+            knowledge_cutoff: 77,
+            release_date: 88,
+            last_updated: 99,
+            status: 123,
+            family: 456,
+            open_weights: null,
+            limit_context: "bad",
+            limit_input: 4096,
+            limit_output: "nope",
+            interleaved_field: 321,
           },
           "missing-input": {
             id: "missing-input",
