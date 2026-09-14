@@ -72,7 +72,8 @@ export function normalizeQdrantConfig(settings: Record<string, unknown>): Qdrant
       ? process.env.QDRANT_API_KEY.trim()
       : undefined;
   const envCollection =
-    typeof process.env.QDRANT_COLLECTION === "string" && process.env.QDRANT_COLLECTION.trim().length > 0
+    typeof process.env.QDRANT_COLLECTION === "string" &&
+    process.env.QDRANT_COLLECTION.trim().length > 0
       ? process.env.QDRANT_COLLECTION.trim()
       : undefined;
 
@@ -84,15 +85,19 @@ export function normalizeQdrantConfig(settings: Record<string, unknown>): Qdrant
       ? Math.round(portRaw)
       : typeof portRaw === "string"
         ? Math.round(Number(portRaw) || 6333)
-        : envPort ?? 6333;
+        : (envPort ?? 6333);
   const apiKey =
     (typeof settings.qdrantApiKey === "string" && settings.qdrantApiKey.trim().length > 0
       ? settings.qdrantApiKey.trim()
-      : null) ?? envApiKey ?? null;
+      : null) ??
+    envApiKey ??
+    null;
   const collection =
     (typeof settings.qdrantCollection === "string" && settings.qdrantCollection.trim().length > 0
       ? settings.qdrantCollection.trim()
-      : null) ?? envCollection ?? "omniroute_memory";
+      : null) ??
+    envCollection ??
+    "omniroute_memory";
   const embeddingModel =
     (typeof settings.qdrantEmbeddingModel === "string" &&
     settings.qdrantEmbeddingModel.trim().length > 0
@@ -248,7 +253,26 @@ async function getCollectionVectorName(cfg: QdrantConfig): Promise<string | null
   return names[0] || null;
 }
 
-async function embedText(cfg: QdrantConfig, text: string): Promise<number[]> {
+const QWEN3_FLEET_EMBED_MODEL = "fleet-embed-qwen3-4b-2048-v1";
+const QWEN3_RETRIEVAL_INSTRUCTION =
+  "Instruct: Retrieve the document that best answers the query.\nQuery: ";
+
+export function prepareSemanticEmbeddingInput(
+  model: string,
+  text: string,
+  role: "document" | "query"
+): string {
+  if (role === "query" && model.split("/").at(-1) === QWEN3_FLEET_EMBED_MODEL) {
+    return `${QWEN3_RETRIEVAL_INSTRUCTION}${text}`;
+  }
+  return text;
+}
+
+async function embedText(
+  cfg: QdrantConfig,
+  text: string,
+  role: "document" | "query"
+): Promise<number[]> {
   const modelStr = cfg.embeddingModel.trim();
   if (!modelStr.includes("/")) {
     throw new Error(`Invalid embedding model '${modelStr}'. Use provider/model format.`);
@@ -256,7 +280,7 @@ async function embedText(cfg: QdrantConfig, text: string): Promise<number[]> {
 
   const res = await createEmbeddingResponse({
     model: modelStr,
-    input: text,
+    input: prepareSemanticEmbeddingInput(modelStr, text, role),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -285,7 +309,7 @@ export async function upsertSemanticMemoryPoint(input: {
 
   const start = Date.now();
   try {
-    const vector = await embedText(cfg, `${input.key}\n\n${input.content}`);
+    const vector = await embedText(cfg, `${input.key}\n\n${input.content}`, "document");
     await ensureCollection(cfg, vector.length);
     const vectorName = await getCollectionVectorName(cfg);
 
@@ -353,7 +377,7 @@ export async function searchSemanticMemory(
   if (!cfg.enabled || !cfg.host) return { ok: false, latencyMs: 0, error: "not_configured" };
   const start = Date.now();
   try {
-    const vector = await embedText(cfg, query);
+    const vector = await embedText(cfg, query, "query");
     await ensureCollection(cfg, vector.length);
     const vectorName = await getCollectionVectorName(cfg);
 

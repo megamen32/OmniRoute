@@ -17,6 +17,7 @@ import { describe, test, expect, beforeAll, afterEach } from "vitest";
 import {
   normalizeQdrantConfig,
   buildQuantizationConfig,
+  prepareSemanticEmbeddingInput,
   searchQuantizationParams,
 } from "../qdrant";
 
@@ -82,6 +83,27 @@ describe("normalizeQdrantConfig — defaults & disabled state", () => {
   });
 });
 
+describe("Qwen3 semantic-memory preprocessing", () => {
+  const model = "fleetqwen/fleet-embed-qwen3-4b-2048-v1";
+
+  test("adds the frozen English retrieval instruction to search queries", () => {
+    expect(prepareSemanticEmbeddingInput(model, "как восстановить snapshot?", "query")).toBe(
+      "Instruct: Retrieve the document that best answers the query.\nQuery: как восстановить snapshot?"
+    );
+  });
+
+  test("keeps indexed documents byte-identical", () => {
+    const document = "snapshot\n\nПеред обновлением создаётся резервная копия.";
+    expect(prepareSemanticEmbeddingInput(model, document, "document")).toBe(document);
+  });
+
+  test("does not alter other embedding providers", () => {
+    expect(prepareSemanticEmbeddingInput("openai/text-embedding-3-small", "query", "query")).toBe(
+      "query"
+    );
+  });
+});
+
 describe("Qdrant scalar quantization wiring (Q1 / F4.4)", () => {
   test("defaults quantization to 'none' when the setting is missing", () => {
     expect(normalizeQdrantConfig({}).quantization).toBe("none");
@@ -112,12 +134,7 @@ describe("Qdrant scalar quantization wiring (Q1 / F4.4)", () => {
 });
 
 describe("normalizeQdrantConfig — env-var fallbacks (cluster profile: --profile memory)", () => {
-  const KEYS = [
-    "QDRANT_HOST",
-    "QDRANT_PORT",
-    "QDRANT_API_KEY",
-    "QDRANT_COLLECTION",
-  ] as const;
+  const KEYS = ["QDRANT_HOST", "QDRANT_PORT", "QDRANT_API_KEY", "QDRANT_COLLECTION"] as const;
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeAll(() => {
