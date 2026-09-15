@@ -255,3 +255,4 @@ tests/homolog/ui/.auth/
 homolog-report/
 docker-compose.yml.bak
 graphify-out/
+/trash/
