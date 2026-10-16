@@ -3,12 +3,18 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { ZCODE_MODELS } from "../config/providers/registry/zcode/index.ts";
-import { BaseExecutor, type ExecuteInput, type ExecutorExecuteResult, type ProviderCredentials } from "./base.ts";
+import {
+  BaseExecutor,
+  type ExecuteInput,
+  type ExecutorExecuteResult,
+  type ProviderCredentials,
+} from "./base.ts";
 import { ZcodeAppServerClient, type ZcodeClientLike } from "./zcodeProtocol.ts";
 import { buildErrorBody, errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
 const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
+const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const TERMINAL_STATUSES = new Set(["completed", "idle", "paused", "error"]);
@@ -34,7 +40,41 @@ export interface ZcodeExecutorOptions {
 }
 
 function asRecord(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+}
+
+/** Use the native registry's exact, case-sensitive IDs without changing providers. */
+export function resolveZcodeSelection(view: unknown, model: string, providerId?: string) {
+  const providers = asRecord(view).providers;
+  const allowed = providerId ? [providerId] : [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID];
+  for (const id of allowed) {
+    const provider = (Array.isArray(providers) ? providers : [])
+      .map(asRecord)
+      .find((entry) => entry.providerId === id);
+    const models = provider?.models;
+    const entry = (Array.isArray(models) ? models : [])
+      .map(asRecord)
+      .find(
+        (candidate) =>
+          typeof candidate.modelId === "string" &&
+          candidate.modelId.toLowerCase() === model.toLowerCase() &&
+          asRecord(candidate.config).enabled !== false
+      );
+    if (!entry) continue;
+    const spec = asRecord(asRecord(asRecord(entry.config).optionSpecs).reasoningLevel);
+    const levels = Array.isArray(spec.values)
+      ? spec.values.filter((value): value is string => typeof value === "string")
+      : [];
+    const reasoningLevel = levels.includes("high") ? "high" : levels[0];
+    return {
+      providerId: id,
+      modelId: entry.modelId as string,
+      ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
+    };
+  }
+  throw new Error(
+    `ZCode Coding Plan model "${model}" is not enabled in the native provider registry.`
+  );
 }
 
 function textFromContent(content: unknown): string {
@@ -69,11 +109,12 @@ export function resolveZcodeModel(model: unknown): ZcodeModelResolution {
   const requested = typeof model === "string" ? model.trim() : "";
   if (!requested) return { ok: true, model: DEFAULT_ZCODE_MODEL };
   if (requested.startsWith("-")) {
-    return { ok: false, error: `Invalid ZCode model \"${requested}\": model must not start with \"-\".` };
+    return {
+      ok: false,
+      error: `Invalid ZCode model \"${requested}\": model must not start with \"-\".`,
+    };
   }
-  const normalized = requested.startsWith("zcode/")
-    ? requested.slice("zcode/".length)
-    : requested;
+  const normalized = requested.startsWith("zcode/") ? requested.slice("zcode/".length) : requested;
   if (!ZCODE_MODEL_ALLOWLIST.has(normalized)) {
     return {
       ok: false,
@@ -86,7 +127,11 @@ export function resolveZcodeModel(model: unknown): ZcodeModelResolution {
 function parseArgs(raw: string | undefined): string[] {
   if (!raw) return ["app-server"];
   const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed) || parsed.length > 16 || !parsed.every((arg) => typeof arg === "string" && arg.length <= 4096)) {
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length > 16 ||
+    !parsed.every((arg) => typeof arg === "string" && arg.length <= 4096)
+  ) {
     throw new Error("ZCODE_ARGS must be a JSON array of at most 16 strings");
   }
   return parsed as string[];
@@ -119,7 +164,12 @@ function extractStatus(value: unknown): string | undefined {
 function extractTextFromMessage(value: unknown): { role?: string; text: string } {
   const message = asRecord(value);
   const info = asRecord(message.info);
-  const role = typeof info.role === "string" ? info.role : typeof message.role === "string" ? message.role : undefined;
+  const role =
+    typeof info.role === "string"
+      ? info.role
+      : typeof message.role === "string"
+        ? message.role
+        : undefined;
   const parts = Array.isArray(message.parts) ? message.parts : [];
   const text = parts
     .map((part) => {
@@ -187,10 +237,13 @@ async function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
     if (signal?.aborted) throw abortError();
     return;
   }
-  await raceAbort(new Promise<void>((resolveDelay) => {
-    const timer = setTimeout(resolveDelay, ms);
-    timer.unref?.();
-  }), signal);
+  await raceAbort(
+    new Promise<void>((resolveDelay) => {
+      const timer = setTimeout(resolveDelay, ms);
+      timer.unref?.();
+    }),
+    signal
+  );
 }
 
 function estimateTokens(text: string): number {
@@ -200,33 +253,58 @@ function estimateTokens(text: string): number {
 function completionResponse(model: string, prompt: string, content: string): Response {
   const promptTokens = estimateTokens(prompt);
   const completionTokens = estimateTokens(content);
-  return new Response(JSON.stringify({
-    id: `chatcmpl-zcode-${Date.now()}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
-    usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens: promptTokens + completionTokens,
-      estimated: true,
-    },
-  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  return new Response(
+    JSON.stringify({
+      id: `chatcmpl-zcode-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+        estimated: true,
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
 }
 
 function sseResponse(model: string, content: string): Response {
   const id = `chatcmpl-zcode-${Date.now()}`;
   const created = Math.floor(Date.now() / 1000);
   const chunks = [
-    { id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] },
-    { id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta: { content }, finish_reason: null }] },
-    { id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+    {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
+    },
+    {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: { content }, finish_reason: null }],
+    },
+    {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    },
   ];
   const body = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
   return new Response(body, {
     status: 200,
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 }
 
@@ -234,7 +312,11 @@ function sseErrorResponse(status: number, message: string): Response {
   const body = `data: ${JSON.stringify(buildErrorBody(status, message))}\n\ndata: [DONE]\n\n`;
   return new Response(body, {
     status: 200,
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 }
 
@@ -262,7 +344,7 @@ export class ZcodeExecutor extends BaseExecutor {
     }
 
     const body = asRecord(input.body);
-    const messages = Array.isArray(body.messages) ? body.messages as OpenAIMsg[] : [];
+    const messages = Array.isArray(body.messages) ? (body.messages as OpenAIMsg[]) : [];
     const prompt = buildZcodePrompt(messages);
     input.log?.info?.("ZCODE", `local app-server turn started model=${resolution.model}`);
 
@@ -287,16 +369,27 @@ export class ZcodeExecutor extends BaseExecutor {
 
   private createClient(): ZcodeClientLike {
     if (this.options.clientFactory) return this.options.clientFactory();
-    const command = this.options.command || process.env.ZCODE_SERVER_NODE || defaultCommand().command;
-    const args = this.options.args || (process.env.ZCODE_SERVER_NODE
-      ? [process.env.ZCODE_SERVER_ENTRY || join(process.env.ZCODE_SERVER_RUNTIME_ROOT || join(homedir(), ".zcode", "server"), "zcode-server.cjs")]
-      : defaultCommand().args);
+    const command =
+      this.options.command || process.env.ZCODE_SERVER_NODE || defaultCommand().command;
+    const args =
+      this.options.args ||
+      (process.env.ZCODE_SERVER_NODE
+        ? [
+            process.env.ZCODE_SERVER_ENTRY ||
+              join(
+                process.env.ZCODE_SERVER_RUNTIME_ROOT || join(homedir(), ".zcode", "server"),
+                "zcode-server.cjs"
+              ),
+          ]
+        : defaultCommand().args);
     return new ZcodeAppServerClient({
       command,
       args,
       cwd: this.options.cwd || process.env.ZCODE_CWD || process.cwd(),
-      startupTimeoutMs: this.options.startupTimeoutMs ?? Number(process.env.ZCODE_STARTUP_TIMEOUT_MS || 10_000),
-      requestTimeoutMs: this.options.requestTimeoutMs ?? Number(process.env.ZCODE_RPC_TIMEOUT_MS || 30_000),
+      startupTimeoutMs:
+        this.options.startupTimeoutMs ?? Number(process.env.ZCODE_STARTUP_TIMEOUT_MS || 10_000),
+      requestTimeoutMs:
+        this.options.requestTimeoutMs ?? Number(process.env.ZCODE_RPC_TIMEOUT_MS || 30_000),
     });
   }
 
@@ -309,39 +402,63 @@ export class ZcodeExecutor extends BaseExecutor {
     const client = this.createClient();
     const cwd = resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd());
     const workspace = makeWorkspace(cwd);
-    const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID || DEFAULT_PROVIDER_ID;
-    const turnTimeoutMs = this.options.turnTimeoutMs ?? Number(process.env.ZCODE_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS);
-    const pollIntervalMs = this.options.pollIntervalMs ?? Number(process.env.ZCODE_POLL_INTERVAL_MS || DEFAULT_POLL_INTERVAL_MS);
+    const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
+    const turnTimeoutMs =
+      this.options.turnTimeoutMs ??
+      Number(process.env.ZCODE_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS);
+    const pollIntervalMs =
+      this.options.pollIntervalMs ??
+      Number(process.env.ZCODE_POLL_INTERVAL_MS || DEFAULT_POLL_INTERVAL_MS);
     let sessionId: string | undefined;
 
     try {
       await raceAbort(client.start(), signal);
-      const initialized = asRecord(await raceAbort(client.call("zcode-agent", "initialize", [workspace]), signal));
+      const initialized = asRecord(
+        await raceAbort(client.call("zcode-agent", "initialize", [workspace]), signal)
+      );
       if (initialized.available !== true) {
         throw new Error(extractErrorMessage(initialized));
       }
 
-      const created = await raceAbort(client.call("zcode-agent", "createSession", [{
-        ...workspace,
-        sessionTraceId: randomUUID(),
-        mode: "build",
-        persistence: "persistent",
-      }]), signal);
+      const registry = await raceAbort(client.call("model-selection", "getView", []), signal);
+      const selection = resolveZcodeSelection(registry, model, providerId);
+
+      const created = await raceAbort(
+        client.call("zcode-agent", "createSession", [
+          {
+            ...workspace,
+            sessionTraceId: randomUUID(),
+            mode: "build",
+            persistence: "immediate",
+          },
+        ]),
+        signal
+      );
       sessionId = extractSessionId(created);
       if (!sessionId) throw new Error("ZCode createSession returned no sessionId");
 
-      await raceAbort(client.call("zcode-agent", "setModel", [{
-        ...workspace,
-        sessionId,
-        model: { providerId, modelId: model },
-      }]), signal);
+      await raceAbort(
+        client.call("zcode-agent", "setModel", [
+          {
+            ...workspace,
+            sessionId,
+            model: selection,
+          },
+        ]),
+        signal
+      );
 
-      let state: unknown = await raceAbort(client.call("zcode-agent", "sendPrompt", [{
-        ...workspace,
-        sessionId,
-        inputId: randomUUID(),
-        content: prompt,
-      }]), signal);
+      let state: unknown = await raceAbort(
+        client.call("zcode-agent", "sendPrompt", [
+          {
+            ...workspace,
+            sessionId,
+            inputId: randomUUID(),
+            content: prompt,
+          },
+        ]),
+        signal
+      );
       const deadline = Date.now() + Math.max(1, turnTimeoutMs);
 
       while (Date.now() <= deadline) {
@@ -351,20 +468,31 @@ export class ZcodeExecutor extends BaseExecutor {
         if (text && (status === undefined || TERMINAL_STATUSES.has(status))) return text;
         if (status === "error") throw new Error(extractErrorMessage(state));
         await delay(Math.max(0, pollIntervalMs), signal);
-        state = await raceAbort(client.call("zcode-agent", "readSession", [{
-          ...workspace,
-          sessionId,
-          messageLimit: 200,
-        }]), signal);
+        state = await raceAbort(
+          client.call("zcode-agent", "readSession", [
+            {
+              ...workspace,
+              sessionId,
+              messageLimit: 200,
+            },
+          ]),
+          signal
+        );
       }
       const finalText = extractAssistantText(state);
       if (finalText) return finalText;
       throw new Error("ZCode turn timed out before an assistant response was available");
     } finally {
       if (sessionId && !signal?.aborted) {
-        await client.call("zcode-agent", "closeSession", [{ ...workspace, sessionId }]).catch(() => undefined);
+        await client
+          .call("zcode-agent", "closeSession", [{ ...workspace, sessionId }])
+          .catch(() => undefined);
       }
-      await client.close().catch((error) => log?.debug?.("ZCODE", `app-server close failed: ${sanitizeErrorMessage(error)}`));
+      await client
+        .close()
+        .catch((error) =>
+          log?.debug?.("ZCODE", `app-server close failed: ${sanitizeErrorMessage(error)}`)
+        );
     }
   }
 

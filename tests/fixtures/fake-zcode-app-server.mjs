@@ -105,14 +105,47 @@ function handleFrame(body) {
   const request = Array.isArray(args) && args[0] && typeof args[0] === "object" ? args[0] : {};
 
   switch (method) {
+    case "getView":
+      response(id, {
+        providers: [
+          {
+            providerId: "account:zai-individual-coding-plan",
+            models: [
+              { modelId: "GLM-5.2", config: { enabled: true } },
+              {
+                modelId: "GLM-5.3-Flash",
+                config: {
+                  enabled: true,
+                  optionSpecs: { reasoningLevel: { values: ["low", "high", "max"] } },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      break;
     case "initialize":
-      response(id, { available: true, protocolName: "ZCode Protocol", protocolVersion: 1, transportKind: "stdio" });
+      response(id, {
+        available: true,
+        protocolName: "ZCode Protocol",
+        protocolVersion: 1,
+        transportKind: "stdio",
+      });
       break;
     case "createSession":
+      if (request.persistence !== "immediate") process.exit(2);
       sessionId = "fake-zcode-session";
-      response(id, { session: { sessionId, status: "idle", workspace: { workspacePath: request.workspacePath } }, messages: [] });
+      response(id, {
+        session: { sessionId, status: "idle", workspace: { workspacePath: request.workspacePath } },
+        messages: [],
+      });
       break;
     case "setModel":
+      if (
+        request.model?.providerId !== "account:zai-individual-coding-plan" ||
+        !["GLM-5.2", "GLM-5.3-Flash"].includes(request.model?.modelId)
+      )
+        process.exit(2);
       selectedModel = request.model;
       response(id, { ok: true, model: selectedModel });
       break;
@@ -123,8 +156,14 @@ function handleFrame(body) {
       response(id, {
         session: { sessionId, status: "completed", model: selectedModel },
         messages: [
-          { info: { messageId: "fake-user-message", role: "user" }, parts: [{ type: "text", text: request.content || "prompt" }] },
-          { info: { messageId: "fake-assistant-message", role: "assistant" }, parts: [{ type: "text", text: "fake zcode response" }] },
+          {
+            info: { messageId: "fake-user-message", role: "user" },
+            parts: [{ type: "text", text: request.content || "prompt" }],
+          },
+          {
+            info: { messageId: "fake-assistant-message", role: "assistant" },
+            parts: [{ type: "text", text: "fake zcode response" }],
+          },
         ],
       });
       break;
@@ -148,7 +187,9 @@ function consumeFrames() {
   }
 }
 
-process.stdout.write(`${JSON.stringify({ type: "zcode-hello", version: "fixture", platform: "test", arch: "test", pid: process.pid })}\n`);
+process.stdout.write(
+  `${JSON.stringify({ type: "zcode-hello", version: "fixture", platform: "test", arch: "test", pid: process.pid })}\n`
+);
 
 process.stdin.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);

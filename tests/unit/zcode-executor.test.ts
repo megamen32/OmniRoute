@@ -24,6 +24,48 @@ function requestBody() {
   };
 }
 
+test("ZCode selects exact native Coding Plan IDs and required reasoning without a custom-provider fallback", async () => {
+  const { resolveZcodeSelection } = await loadZcodeExecutor();
+  const view = {
+    providers: [
+      { providerId: "custom", models: [{ modelId: "glm-5.3-flash", config: {} }] },
+      {
+        providerId: "account:zai-individual-coding-plan",
+        models: [
+          {
+            modelId: "GLM-5.3-Flash",
+            config: { optionSpecs: { reasoningLevel: { values: ["low", "high", "max"] } } },
+          },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(resolveZcodeSelection(view, "glm-5.3-flash"), {
+    providerId: "account:zai-individual-coding-plan",
+    modelId: "GLM-5.3-Flash",
+    options: { reasoningLevel: "high" },
+  });
+  assert.throws(
+    () => resolveZcodeSelection({ providers: [view.providers[0]] }, "glm-5.3-flash"),
+    /not enabled/
+  );
+  assert.throws(() => resolveZcodeSelection(view, "glm-5.3-flash", "missing"), /not enabled/);
+  assert.deepEqual(
+    resolveZcodeSelection(
+      {
+        providers: [
+          { providerId: "builtin:zai-coding-plan", models: [{ modelId: "glm-5.2", config: {} }] },
+        ],
+      },
+      "glm-5.2"
+    ),
+    {
+      providerId: "builtin:zai-coding-plan",
+      modelId: "glm-5.2",
+    }
+  );
+});
+
 test("ZCode accepts GLM Coding Plan models and rejects unsafe/unknown ids", async () => {
   const { resolveZcodeModel } = await loadZcodeExecutor();
   assert.deepEqual(resolveZcodeModel("glm-5.2"), { ok: true, model: "glm-5.2" });
