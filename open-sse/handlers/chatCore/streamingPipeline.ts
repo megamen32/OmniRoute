@@ -20,9 +20,24 @@ import {
   wantsProgress as defaultWantsProgress,
 } from "../../utils/progressTracker.ts";
 import { createPiiSseTransform as defaultPiiSse } from "@/lib/streamingPiiTransform";
+import {
+  createCredentialSseTransform as defaultCredentialSse,
+  isCredentialTransformEnabled,
+} from "@/lib/streamingCredentialTransform";
 import { isFeatureFlagEnabled as defaultFeatureFlag } from "@/shared/utils/featureFlags";
 import { OMNIROUTE_RESPONSE_HEADERS } from "@/shared/constants/headers";
 import { SSE_HEARTBEAT_INTERVAL_MS } from "../../config/constants.ts";
+/**
+ * Pipeline assembly instrumentation — performance.mark() along the SSE hot path.
+ * Marks are visible to Node.js perf_hooks consumers and DevTools' Performance
+ * panel when NODE_OPTIONS=--enable-node-performance-clinician or similar.
+ *
+ * Each call to assembleStreamingPipeline creates one measure record:
+ *   "omni-pipeline" — wall-clock duration of the full transform chain assembly.
+ */
+const PIPELINE_START = "omni-pipeline-start";
+const PIPELINE_END = "omni-pipeline-end";
+const PIPELINE_MEASURE = "omni-pipeline";
 
 type HeadersLike = Headers | Record<string, unknown> | null | undefined;
 
@@ -31,6 +46,7 @@ export interface StreamingPipelineDeps {
   pipeWithDisconnect: typeof defaultPipeWithDisconnect;
   isFeatureFlagEnabled: typeof defaultFeatureFlag;
   createPiiSseTransform: typeof defaultPiiSse;
+  createCredentialSseTransform: typeof defaultCredentialSse;
   createProgressTransform: typeof defaultProgress;
   createSseHeartbeatTransform: typeof defaultHeartbeat;
   shapeForClientFormat: typeof defaultShape;
@@ -42,6 +58,7 @@ const DEFAULT_DEPS: StreamingPipelineDeps = {
   pipeWithDisconnect: defaultPipeWithDisconnect,
   isFeatureFlagEnabled: defaultFeatureFlag,
   createPiiSseTransform: defaultPiiSse,
+  createCredentialSseTransform: defaultCredentialSse,
   createProgressTransform: defaultProgress,
   createSseHeartbeatTransform: defaultHeartbeat,
   shapeForClientFormat: defaultShape,
@@ -50,17 +67,29 @@ const DEFAULT_DEPS: StreamingPipelineDeps = {
 
 export function assembleStreamingPipeline(
   args: {
-    providerResponse: unknown;
-    transformStream: unknown;
-    streamController: { signal: AbortSignal };
+    providerResponse: Parameters<typeof defaultPipeWithDisconnect>[0];
+    transformStream: Parameters<typeof defaultPipeWithDisconnect>[1];
+    streamController: Parameters<typeof defaultPipeWithDisconnect>[2];
     createPiiTransform: unknown;
     clientRawRequestHeaders: HeadersLike;
-    clientResponseFormat: unknown;
+    clientResponseFormat: Parameters<typeof defaultShape>[0];
     echoModel: string | null | undefined;
     responseHeaders: Record<string, string>;
+    credentialRedactionEnabled?: boolean;
+    credentialDisabledGuardrails?: string[];
+    /** See pipeWithDisconnect's own doc comment — the post-handoff "stream is
+     * open but never produced real output" watchdog. Threaded from the same
+     * adaptive streamReadinessPolicy.timeoutMs already computed for this
+     * request's pre-handoff readiness gate, so slow-first-content reasoning
+     * models keep the same generous budget in both phases. */
+    contentStallTimeoutMs?: number;
   },
   deps: StreamingPipelineDeps = DEFAULT_DEPS
 ) {
+  performance.clearMarks(PIPELINE_START);
+  performance.clearMarks(PIPELINE_END);
+  performance.clearMeasures(PIPELINE_MEASURE);
+  performance.mark(PIPELINE_START);
   // ── Phase 9.3: Progress tracking (opt-in) ──
   const progressEnabled = deps.wantsProgress(args.clientRawRequestHeaders);
   let finalStream;
@@ -68,7 +97,8 @@ export function assembleStreamingPipeline(
   let piiStream = deps.pipeWithDisconnect(
     args.providerResponse,
     args.transformStream,
-    args.streamController
+    args.streamController,
+    { contentStallTimeoutMs: args.contentStallTimeoutMs }
   );
   if (typeof args.createPiiTransform === "function") {
     piiStream = piiStream.pipeThrough((args.createPiiTransform as () => TransformStream)());
@@ -76,8 +106,22 @@ export function assembleStreamingPipeline(
     piiStream = piiStream.pipeThrough(deps.createPiiSseTransform());
   }
 
+  // Credential redaction is opt-in, gated per request by the same flag and
+  // opt-out name as the non-streaming post-call guardrail. Off or opted out
+  // enqueues no transform, so bytes pass through untouched.
+  if (
+    isCredentialTransformEnabled({
+      credentialRedactionEnabled: args.credentialRedactionEnabled ?? false,
+      credentialDisabledGuardrails: args.credentialDisabledGuardrails ?? [],
+    })
+  ) {
+    piiStream = piiStream.pipeThrough(deps.createCredentialSseTransform());
+  }
+
   if (progressEnabled) {
-    const progressTransform = deps.createProgressTransform({ signal: args.streamController.signal });
+    const progressTransform = deps.createProgressTransform({
+      signal: args.streamController.signal,
+    });
     // Chain: provider → transform → progress → client
     finalStream = piiStream.pipeThrough(progressTransform);
     args.responseHeaders[OMNIROUTE_RESPONSE_HEADERS.progress] = "enabled";
@@ -95,5 +139,7 @@ export function assembleStreamingPipeline(
   if (args.echoModel) {
     finalStream = finalStream.pipeThrough(deps.createModelEchoTransform(args.echoModel));
   }
+  performance.mark(PIPELINE_END);
+  performance.measure(PIPELINE_MEASURE, PIPELINE_START, PIPELINE_END);
   return finalStream;
 }

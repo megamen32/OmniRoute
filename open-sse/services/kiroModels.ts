@@ -9,7 +9,7 @@
  *
  *   GET https://q.{region}.amazonaws.com/ListAvailableModels?origin=AI_EDITOR
  *   Authorization: Bearer <accessToken>
- *   → { models: [ { modelId, modelName?, tokenLimits?: { maxInputTokens } }, ... ] }
+ *   → { models: [ { modelId, modelName?, tokenLimits?: { maxInputTokens, maxOutputTokens } } ] }
  *
  * This works for both "simple" Builder ID / social logins and AWS IAM Identity
  * Center accounts:
@@ -27,7 +27,13 @@ import { createHash } from "node:crypto";
 
 import { v4 as uuidv4 } from "uuid";
 
+import {
+  isExternalIdpAuthMethod,
+  KIRO_EXTERNAL_IDP_TOKEN_TYPE_HEADER,
+  KIRO_EXTERNAL_IDP_TOKEN_TYPE_VALUE,
+} from "./kiroExternalIdp.ts";
 import { resolveKiroRuntimeRegion } from "./kiroRegion.ts";
+import { supportsKiroAdaptiveThinking } from "../translator/request/openai-to-kiro/adaptiveThinking.ts";
 
 type RawRecord = Record<string, unknown>;
 
@@ -50,6 +56,12 @@ function toNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export type KiroPromptCaching = {
+  supportsPromptCaching: boolean;
+  minimumTokensPerCacheCheckpoint: number | null;
+  maximumCacheCheckpointsPerRequest: number | null;
+};
+
 export type KiroModel = {
   id: string;
   name: string;
@@ -59,10 +71,31 @@ export type KiroModel = {
     agentic: boolean;
   };
   contextLength?: number;
+  outputTokenLimit?: number;
   rateMultiplier?: number;
   upstreamModelId?: string;
   description?: string;
+  promptCaching?: KiroPromptCaching;
 };
+
+function toNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function parsePromptCaching(value: unknown): KiroPromptCaching | undefined {
+  const promptCaching = asRecord(value);
+  if (typeof promptCaching.supportsPromptCaching !== "boolean") return undefined;
+
+  return {
+    supportsPromptCaching: promptCaching.supportsPromptCaching,
+    minimumTokensPerCacheCheckpoint: toNonNegativeInteger(
+      promptCaching.minimumTokensPerCacheCheckpoint
+    ),
+    maximumCacheCheckpointsPerRequest: toNonNegativeInteger(
+      promptCaching.maximumCacheCheckpointsPerRequest
+    ),
+  };
+}
 
 export type KiroModelsResult = {
   models: KiroModel[];
@@ -92,17 +125,11 @@ export function parseKiroModels(data: unknown): KiroModel[] {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const name = toNonEmptyString(item.modelName) || toNonEmptyString(item.name) || id;
-    models.push({ id, name, owned_by: "kiro" });
+    const promptCaching = parsePromptCaching(item.promptCaching);
+    models.push({ id, name, owned_by: "kiro", ...(promptCaching && { promptCaching }) });
   }
 
   return models;
-}
-
-function stripSyntheticSuffixes(id: string): string {
-  let out = id;
-  if (out.endsWith("-agentic")) out = out.slice(0, -"-agentic".length);
-  if (out.endsWith("-thinking")) out = out.slice(0, -"-thinking".length);
-  return out;
 }
 
 function formatDisplayName(modelName: unknown, modelId: string, rateMultiplier: unknown): string {
@@ -115,40 +142,34 @@ function formatDisplayName(modelName: unknown, modelId: string, rateMultiplier: 
 }
 
 function buildVariants(upstream: string, displayName: string): KiroModel[] {
-  const safeUpstream = stripSyntheticSuffixes(upstream);
-  const display = displayName || `Kiro ${safeUpstream}`;
-  const isAuto = safeUpstream === "auto" || safeUpstream === "auto-kiro";
+  const display = displayName || `Kiro ${upstream}`;
   const variants: KiroModel[] = [
     {
-      id: safeUpstream,
+      id: upstream,
       name: display,
       owned_by: "kiro",
       capabilities: { thinking: false, agentic: false },
     },
-    {
-      id: `${safeUpstream}-thinking`,
+  ];
+
+  if (supportsKiroAdaptiveThinking(upstream)) {
+    variants.push({
+      id: `${upstream}-thinking`,
       name: `${display} (Thinking)`,
       owned_by: "kiro",
       capabilities: { thinking: true, agentic: false },
-    },
-  ];
-
-  if (!isAuto) {
-    variants.push({
-      id: `${safeUpstream}-agentic`,
-      name: `${display} (Agentic)`,
-      owned_by: "kiro",
-      capabilities: { thinking: false, agentic: true },
-    });
-    variants.push({
-      id: `${safeUpstream}-thinking-agentic`,
-      name: `${display} (Thinking + Agentic)`,
-      owned_by: "kiro",
-      capabilities: { thinking: true, agentic: true },
     });
   }
 
   return variants;
+}
+
+export function isObsoleteKiroModelAlias(modelId: unknown): boolean {
+  if (typeof modelId !== "string") return false;
+  if (modelId === "auto-kiro" || modelId.endsWith("-agentic")) return true;
+  if (!modelId.endsWith("-thinking")) return false;
+  const upstream = modelId.slice(0, -"-thinking".length);
+  return !supportsKiroAdaptiveThinking(upstream);
 }
 
 function expandKiroModels(data: unknown): KiroModel[] {
@@ -167,18 +188,29 @@ function expandKiroModels(data: unknown): KiroModel[] {
     if (!upstreamId) continue;
     const display = formatDisplayName(item.modelName || item.name, upstreamId, item.rateMultiplier);
     const tokenLimits = asRecord(item.tokenLimits);
-    const contextLength = Number(tokenLimits.maxInputTokens) || 200000;
+    // Only the upstream number. Stamping a 200k default here would be persisted as the
+    // discovered window and pinned as an auto:discovery override over the registry /
+    // models.dev window (claude-sonnet-5 is 1M).
+    const maxInputTokens = Number(tokenLimits.maxInputTokens);
+    const contextLength =
+      Number.isFinite(maxInputTokens) && maxInputTokens > 0 ? maxInputTokens : undefined;
+    const maxOutputTokens = Number(tokenLimits.maxOutputTokens);
+    const outputTokenLimit =
+      Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : undefined;
     const rateMultiplier = Number(item.rateMultiplier);
+    const promptCaching = parsePromptCaching(item.promptCaching);
 
     for (const variant of buildVariants(upstreamId, display)) {
       if (seen.has(variant.id)) continue;
       seen.add(variant.id);
       expanded.push({
         ...variant,
-        contextLength,
+        ...(contextLength ? { contextLength } : {}),
+        ...(outputTokenLimit ? { outputTokenLimit } : {}),
         rateMultiplier: Number.isFinite(rateMultiplier) ? rateMultiplier : 1.0,
         upstreamModelId: upstreamId,
         description: toNonEmptyString(item.description) || "",
+        ...(promptCaching && { promptCaching }),
       });
     }
   }
@@ -255,7 +287,7 @@ function buildKiroFingerprintHeaders(providerSpecificData: unknown, accessToken:
     `api/codewhispererruntime#${KIRO_RUNTIME_SDK_VERSION} m/N,E ` +
     `KiroIDE-${KIRO_IDE_VERSION}-${machineId}`;
 
-  return {
+  const headers: Record<string, string> = {
     "User-Agent": userAgent,
     "x-amz-user-agent": `aws-sdk-js/${KIRO_RUNTIME_SDK_VERSION} KiroIDE-${KIRO_IDE_VERSION}-${machineId}`,
     "x-amzn-kiro-agent-mode": "vibe",
@@ -264,6 +296,15 @@ function buildKiroFingerprintHeaders(providerSpecificData: unknown, accessToken:
     "amz-sdk-invocation-id": uuidv4(),
     Accept: "application/json",
   };
+
+  if (psd.authMethod === "api_key") {
+    headers.tokentype = "API_KEY";
+  }
+  if (isExternalIdpAuthMethod(psd.authMethod)) {
+    headers[KIRO_EXTERNAL_IDP_TOKEN_TYPE_HEADER] = KIRO_EXTERNAL_IDP_TOKEN_TYPE_VALUE;
+  }
+
+  return headers;
 }
 
 function cacheKey(accessToken: string, providerSpecificData: unknown): string {
@@ -273,7 +314,8 @@ function cacheKey(accessToken: string, providerSpecificData: unknown): string {
     toNonEmptyString(psd.clientId) ||
     accessToken ||
     "anonymous";
-  return createHash("sha256").update(`kiro:${seed}`).digest("hex");
+  const authMethod = toNonEmptyString(psd.authMethod) || "unknown";
+  return createHash("sha256").update(`kiro:${authMethod}:${seed}`).digest("hex");
 }
 
 async function tryFetchModels(

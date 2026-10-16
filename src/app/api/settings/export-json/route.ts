@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
+import { getSettings } from "@/lib/db/settings";
+import { getProviderConnections } from "@/lib/db/providers";
+import { getCachedProviderNodes } from "@/lib/db/readCache";
+import { getCombos } from "@/lib/db/combos";
+import { getApiKeys } from "@/lib/db/apiKeys";
 import {
-  getSettings,
-  getProviderConnections,
-  getProviderNodes,
-  getCombos,
-  getApiKeys,
-} from "@/lib/localDb";
-import { isAuthRequired, isAuthenticated } from "@/shared/utils/apiAuth";
+  CREDENTIAL_EXPORT_FORBIDDEN_MESSAGE,
+  requireOperatorCredential,
+} from "@/lib/api/operatorCredential";
 import {
   getAllUsageHistory,
   getAllDomainCostHistory,
@@ -49,11 +50,12 @@ export function filterPaidComboSteps<T extends { models?: unknown }>(combos: T[]
  * Exports a legacy OmniRoute-compatible JSON backup.
  */
 export async function GET(request: Request) {
-  if (await isAuthRequired(request)) {
-    if (!(await isAuthenticated(request))) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  // Hands out every stored credential: operator only (dashboard session, local CLI, or login
+  // disabled). API keys of any scope and `oma_` access tokens get 403.
+  const operatorVerdict = await requireOperatorCredential(request, {
+    forbiddenMessage: CREDENTIAL_EXPORT_FORBIDDEN_MESSAGE,
+  });
+  if (operatorVerdict.ok === false) return operatorVerdict.response;
 
   try {
     const url = new URL(request.url);
@@ -69,15 +71,16 @@ export async function GET(request: Request) {
     const { password: _pw, requireLogin: _rl, ...safeSettings } = rawSettings;
 
     const providerConnections = await getProviderConnections();
-    const providerNodes = await getProviderNodes();
+    const providerNodes = await getCachedProviderNodes();
     const combosRaw = await getCombos();
     const apiKeys = await getApiKeys();
 
     // #6328: honor hidePaidModels at the export boundary so backup files
     // cannot silently smuggle paid model ids back in on import.
-    const combos = rawSettings.hidePaidModels === true
-      ? filterPaidComboSteps(combosRaw as Array<{ models?: unknown }>)
-      : combosRaw;
+    const combos =
+      rawSettings.hidePaidModels === true
+        ? filterPaidComboSteps(combosRaw as Array<{ models?: unknown }>)
+        : combosRaw;
 
     const exportData: Record<string, unknown> = {
       settings: safeSettings,

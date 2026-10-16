@@ -7,6 +7,19 @@ type McpHttpAuthContext = {
   anthropicVersion?: string;
 };
 
+/**
+ * Minimal shape of the MCP SDK's `AuthInfo` (server/auth/types.ts) that
+ * `httpTransport.ts` passes into `transport.handleRequest(req, { authInfo })`
+ * so per-tool-call `extra.authInfo` — and therefore
+ * `scopeEnforcement.ts::resolveCallerScopeContext` — sees the caller's real
+ * per-key scopes instead of falling back to the `OMNIROUTE_MCP_SCOPES` env var.
+ */
+export type McpCallerAuthInfo = {
+  token: string;
+  clientId: string;
+  scopes: string[];
+};
+
 const mcpHttpAuthContext = new AsyncLocalStorage<McpHttpAuthContext>();
 
 function headerValue(request: Request, name: string): string | undefined {
@@ -24,6 +37,60 @@ export function getMcpHttpAuthHeadersForInternalFetch(): Record<string, string> 
     headers["anthropic-version"] = context.anthropicVersion;
   }
   return headers;
+}
+
+/**
+ * Whether the current async scope is an HTTP/SSE MCP request.
+ *
+ * S-03 (#15159): `getMcpHttpAuthHeadersForInternalFetch()` returns `{}` both when
+ * there is no HTTP caller (stdio) and when an HTTP caller forwarded nothing. The
+ * hop cannot tell those apart by looking at the headers alone, so it has to ask
+ * which scope it is in — that is the only way to make the env key a *stdio-only*
+ * fallback instead of a silent substitute for a missing HTTP caller identity.
+ */
+export function hasMcpHttpAuthContext(): boolean {
+  return mcpHttpAuthContext.getStore() !== undefined;
+}
+
+/**
+ * Resolve the caller's real per-key `api_keys.scopes` for one HTTP/SSE MCP
+ * request, for #7895's per-key scope binding. Returns `undefined` when the
+ * request carries no resolvable API key (no header, invalid key, or the
+ * DB/auth backend throws) — callers MUST treat `undefined` as "no per-key
+ * authInfo available", NOT as "zero scopes", so `scopeEnforcement.ts` falls
+ * through to its existing `meta` → env fallback chain unchanged. Only the
+ * HTTP/SSE transports call this; stdio has no per-caller identity and stays
+ * on the env fallback (see `docs/frameworks/MCP-SERVER.md`).
+ */
+export async function resolveMcpCallerAuthInfo(
+  request: Request
+): Promise<McpCallerAuthInfo | undefined> {
+  // Avoid importing the full auth/database stack for requests that carry no
+  // explicit API-key header. This function is called on every HTTP transport
+  // request, while only authenticated requests need the expensive lookup.
+  const hasExplicitKeyHeader =
+    request.headers.has("authorization") ||
+    request.headers.has("x-api-key") ||
+    request.headers.has("x-goog-api-key");
+  if (!hasExplicitKeyHeader) return undefined;
+
+  const [{ extractApiKey, isValidApiKey }, { getApiKeyMetadata }] = await Promise.all([
+    import("../../src/sse/services/auth.ts"),
+    import("../../src/lib/db/apiKeys.ts"),
+  ]);
+  const rawKey = extractApiKey(request, { allowUrl: false });
+  if (!rawKey) return undefined;
+
+  try {
+    if (!(await isValidApiKey(rawKey))) return undefined;
+    const meta = await getApiKeyMetadata(rawKey);
+    if (!meta || !meta.id) return undefined;
+    return { token: rawKey, clientId: String(meta.id), scopes: meta.scopes ?? [] };
+  } catch {
+    // Fail closed: an unresolved caller falls through to the meta/env scope
+    // chain rather than ever synthesizing a false per-key scope grant.
+    return undefined;
+  }
 }
 
 export async function withMcpHttpAuthContext<T>(

@@ -20,6 +20,7 @@ export const comboStepMetaSchema = {
   id: z.string().trim().min(1).max(200).optional(),
   weight: z.number().min(0).max(100).optional().default(0),
   label: z.string().trim().min(1).max(200).optional(),
+  fallbackOnlyOnQuotaExhaustion: z.boolean().optional(),
 };
 
 export const comboModelStepInputSchema = z.object({
@@ -28,6 +29,7 @@ export const comboModelStepInputSchema = z.object({
   providerId: z.string().trim().min(1).max(120).optional(),
   model: z.string().trim().min(1).max(300),
   connectionId: z.string().trim().min(1).max(200).nullable().optional(),
+  allowedConnectionIds: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
   tags: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
   // Pipeline strategy (open-sse/services/pipeline.ts): an optional per-step
   // instruction. Steps run in `models` order — each step's output feeds the next
@@ -86,7 +88,23 @@ export const scoringWeightsSchema = z
     tierAffinity: z.number().min(0).max(1).optional().default(0.05),
     specificityMatch: z.number().min(0).max(1).optional().default(0.05),
     contextAffinity: z.number().min(0).max(1).optional().default(0.08),
+    cacheAffinity: z.number().min(0).max(1).optional().default(0),
+    sessionAvailability: z.number().min(0).max(1).optional().default(0.05),
     resetWindowAffinity: z.number().min(0).max(1).optional().default(0),
+    // The scorer weighs these two as well (`DEFAULT_WEIGHTS`); leaving them out
+    // meant zod dropped them from a saved config, and `normalizeScoringWeights`
+    // then read the gap as a deliberate zero — silently disabling
+    // anti-concentration and the quality signal, and inflating every other
+    // weight to make the distribution sum to 1 again.
+    //
+    // The defaults below therefore DO change the effective weights of a stored
+    // config that omitted these keys: the other thirteen stop being renormalized
+    // upward (quota 0.1549 -> 0.1429, health 0.1740 -> 0.1605, and so on). That is
+    // the correction, not a side effect — but it is a behaviour change, and the
+    // PR says so rather than claiming the routing is untouched.
+    connectionDensity: z.number().min(0).max(1).optional().default(0.0476),
+    quality: z.number().min(0).max(1).optional().default(0.03),
+    reliability: z.number().min(0).max(1).optional().default(0),
   })
   .optional();
 
@@ -114,6 +132,7 @@ export const compressionModeSchema = z.enum([
   "ultra",
   "rtk",
   "stacked",
+  "codex-responses",
   "omniglyph",
 ]);
 
@@ -157,6 +176,10 @@ export const comboRuntimeConfigSchema = z
     fallbackDelayMs: z.coerce.number().int().min(0).max(60000).optional(),
     timeoutMs: z.coerce.number().int().min(1000).optional(),
     targetTimeoutMs: z.coerce.number().int().min(0).max(MAX_TIMER_TIMEOUT_MS).optional(),
+    // Whole-combo wall-clock budget. 0 (default) means unlimited iteration;
+    // the 10-minute COMBO_LOOP_SAFETY_TIMEOUT_MS hang-stop still applies.
+    // A positive value replaces that safety net for this combo.
+    comboTimeoutMs: z.coerce.number().int().min(0).max(MAX_TIMER_TIMEOUT_MS).optional(),
     concurrencyPerModel: z.coerce.number().int().min(1).max(20).optional(),
     queueTimeoutMs: z.coerce.number().int().min(1000).max(120000).optional(),
     // #3872: pre-cascade semaphore queue depth (round-robin). 0 = fail over immediately.
@@ -179,9 +202,15 @@ export const comboRuntimeConfigSchema = z
     handoffProviders: z.array(z.string().trim().min(1).max(100)).max(10).optional(),
     maxMessagesForSummary: z.coerce.number().int().min(5).max(100).optional(),
     maxComboDepth: z.coerce.number().int().min(1).max(10).optional(),
+    // #11134: shared per-request attempt budget. Bounds mirror
+    // MAX_GLOBAL_ATTEMPTS_HARD_CAP (200) in comboPredicates.ts.
+    maxGlobalAttempts: z.coerce.number().int().min(1).max(200).optional(),
     nestedComboMode: z.enum(["flatten", "execute"]).optional(),
     trackMetrics: z.boolean().optional(),
     reasoningTokenBufferEnabled: z.boolean().optional(),
+    // Keep (not drop) targets whose known output ceiling is below max_tokens.
+    outputLimitAdvisory: z.boolean().optional(),
+    reasoningTransportFallback: z.enum(["skip", "drop"]).optional(),
     compressionMode: compressionModeSchema.optional(),
     failoverBeforeRetry: z.boolean().optional(),
     maxSetRetries: z.coerce.number().int().min(0).max(10).optional(),
@@ -192,6 +221,7 @@ export const comboRuntimeConfigSchema = z
     fallbackCompressionMode: compressionModeSchema.optional(),
     fallbackCompressionThreshold: z.coerce.number().int().min(0).max(2_000_000).optional(),
     predictiveTtftMs: z.coerce.number().int().min(0).max(300000).optional(),
+    relayMode: z.enum(["schema-locked", "standard"]).optional(),
     // Auto-Combo / LKGP Extensions
     candidatePool: z.array(z.string().min(1)).optional(),
     weights: scoringWeightsSchema.optional(),
@@ -204,11 +234,21 @@ export const comboRuntimeConfigSchema = z
     slaMaxCostPer1MTokens: z.coerce.number().positive().max(1000000).optional(),
     slaHardConstraints: z.boolean().optional(),
     sla: slaRoutingPolicySchema.optional(),
+    // `nadir` auto-router strategy (open-sse/services/autoCombo/nadirStrategy.ts).
+    nadir: z
+      .object({
+        apiKey: z.string().trim().max(200).optional(),
+        baseUrl: z.string().trim().max(500).optional(),
+        timeoutMs: z.coerce.number().int().min(100).max(30_000).optional(),
+      })
+      .strict()
+      .optional(),
     compositeTiers: compositeTiersSchema.optional(),
     resetAwareSessionWeight: z.coerce.number().min(0).max(100).optional(),
     resetAwareWeeklyWeight: z.coerce.number().min(0).max(100).optional(),
     resetAwareTieBandPercent: z.coerce.number().min(0).max(100).optional(),
     resetAwareExhaustionGuardPercent: z.coerce.number().min(0).max(100).optional(),
+    quotaWeightedFloorPercent: z.coerce.number().min(0).max(100).optional(),
     resetAwareQuotaCacheTtlMs: z.coerce.number().int().min(0).max(300_000).optional(),
     resetAwareQuotaCacheMaxStaleMs: z.coerce.number().int().min(0).max(3_600_000).optional(),
     resetWindowWindows: z.array(z.enum(["weekly", "session", "monthly"])).optional(),
@@ -216,6 +256,9 @@ export const comboRuntimeConfigSchema = z
     resetWindowTieBandMs: z.coerce.number().int().min(0).max(86_400_000).optional(),
     resetWindowQuotaCacheTtlMs: z.coerce.number().int().min(0).max(300_000).optional(),
     resetWindowQuotaCacheMaxStaleMs: z.coerce.number().int().min(0).max(3_600_000).optional(),
+    // Connection-aware expansion for group-B combo strategies is opt-in.
+    connectionAwareExpansion: z.boolean().optional(),
+    connectionAwareExpansionMaxPerTarget: z.coerce.number().int().min(1).max(64).optional(),
     shadowRouting: shadowRoutingSchema.optional(),
     evalRouting: evalRoutingSchema.optional(),
     // Fusion strategy (open-sse/services/fusion.ts): the panel is the combo's
@@ -227,20 +270,42 @@ export const comboRuntimeConfigSchema = z
         minPanel: z.coerce.number().int().min(1).max(50).optional(),
         stragglerGraceMs: z.coerce.number().int().min(0).max(120_000).optional(),
         panelHardTimeoutMs: z.coerce.number().int().min(1000).max(600_000).optional(),
+        // Hard cap on panel size (issue #1905) — see FUSION_DEFAULTS.maxPanel in
+        // open-sse/services/fusion.ts. Bounds how many models can be fanned out
+        // and buffered in memory concurrently before the container's heap ceiling
+        // is at risk.
+        maxPanel: z.coerce.number().int().min(1).max(200).optional(),
+      })
+      .strict()
+      .optional(),
+    // Opt-in planner/executor mode for the pipeline strategy. The first model
+    // owns reasoning/final answers; the second emits native client tool calls.
+    agenticOrchestration: z
+      .object({
+        enabled: z.boolean().optional(),
+        maxToolRounds: z.coerce.number().int().min(1).max(32).optional(),
       })
       .strict()
       .optional(),
     // Context window requirements for combo target filtering and sorting.
     // minContextWindow: filters out models with context windows below this threshold.
+    // maxContextWindow: filters out models with context windows above this threshold.
     // preferLargeContext: sorts remaining targets by context size (descending).
     // contextFilterMode: "strict" excludes unknown-context models, "lenient" includes them.
     contextRequirements: z
       .object({
         minContextWindow: z.coerce.number().int().min(0).max(10_000_000).optional(),
+        maxContextWindow: z.coerce.number().int().min(0).max(10_000_000).optional(),
         preferLargeContext: z.boolean().optional(),
         contextFilterMode: z.enum(["strict", "lenient"]).optional(),
       })
       .strict()
+      .optional(),
+    // Optional client-side sort hint for combo models.
+    // Honored in the dashboard builder; reserved for future server-side use. Inert on execution.
+    modelSort: z
+      .object({ method: z.enum(["manual", "provider", "score", "name"]) })
+      .passthrough()
       .optional(),
   })
   .passthrough()
@@ -275,28 +340,85 @@ export const comboNameSchema = z
     "Name can only contain letters, numbers, spaces, -, _, /, ., [ and ]."
   );
 
-export const createComboSchema = z.object({
-  name: comboNameSchema,
-  description: z.string().max(2000).optional(),
-  models: z.array(comboModelEntry).optional().default([]),
-  strategy: comboStrategySchema.optional().default("priority"),
-  config: comboRuntimeConfigSchema.optional(),
-  allowedProviders: z.array(z.string().max(200)).optional(),
-  system_message: z.string().max(50000).optional(),
-  tool_filter_regex: z.string().max(1000).optional(),
-  context_cache_protection: z.boolean().optional(),
-  context_length: z.number().int().min(1000).max(2000000).optional(),
-  // Optional embedding dimensions override for embedding combos.
-  // When set, the value is injected into every upstream embedding request as
-  // the `dimensions` field (and translated to `outputDimensionality` for Gemini).
-  // Stored as a string to match the OpenAI API convention; coerced to number
-  // by the embedding handler. Leave unset to use each model's default.
-  dimensions: z
-    .string()
-    .regex(/^\d+$/, "dimensions must be a positive integer string")
-    .optional()
-    .nullable(),
-});
+type QuotaOnlyComboRefState = {
+  models?: Array<z.infer<typeof comboModelEntry>>;
+  strategy?: string;
+  config?: z.infer<typeof comboRuntimeConfigSchema>;
+};
+
+export function requiresQuotaOnlyComboRefExecute(value: QuotaOnlyComboRefState): boolean {
+  const hasProtectedComboRef = value.models?.some(
+    (step) =>
+      typeof step === "object" &&
+      step.kind === "combo-ref" &&
+      step.fallbackOnlyOnQuotaExhaustion === true
+  );
+  return (
+    (value.strategy === undefined || value.strategy === "priority") &&
+    hasProtectedComboRef === true &&
+    value.config?.nestedComboMode !== "execute"
+  );
+}
+
+function validateQuotaOnlyComboRefs(value: QuotaOnlyComboRefState, ctx: z.RefinementCtx): void {
+  if (requiresQuotaOnlyComboRefExecute(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Quota-only combo references require nestedComboMode execute",
+      path: ["config", "nestedComboMode"],
+    });
+  }
+}
+
+// #15251 — universal handoff config. The runtime
+// (`open-sse/services/combo/comboSetup.ts` → `resolveUniversalHandoffConfig`)
+// reads this off the combo record's top-level `universal_handoff` key (the
+// `universalHandoff` alias is accepted because the runtime reads both), so the
+// field must survive POST/PUT validation — defaults live in
+// `DEFAULT_UNIVERSAL_HANDOFF_CONFIG`, and bounds here mirror its clamps.
+export const universalHandoffSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    trigger: z.enum(["on-switch", "always", "on-error"]).optional(),
+    providerAllowlist: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+    maxMessagesForSummary: z.coerce.number().int().min(5).max(100).optional(),
+    handoffModel: z.string().trim().max(200).optional(),
+    ttlMinutes: z.coerce.number().int().min(1).max(10080).optional(),
+    preserveSystemPrompt: z.boolean().optional(),
+    relayMode: z.enum(["schema-locked", "standard"]).optional(),
+  })
+  .strict();
+
+export const createComboSchema = z
+  .object({
+    name: comboNameSchema,
+    description: z.string().max(2000).optional(),
+    // Optional label advertised as `display_name` in /v1/models. Lets a combo
+    // carry a machine-oriented name while clients show something readable.
+    displayName: z.string().trim().max(200).optional(),
+    models: z.array(comboModelEntry).min(1, "a combo requires at least one model"),
+    strategy: comboStrategySchema.optional().default("priority"),
+    config: comboRuntimeConfigSchema.optional(),
+    universal_handoff: universalHandoffSchema.optional(),
+    universalHandoff: universalHandoffSchema.optional(),
+    allowedProviders: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+    allowedModelFamilies: z.array(z.string().trim().min(1).max(100)).max(100).optional(),
+    system_message: z.string().max(50000).optional(),
+    tool_filter_regex: z.string().max(1000).optional(),
+    context_cache_protection: z.boolean().optional(),
+    context_length: z.number().int().min(1000).max(2000000).optional(),
+    // Optional embedding dimensions override for embedding combos.
+    // When set, the value is injected into every upstream embedding request as
+    // the `dimensions` field (and translated to `outputDimensionality` for Gemini).
+    // Stored as a string to match the OpenAI API convention; coerced to number
+    // by the embedding handler. Leave unset to use each model's default.
+    dimensions: z
+      .string()
+      .regex(/^\d+$/, "dimensions must be a positive integer string")
+      .optional()
+      .nullable(),
+  })
+  .superRefine(validateQuotaOnlyComboRefs);
 
 export const updateComboDefaultsSchema = z
   .object({
@@ -335,16 +457,38 @@ export const updateComboSchema = z
   .object({
     name: comboNameSchema.optional(),
     description: z.string().max(2000).optional().nullable(),
-    models: z.array(comboModelEntry).optional(),
+    displayName: z.string().trim().max(200).optional().nullable(),
+    // An update may not remove every model from a combo, or a working combo
+    // loses every target. Creation refuses an empty list too: since the CLI
+    // gained --models (#10954), an empty draft has no remaining legitimate path.
+    models: z
+      .array(comboModelEntry)
+      .min(1, "an update cannot remove every model from a combo")
+      .optional(),
     strategy: comboStrategySchema.optional(),
     config: comboRuntimeConfigSchema.optional(),
     isActive: z.boolean().optional(),
-    allowedProviders: z.array(z.string().max(200)).optional(),
-    system_message: z.string().max(50000).optional(),
-    tool_filter_regex: z.string().max(1000).optional(),
-    context_cache_protection: z.boolean().optional(),
+    // Stored on the combo record and honoured by the readers — the builder's
+    // option list and the dashboard grid both filter on it — but omitted here,
+    // so the one endpoint a client can flip it through stripped the field and
+    // a visibility-only update was rejected as empty. #12836
+    isHidden: z.boolean().optional(),
+    allowedProviders: z.array(z.string().trim().min(1).max(200)).max(100).optional().nullable(),
+    allowedModelFamilies: z.array(z.string().trim().min(1).max(100)).max(100).optional().nullable(),
+    overrideAllowedProviders: z.boolean().optional(),
+    // Nullable like `description` and `context_length` above: an absent field means
+    // "leave unchanged" because updateCombo merges over the stored record, so clearing
+    // one needs an explicit null for updateCombo's null-means-delete pass (#12158).
+    system_message: z.string().max(50000).optional().nullable(),
+    tool_filter_regex: z.string().max(1000).optional().nullable(),
+    context_cache_protection: z.boolean().optional().nullable(),
     context_length: z.number().int().min(1000).max(2000000).optional().nullable(),
     compressionOverride: comboCompressionOverrideSchema.optional(),
+    // Nullable like `description`: absent leaves the stored value unchanged
+    // (updateCombo merges over the record), explicit null clears it so the
+    // runtime falls back to the global/default handoff config (#15251).
+    universal_handoff: universalHandoffSchema.optional().nullable(),
+    universalHandoff: universalHandoffSchema.optional().nullable(),
     dimensions: z
       .string()
       .regex(/^\d+$/, "dimensions must be a positive integer string")
@@ -355,16 +499,21 @@ export const updateComboSchema = z
     if (
       value.name === undefined &&
       value.description === undefined &&
+      value.displayName === undefined &&
       value.models === undefined &&
       value.strategy === undefined &&
       value.config === undefined &&
       value.isActive === undefined &&
+      value.isHidden === undefined &&
       value.allowedProviders === undefined &&
+      value.allowedModelFamilies === undefined &&
       value.system_message === undefined &&
       value.tool_filter_regex === undefined &&
       value.context_cache_protection === undefined &&
       value.context_length === undefined &&
       value.compressionOverride === undefined &&
+      value.universal_handoff === undefined &&
+      value.universalHandoff === undefined &&
       value.dimensions === undefined
     ) {
       ctx.addIssue({
@@ -391,4 +540,11 @@ export const reorderCombosSchema = z
 
 export const testComboSchema = z.object({
   comboName: z.string().trim().min(1, "comboName is required"),
+});
+
+// POST /api/combos/duplicate - Resolve an auto-combo template (e.g. "auto/best-coding")
+// into a static, editable combo snapshot.
+export const duplicateAutoComboSchema = z.object({
+  name: z.string().trim().min(1, 'Missing required field: "name" (e.g. auto/best-coding)'),
+  strategy: comboStrategySchema.optional(),
 });

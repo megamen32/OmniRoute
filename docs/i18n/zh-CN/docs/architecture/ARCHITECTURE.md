@@ -1,4 +1,9 @@
+# OmniRoute Architecture (中文 (简体))
+
+🌐 **Languages:** 🇺🇸 [English](../../../../architecture/ARCHITECTURE.md) · 🇪🇹 [am](../../../am/docs/architecture/ARCHITECTURE.md) · 🇸🇦 [ar](../../../ar/docs/architecture/ARCHITECTURE.md) · 🇦🇿 [az](../../../az/docs/architecture/ARCHITECTURE.md) · 🇧🇬 [bg](../../../bg/docs/architecture/ARCHITECTURE.md) · 🇧🇩 [bn](../../../bn/docs/architecture/ARCHITECTURE.md) · 🇧🇦 [bs](../../../bs/docs/architecture/ARCHITECTURE.md) · 🇨🇿 [cs](../../../cs/docs/architecture/ARCHITECTURE.md) · 🇩🇰 [da](../../../da/docs/architecture/ARCHITECTURE.md) · 🇩🇪 [de](../../../de/docs/architecture/ARCHITECTURE.md) · 🇬🇷 [el](../../../el/docs/architecture/ARCHITECTURE.md) · 🇪🇸 [es](../../../es/docs/architecture/ARCHITECTURE.md) · 🇪🇪 [et](../../../et/docs/architecture/ARCHITECTURE.md) · 🇮🇷 [fa](../../../fa/docs/architecture/ARCHITECTURE.md) · 🇫🇮 [fi](../../../fi/docs/architecture/ARCHITECTURE.md) · 🇫🇷 [fr](../../../fr/docs/architecture/ARCHITECTURE.md) · 🇮🇪 [ga](../../../ga/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [gu](../../../gu/docs/architecture/ARCHITECTURE.md) · 🇳🇬 [ha](../../../ha/docs/architecture/ARCHITECTURE.md) · 🇮🇱 [he](../../../he/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [hi](../../../hi/docs/architecture/ARCHITECTURE.md) · 🇭🇷 [hr](../../../hr/docs/architecture/ARCHITECTURE.md) · 🇭🇺 [hu](../../../hu/docs/architecture/ARCHITECTURE.md) · 🇦🇲 [hy](../../../hy/docs/architecture/ARCHITECTURE.md) · 🇮🇩 [id](../../../id/docs/architecture/ARCHITECTURE.md) · 🇳🇬 [ig](../../../ig/docs/architecture/ARCHITECTURE.md) · 🇮🇹 [it](../../../it/docs/architecture/ARCHITECTURE.md) · 🇯🇵 [ja](../../../ja/docs/architecture/ARCHITECTURE.md) · 🇬🇪 [ka](../../../ka/docs/architecture/ARCHITECTURE.md) · 🇰🇭 [km](../../../km/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [kn](../../../kn/docs/architecture/ARCHITECTURE.md) · 🇰🇷 [ko](../../../ko/docs/architecture/ARCHITECTURE.md) · 🇱🇹 [lt](../../../lt/docs/architecture/ARCHITECTURE.md) · 🇱🇻 [lv](../../../lv/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [ml](../../../ml/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [mr](../../../mr/docs/architecture/ARCHITECTURE.md) · 🇲🇾 [ms](../../../ms/docs/architecture/ARCHITECTURE.md) · 🇲🇹 [mt](../../../mt/docs/architecture/ARCHITECTURE.md) · 🇲🇲 [my](../../../my/docs/architecture/ARCHITECTURE.md) · 🇳🇵 [ne](../../../ne/docs/architecture/ARCHITECTURE.md) · 🇳🇱 [nl](../../../nl/docs/architecture/ARCHITECTURE.md) · 🇳🇴 [no](../../../no/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [or](../../../or/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [pa](../../../pa/docs/architecture/ARCHITECTURE.md) · 🇵🇭 [phi](../../../phi/docs/architecture/ARCHITECTURE.md) · 🇵🇱 [pl](../../../pl/docs/architecture/ARCHITECTURE.md) · 🇵🇹 [pt](../../../pt/docs/architecture/ARCHITECTURE.md) · 🇧🇷 [pt-BR](../../../pt-BR/docs/architecture/ARCHITECTURE.md) · 🇷🇴 [ro](../../../ro/docs/architecture/ARCHITECTURE.md) · 🇷🇺 [ru](../../../ru/docs/architecture/ARCHITECTURE.md) · 🇱🇰 [si](../../../si/docs/architecture/ARCHITECTURE.md) · 🇸🇰 [sk](../../../sk/docs/architecture/ARCHITECTURE.md) · 🇸🇮 [sl](../../../sl/docs/architecture/ARCHITECTURE.md) · 🇷🇸 [sr](../../../sr/docs/architecture/ARCHITECTURE.md) · 🇸🇪 [sv](../../../sv/docs/architecture/ARCHITECTURE.md) · 🇰🇪 [sw](../../../sw/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [ta](../../../ta/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [te](../../../te/docs/architecture/ARCHITECTURE.md) · 🇹🇭 [th](../../../th/docs/architecture/ARCHITECTURE.md) · 🇹🇷 [tr](../../../tr/docs/architecture/ARCHITECTURE.md) · 🇺🇦 [uk-UA](../../../uk-UA/docs/architecture/ARCHITECTURE.md) · 🇵🇰 [ur](../../../ur/docs/architecture/ARCHITECTURE.md) · 🇺🇿 [uz](../../../uz/docs/architecture/ARCHITECTURE.md) · 🇻🇳 [vi](../../../vi/docs/architecture/ARCHITECTURE.md) · 🇳🇬 [yo](../../../yo/docs/architecture/ARCHITECTURE.md) · 🇹🇼 [zh-TW](../../../zh-TW/docs/architecture/ARCHITECTURE.md)
+
 ---
+
 title: "OmniRoute 架构"
 version: 3.8.40
 lastUpdated: 2026-06-28
@@ -6,85 +11,85 @@ lastUpdated: 2026-06-28
 
 # OmniRoute 架构
 
-🌐 **Languages:** 🇺🇸 [English](../../../../docs/ARCHITECTURE.md) · 🇸🇦 [ar](../../ar/docs/ARCHITECTURE.md) · 🇧🇬 [bg](../../bg/docs/ARCHITECTURE.md) · 🇧🇩 [bn](../../bn/docs/ARCHITECTURE.md) · 🇨🇿 [cs](../../cs/docs/ARCHITECTURE.md) · 🇩🇰 [da](../../da/docs/ARCHITECTURE.md) · 🇩🇪 [de](../../de/docs/ARCHITECTURE.md) · 🇪🇸 [es](../../es/docs/ARCHITECTURE.md) · 🇮🇷 [fa](../../fa/docs/ARCHITECTURE.md) · 🇫🇮 [fi](../../fi/docs/ARCHITECTURE.md) · 🇫🇷 [fr](../../fr/docs/ARCHITECTURE.md) · 🇮🇳 [gu](../../gu/docs/ARCHITECTURE.md) · 🇮🇱 [he](../../he/docs/ARCHITECTURE.md) · 🇮🇳 [hi](../../hi/docs/ARCHITECTURE.md) · 🇭🇺 [hu](../../hu/docs/ARCHITECTURE.md) · 🇮🇩 [id](../../id/docs/ARCHITECTURE.md) · 🇮🇹 [it](../../it/docs/ARCHITECTURE.md) · 🇯🇵 [ja](../../ja/docs/ARCHITECTURE.md) · 🇰🇷 [ko](../../ko/docs/ARCHITECTURE.md) · 🇮🇳 [mr](../../mr/docs/ARCHITECTURE.md) · 🇲🇾 [ms](../../ms/docs/ARCHITECTURE.md) · 🇳🇱 [nl](../../nl/docs/ARCHITECTURE.md) · 🇳🇴 [no](../../no/docs/ARCHITECTURE.md) · 🇵🇭 [phi](../../phi/docs/ARCHITECTURE.md) · 🇵🇱 [pl](../../pl/docs/ARCHITECTURE.md) · 🇵🇹 [pt](../../pt/docs/ARCHITECTURE.md) · 🇧🇷 [pt-BR](../../pt-BR/docs/ARCHITECTURE.md) · 🇷🇴 [ro](../../ro/docs/ARCHITECTURE.md) · 🇷🇺 [ru](../../ru/docs/ARCHITECTURE.md) · 🇸🇰 [sk](../../sk/docs/ARCHITECTURE.md) · 🇸🇪 [sv](../../sv/docs/ARCHITECTURE.md) · 🇰🇪 [sw](../../sw/docs/ARCHITECTURE.md) · 🇮🇳 [ta](../../ta/docs/ARCHITECTURE.md) · 🇮🇳 [te](../../te/docs/ARCHITECTURE.md) · 🇹🇭 [th](../../th/docs/ARCHITECTURE.md) · 🇹🇷 [tr](../../tr/docs/ARCHITECTURE.md) · 🇺🇦 [uk-UA](../../uk-UA/docs/ARCHITECTURE.md) · 🇵🇰 [ur](../../ur/docs/ARCHITECTURE.md) · 🇻🇳 [vi](../../vi/docs/ARCHITECTURE.md) · 🇨🇳 [zh-CN](../../zh-CN/docs/ARCHITECTURE.md)
+🌐 **Languages:** 🇺🇸 [English](../../../../architecture/ARCHITECTURE.md) · 🇪🇹 [am](../../../am/docs/architecture/ARCHITECTURE.md) · 🇸🇦 [ar](../../../ar/docs/architecture/ARCHITECTURE.md) · 🇦🇿 [az](../../../az/docs/architecture/ARCHITECTURE.md) · 🇧🇬 [bg](../../../bg/docs/architecture/ARCHITECTURE.md) · 🇧🇩 [bn](../../../bn/docs/architecture/ARCHITECTURE.md) · 🇧🇦 [bs](../../../bs/docs/architecture/ARCHITECTURE.md) · 🇨🇿 [cs](../../../cs/docs/architecture/ARCHITECTURE.md) · 🇩🇰 [da](../../../da/docs/architecture/ARCHITECTURE.md) · 🇩🇪 [de](../../../de/docs/architecture/ARCHITECTURE.md) · 🇬🇷 [el](../../../el/docs/architecture/ARCHITECTURE.md) · 🇪🇸 [es](../../../es/docs/architecture/ARCHITECTURE.md) · 🇪🇪 [et](../../../et/docs/architecture/ARCHITECTURE.md) · 🇮🇷 [fa](../../../fa/docs/architecture/ARCHITECTURE.md) · 🇫🇮 [fi](../../../fi/docs/architecture/ARCHITECTURE.md) · 🇫🇷 [fr](../../../fr/docs/architecture/ARCHITECTURE.md) · 🇮🇪 [ga](../../../ga/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [gu](../../../gu/docs/architecture/ARCHITECTURE.md) · 🇳🇬 [ha](../../../ha/docs/architecture/ARCHITECTURE.md) · 🇮🇱 [he](../../../he/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [hi](../../../hi/docs/architecture/ARCHITECTURE.md) · 🇭🇷 [hr](../../../hr/docs/architecture/ARCHITECTURE.md) · 🇭🇺 [hu](../../../hu/docs/architecture/ARCHITECTURE.md) · 🇦🇲 [hy](../../../hy/docs/architecture/ARCHITECTURE.md) · 🇮🇩 [id](../../../id/docs/architecture/ARCHITECTURE.md) · 🇳🇬 [ig](../../../ig/docs/architecture/ARCHITECTURE.md) · 🇮🇹 [it](../../../it/docs/architecture/ARCHITECTURE.md) · 🇯🇵 [ja](../../../ja/docs/architecture/ARCHITECTURE.md) · 🇬🇪 [ka](../../../ka/docs/architecture/ARCHITECTURE.md) · 🇰🇭 [km](../../../km/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [kn](../../../kn/docs/architecture/ARCHITECTURE.md) · 🇰🇷 [ko](../../../ko/docs/architecture/ARCHITECTURE.md) · 🇱🇹 [lt](../../../lt/docs/architecture/ARCHITECTURE.md) · 🇱🇻 [lv](../../../lv/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [ml](../../../ml/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [mr](../../../mr/docs/architecture/ARCHITECTURE.md) · 🇲🇾 [ms](../../../ms/docs/architecture/ARCHITECTURE.md) · 🇲🇹 [mt](../../../mt/docs/architecture/ARCHITECTURE.md) · 🇲🇲 [my](../../../my/docs/architecture/ARCHITECTURE.md) · 🇳🇵 [ne](../../../ne/docs/architecture/ARCHITECTURE.md) · 🇳🇱 [nl](../../../nl/docs/architecture/ARCHITECTURE.md) · 🇳🇴 [no](../../../no/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [or](../../../or/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [pa](../../../pa/docs/architecture/ARCHITECTURE.md) · 🇵🇭 [phi](../../../phi/docs/architecture/ARCHITECTURE.md) · 🇵🇱 [pl](../../../pl/docs/architecture/ARCHITECTURE.md) · 🇵🇹 [pt](../../../pt/docs/architecture/ARCHITECTURE.md) · 🇧🇷 [pt-BR](../../../pt-BR/docs/architecture/ARCHITECTURE.md) · 🇷🇴 [ro](../../../ro/docs/architecture/ARCHITECTURE.md) · 🇷🇺 [ru](../../../ru/docs/architecture/ARCHITECTURE.md) · 🇱🇰 [si](../../../si/docs/architecture/ARCHITECTURE.md) · 🇸🇰 [sk](../../../sk/docs/architecture/ARCHITECTURE.md) · 🇸🇮 [sl](../../../sl/docs/architecture/ARCHITECTURE.md) · 🇷🇸 [sr](../../../sr/docs/architecture/ARCHITECTURE.md) · 🇸🇪 [sv](../../../sv/docs/architecture/ARCHITECTURE.md) · 🇰🇪 [sw](../../../sw/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [ta](../../../ta/docs/architecture/ARCHITECTURE.md) · 🇮🇳 [te](../../../te/docs/architecture/ARCHITECTURE.md) · 🇹🇭 [th](../../../th/docs/architecture/ARCHITECTURE.md) · 🇹🇷 [tr](../../../tr/docs/architecture/ARCHITECTURE.md) · 🇺🇦 [uk-UA](../../../uk-UA/docs/architecture/ARCHITECTURE.md) · 🇵🇰 [ur](../../../ur/docs/architecture/ARCHITECTURE.md) · 🇺🇿 [uz](../../../uz/docs/architecture/ARCHITECTURE.md) · 🇻🇳 [vi](../../../vi/docs/architecture/ARCHITECTURE.md) · 🇳🇬 [yo](../../../yo/docs/architecture/ARCHITECTURE.md) · 🇹🇼 [zh-TW](../../../zh-TW/docs/architecture/ARCHITECTURE.md)
 
 ---
 
 _最后更新：2026-06-28_
 
-## 概述
+## 执行摘要
 
-OmniRoute 是基于 Next.js 构建的本地 AI 路由网关和控制台。
-它提供一个统一的 OpenAI 兼容端点（`/v1/*`），将流量路由至多个上游服务商，并支持格式转换、容灾、Token 刷新和用量追踪。
+OmniRoute 是一个基于 Next.js 构建的本地 AI 路由网关和仪表板。
+它提供单一的 OpenAI 兼容端点（`/v1/*`），并通过格式转换、故障转移、令牌刷新和用量跟踪，将流量路由至多个上游提供者。
 
 核心能力：
 
-- OpenAI 兼容的 API 接口，供 CLI/工具使用（237 个服务商、68 个执行器）
-- 跨服务商格式的请求/响应转换
-- 模型 Combo 容灾（多模型序列）
-- 结构化 Combo 步骤（`服务商 + 模型 + 连接`），通过 `compositeTiers` 在运行时排序
-- 帐户级容灾（每服务商多帐户）
-- 配额预检，以及主聊通路中基于配额感知的 P2C 帐户选择
-- OAuth + API Key 服务商连接管理（17 个 OAuth 服务商模块）
-- 通过 `/v1/embeddings` 生成向量嵌入（6 个服务商、9 个模型）
-- 通过 `/v1/images/generations` 生成图片（10+ 个服务商、20+ 个模型）
-- 通过 `/v1/audio/transcriptions` 进行音频转录（7 个服务商）
-- 通过 `/v1/audio/speech` 进行文本转语音（10 个服务商）
+- 面向 CLI/工具的 OpenAI 兼容 API 接口（372 个提供者、148 个执行器）
+- 跨提供者格式的请求/响应转换
+- 模型组合故障转移（多模型序列）
+- 结构化组合步骤（`provider + model + connection`），运行时按 `compositeTiers` 排序
+- 账户级故障转移（每个提供者支持多个账户）
+- 主聊天路径中的配额预检和配额感知型 P2C 账户选择
+- OAuth + API 密钥提供者连接管理（27 个 OAuth 提供者模块）
+- 通过 `/v1/embeddings` 生成嵌入（18 个提供者）
+- 通过 `/v1/images/generations` 生成图像（10+ 个提供者、20+ 个模型）
+- 通过 `/v1/audio/transcriptions` 进行音频转录（18 个提供者）
+- 通过 `/v1/audio/speech` 进行文本转语音（24 个内置提供者）
 - 通过 `/v1/videos/generations` 生成视频（ComfyUI + SD WebUI）
 - 通过 `/v1/music/generations` 生成音乐（ComfyUI）
-- 通过 `/v1/search` 进行网页搜索（5 个服务商）
+- 通过 `/v1/search` 进行 Web 搜索（20 个提供者）
 - 通过 `/v1/moderations` 进行内容审核
 - 通过 `/v1/rerank` 进行重排序
-- 推理模型的 `<think>...</think>` 标签解析
-- 响应净化，确保与 OpenAI SDK 严格兼容
-- 角色归一化（developer→system, system→user），跨服务商兼容
+- 为推理模型解析思考标签（``）
+- 响应净化，以严格兼容 OpenAI SDK
+- 跨提供者兼容的角色规范化（developer→system、system→user）
 - 结构化输出转换（json_schema → Gemini responseSchema）
-- 服务商、API Key、别名、Combo、设置、定价的本地持久化（26 个 DB 模块）
-- 用量/成本追踪和请求日志
-- 可选的云端同步，支持多设备/状态同步
-- IP 白名单/黑名单，控制 API 访问
-- Thinking Budget 管理（passthrough/auto/custom/adaptive）
-- 全局系统提示注入
-- 会话追踪和指纹识别
-- 增强的每帐户速率限制，含服务商专属配置
-- 熔断器模式，保障服务商容灾
-- 互斥锁防惊群效应保护
+- 提供者、密钥、别名、组合、设置和定价的本地持久化（122 个数据库模块）
+- 用量/成本跟踪和请求日志记录
+- 可选的云同步，用于多设备/状态同步
+- 用于 API 访问控制的 IP 允许列表/阻止列表
+- 思考预算管理（透传/自动/自定义/自适应）
+- 全局系统提示词注入
+- 会话跟踪和指纹识别
+- 每账户增强型速率限制，并支持提供者特定的配置文件
+- 用于提升提供者韧性的断路器模式
+- 使用互斥锁防止惊群效应
 - 基于签名的请求去重缓存
-- 域层：成本规则、容灾策略、锁定策略
-- Context Relay：会话交接摘要，确保帐户轮换连续性
-- 域状态持久化（基于 SQLite 的写穿式缓存，存储容灾、预算、锁定、熔断器状态）
-- 策略引擎，集中评估请求（锁定 → 预算 → 容灾）
-- 请求遥测，含 p50/p95/p99 延迟聚合
-- Combo 目标遥测，以及通过 `combo_execution_key` / `combo_step_id` 记录 Combo 目标历史健康状态
-- 关联 ID（X-Request-Id），支持端到端追踪
-- 合规审计日志，支持按 API Key 选择退出
-- 评估框架，用于 LLM 质量保证
-- 健康看板，实时显示服务商熔断器状态
-- MCP 服务端（87 个工具），支持 3 种传输方式（stdio/SSE/Streamable HTTP）
-- A2A 服务端（JSON-RPC 2.0 + SSE），含技能和任务生命周期
+- 领域层：成本规则、故障转移策略、锁定策略
+- 上下文中继：会话交接摘要，用于在账户轮换时保持连续性
+- 领域状态持久化（针对故障转移、预算、锁定和断路器的 SQLite 直写式缓存）
+- 用于集中式请求评估的策略引擎（锁定 → 预算 → 故障转移）
+- 请求遥测，支持 p50/p95/p99 延迟聚合
+- 通过 `combo_execution_key` / `combo_step_id` 实现组合目标遥测和历史组合目标健康状况跟踪
+- 用于端到端追踪的关联 ID（X-Request-Id）
+- 合规审计日志记录，支持按 API 密钥选择退出
+- 用于 LLM 质量保证的评估框架
+- 健康状态仪表板，实时显示提供者断路器状态
+- MCP 服务器（110 个工具），支持 3 种传输方式（stdio/SSE/Streamable HTTP）
+- A2A 服务器（JSON-RPC 2.0 + SSE），支持技能和任务生命周期
 - 记忆系统（提取、注入、检索、摘要）
 - 技能系统（注册表、执行器、沙箱、内置技能）
-- MITM 代理，含证书管理和 DNS 处理
-- 提示注入防护中间件
-- 提示压缩管线，含 Caveman、RTK、级联管线、压缩 Combo、语言包和分析
+- 支持证书管理和 DNS 处理的 MITM 代理
+- 提示词注入防护中间件
+- 提示词压缩管线，支持 Caveman、RTK、堆叠管线、压缩组合、语言包和分析
 - ACP（Agent Communication Protocol）注册表
-- 模块化 OAuth 服务商（`src/lib/oauth/providers/` 下 16 个独立模块）
+- 模块化 OAuth 提供者（`src/lib/oauth/providers/` 下的 22 个独立模块）
 - 卸载/完全卸载脚本
 - OAuth 环境修复操作
-- OpenAI 兼容 WebSocket 客户端的 WebSocket 桥接（`/v1/ws`）
-- 同步 Token 管理（签发/撤销，基于 ETag 版本控制的配置包下载）
-- GLM Thinking（`glmt`）一等服务商预设
-- 混合 Token 计数（服务商侧 `/messages/count_tokens` + 估算容灾）
-- 模型别名自动播种（启动时 30+ 跨代理方言归一化）
-- 安全出站 fetch，含 SSRF 防护、私有 URL 拦截和可配置重试
-- 冷却感知的聊重试机制，支持可配置的 `requestRetry` 和 `maxRetryIntervalSec`
-- 启动时通过 Zod 进行运行时环境校验
-- 合规审计 v2，含分页、服务商 CRUD 事件和 SSRF 拦截校验日志
+- 面向 OpenAI 兼容 WS 客户端的 WebSocket 桥接（`/v1/ws`）
+- 同步令牌管理（签发/撤销、下载基于 ETag 版本控制的配置包）
+- GLM Thinking（`glmt`）一等提供者预设
+- 混合令牌计数（提供者侧 `/messages/count_tokens`，并在失败时回退到估算）
+- 模型别名自动播种（启动时进行 30+ 种跨代理方言规范化）
+- 带有 SSRF 防护、私有 URL 阻止和可配置重试的安全出站请求
+- 感知冷却时间的聊天重试，支持可配置的 `requestRetry` 和 `maxRetryIntervalSec`
+- 启动时使用 Zod 进行运行时环境验证
+- 合规审计 v2，支持分页、提供者 CRUD 事件和 SSRF 阻止验证日志记录
 
 主要运行时模型：
 
-- `src/app/api/*` 下的 Next.js 应用路由同时实现控制台 API 和兼容 API
-- `src/sse/*` + `open-sse/*` 中的共享 SSE/路由核心处理服务商执行、格式转换、流式传输、容灾和用量追踪
+- `src/app/api/*` 下的 Next.js 应用路由同时实现仪表板 API 和兼容性 API
+- `src/sse/*` + `open-sse/*` 中的共享 SSE/路由核心负责提供者执行、格式转换、流式传输、故障转移和用量统计
 
 ## 参考架构图
 
@@ -160,30 +165,30 @@ v3.8.0 平台的权威版本控制 Mermaid 源文件位于
 
 ```mermaid
 flowchart LR
-    subgraph Clients[Developer Clients]
+    subgraph Clients[开发者客户端]
         C1[Claude Code]
         C2[Codex CLI]
         C3[OpenClaw / Droid / Cline / Continue / Roo]
-        C4[Custom OpenAI-compatible clients]
-        BROWSER[Browser Dashboard]
+        C4[自定义 OpenAI 兼容客户端]
+        BROWSER[浏览器仪表板]
     end
 
-    subgraph Router[OmniRoute Local Process]
-        API[V1 Compatibility API\n/v1/*]
-        DASH[Dashboard + Management API\n/api/*]
-        CORE[SSE + Translation Core\nopen-sse + src/sse]
+    subgraph Router[OmniRoute 本地进程]
+        API[V1 兼容 API\n/v1/*]
+        DASH[仪表板 + 管理 API\n/api/*]
+        CORE[SSE + 转换核心\nopen-sse + src/sse]
         DB[(storage.sqlite)]
-        UDB[(usage tables + log artifacts)]
+        UDB[(用量表 + 日志制品)]
     end
 
-    subgraph Upstreams[Upstream Providers]
-        P1[OAuth Providers\nClaude/Codex/Gemini/Qwen/Qoder/GitHub/Kiro/Cursor/Antigravity]
-        P2[API Key Providers\nOpenAI/Anthropic/OpenRouter/GLM/Kimi/MiniMax\nDeepSeek/Groq/xAI/Mistral/Perplexity\nTogether/Fireworks/Cerebras/Cohere/NVIDIA]
-        P3[Compatible Nodes\nOpenAI-compatible / Anthropic-compatible]
+    subgraph Upstreams[上游提供者]
+        P1[OAuth 提供者\nClaude/Codex/Gemini/Qoder/GitHub/Kiro/Cursor/Antigravity]
+        P2[API 密钥提供者\nOpenAI/Anthropic/OpenRouter/GLM/Kimi/MiniMax\nDeepSeek/Groq/xAI/Mistral/Perplexity\nTogether/Fireworks/Cerebras/Cohere/NVIDIA]
+        P3[兼容节点\nOpenAI 兼容 / Anthropic 兼容]
     end
 
-    subgraph Cloud[Optional Cloud Sync]
-        CLOUD[Cloud Sync Endpoint\nNEXT_PUBLIC_CLOUD_URL]
+    subgraph Cloud[可选的云同步]
+        CLOUD[云同步端点\nNEXT_PUBLIC_CLOUD_URL]
     end
 
     C1 --> API
@@ -262,72 +267,73 @@ flowchart LR
 - 配置包：`src/app/api/sync/bundle` (GET, ETag 版本控制的设置/服务商/Combo/Key 快照)
 - WebSocket：`src/app/api/v1/ws/route.ts` — OpenAI 兼容 WS 客户端的 Upgrade 处理
 
-## 2) SSE + 格式转换核心
+## 2) SSE + 翻译核心
 
-主流模块：
+主要流程模块：
 
 - 入口：`src/sse/handlers/chat.ts`
 - 核心编排：`open-sse/handlers/chatCore.ts`
-- 服务商执行适配器：`open-sse/executors/*`
-- 格式检测/服务商配置：`open-sse/services/provider.ts`
-- 模型解析/解析：`src/sse/services/model.ts`, `open-sse/services/model.ts`
-- 帐户容灾逻辑：`open-sse/services/accountFallback.ts`
+- 提供者执行适配器：`open-sse/executors/*`
+- 格式检测/提供者配置：`open-sse/services/provider.ts`
+- 模型解析/解析映射：`src/sse/services/model.ts`、`open-sse/services/model.ts`
+- 账户回退逻辑：`open-sse/services/accountFallback.ts`
 - 翻译器注册表：`open-sse/translator/index.ts`
-- 流转换：`open-sse/utils/stream.ts`, `open-sse/utils/streamHandler.ts`
-- 用量提取/归一化：`open-sse/utils/usageTracking.ts`
+- 流转换：`open-sse/utils/stream.ts`、`open-sse/utils/streamHandler.ts`
+- 用量提取/标准化：`open-sse/utils/usageTracking.ts`
 - Think 标签解析器：`open-sse/utils/thinkTagParser.ts`
-- 向量嵌入处理器：`open-sse/handlers/embeddings.ts`
-- 向量嵌入服务商注册表：`open-sse/config/embeddingRegistry.ts`
-- 图片生成处理器：`open-sse/handlers/imageGeneration.ts`
-- 图片服务商注册表：`open-sse/config/imageRegistry.ts`
-- 响应净化：`open-sse/handlers/responseSanitizer.ts`
-- 角色归一化：`open-sse/services/roleNormalizer.ts`
+- 嵌入处理程序：`open-sse/handlers/embeddings.ts`
+- 嵌入提供者注册表：`open-sse/config/embeddingRegistry.ts`
+- 图像生成处理程序：`open-sse/handlers/imageGeneration.ts`
+- 图像提供者注册表：`open-sse/config/imageRegistry.ts`
+- 响应清理：`open-sse/handlers/responseSanitizer.ts`
+- 角色标准化：`open-sse/services/roleNormalizer.ts`
 
 服务（业务逻辑）：
 
-- 帐户选择/评分：`open-sse/services/accountSelector.ts`
+- 账户选择/评分：`open-sse/services/accountSelector.ts`
 - 上下文生命周期管理：`open-sse/services/contextManager.ts`
-- IP 过滤执行：`open-sse/services/ipFilter.ts`
-- 会话追踪：`open-sse/services/sessionManager.ts`
+- IP 过滤器强制执行：`open-sse/services/ipFilter.ts`
+- 会话跟踪：`open-sse/services/sessionManager.ts`
 - 请求去重：`open-sse/services/signatureCache.ts`
-- 系统提示注入：`open-sse/services/systemPrompt.ts`
-- Thinking Budget 管理：`open-sse/services/thinkingBudget.ts`
+- 系统提示词注入：`open-sse/services/systemPrompt.ts`
+- 思考预算管理：`open-sse/services/thinkingBudget.ts`
 - 通配符模型路由：`open-sse/services/wildcardRouter.ts`
 - 速率限制管理：`open-sse/services/rateLimitManager.ts`
 - 熔断器：`src/shared/utils/circuitBreaker.ts`
-- 上下文交接：`open-sse/services/contextHandoff.ts` — 为 context-relay 策略生成和注入交接摘要
-- 压缩：`open-sse/services/compression/*` — 在服务商翻译之前执行的主动压缩；
-  含 Caveman 规则、RTK 过滤器、级联管线、压缩 Combo、统计和校验
-- Codex 配额获取器：`open-sse/services/codexQuotaFetcher.ts` — 获取 Codex 配额，用于 context-relay 交接决策
-- 冷却感知重试：`src/sse/services/cooldownAwareRetry.ts` — 每模型冷却重试，支持可配置的 `requestRetry` / `maxRetryIntervalSec`
-- 安全出站 fetch：`src/shared/network/safeOutboundFetch.ts` — 带 SSRF 防护、私有 URL 拦截、重试和超时的服务商/模型 fetch
-- 出站 URL 守卫：`src/shared/network/outboundUrlGuard.ts` — 校验服务商 URL 是否指向私有/localhost CIDR 范围
-- 服务商请求默认值：`open-sse/services/providerRequestDefaults.ts` — 服务商级 `maxTokens`、`temperature`、`thinkingBudgetTokens` 默认值
-- GLM 服务商常量：`open-sse/config/glmProvider.ts` — 共享 GLM 模型、配额 URL、GLMT 超时/默认值
+- 上下文移交：`open-sse/services/contextHandoff.ts` — 为上下文中继策略生成并注入移交摘要
+- 压缩：`open-sse/services/compression/*` — 在提供者转换之前主动压缩；
+  包括 Caveman 规则、RTK 过滤器、堆叠管道、压缩组合、统计和验证
+- Codex 配额获取器：`open-sse/services/codexQuotaFetcher.ts` — 获取 Codex 配额，用于上下文中继的移交决策
+- 冷却感知重试：`src/sse/services/cooldownAwareRetry.ts` — 按模型执行冷却重试，可通过 `requestRetry` / `maxRetryIntervalSec` 配置
+- 安全出站请求：`src/shared/network/safeOutboundFetch.ts` — 受保护的提供者/模型请求，具备 SSRF 防护、私有 URL 阻止、重试和超时功能
+- 出站 URL 防护：`src/shared/network/outboundUrlGuard.ts` — 检查提供者 URL 的主机；`src/shared/network/outboundUrlGuardPolicy.ts` 根据 `OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS`、`OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS` 及其仪表板开关选择模式（参见 `docs/reference/ENVIRONMENT.md`）
+- 提供者请求默认值：`open-sse/services/providerRequestDefaults.ts` — 提供者级别的 `maxTokens`、`temperature`、`thinkingBudgetTokens` 默认值
+- GLM 提供者常量：`open-sse/config/glmProvider.ts` — 共享的 GLM 模型、配额 URL、GLMT 超时和默认值
 - Antigravity 上游：`open-sse/config/antigravityUpstream.ts` — 基础 URL 和发现路径常量
-- Codex 客户端常量：`open-sse/config/codexClient.ts` — 带版本号的 user-agent 和 client-version 值
-- 模型别名播种：`src/lib/modelAliasSeed.ts` — 启动时播种 30+ 跨代理方言别名
+- Codex 客户端常量：`open-sse/config/codexClient.ts` — 带版本的用户代理和客户端版本值
+- 模型别名种子：`src/lib/modelAliasSeed.ts` — 启动时植入 30 多个跨代理方言别名
 
-域层模块：
+领域层模块：
 
 - 成本规则/预算：`src/domain/costRules.ts`
-- 容灾策略：`src/domain/fallbackPolicy.ts`
-- Combo 解析器：`src/domain/comboResolver.ts`
+- 回退策略：`src/domain/fallbackPolicy.ts`
+- 组合解析器：`src/domain/comboResolver.ts`
 - 锁定策略：`src/domain/lockoutPolicy.ts`
-- 策略引擎：`src/domain/policyEngine.ts` — 集中式 锁定 → 预算 → 容灾 评估
-- 错误码目录：`src/shared/constants/errorCodes.ts`
+- 策略引擎：`src/domain/policyEngine.ts` — 集中执行锁定 → 预算 → 回退评估
+- 错误代码目录：`src/shared/constants/errorCodes.ts`
 - 请求 ID：`src/shared/utils/requestId.ts`
-- Fetch 超时：`src/shared/utils/fetchTimeout.ts`
+- 请求超时：`src/shared/utils/fetchTimeout.ts`
 - 请求遥测：`src/shared/utils/requestTelemetry.ts`
 - 合规/审计：`src/lib/compliance/index.ts`
 - 评估运行器：`src/lib/evals/evalRunner.ts`
-- 域状态持久化：`src/lib/db/domainState.ts` — SQLite CRUD，管理容灾链、预算、成本历史、锁定状态、熔断器
+- 领域状态持久化：`src/lib/db/domainState.ts` — 针对回退链、预算、成本历史、锁定状态和熔断器的 SQLite CRUD
 
-OAuth 服务商模块（`src/lib/oauth/providers/` 下 16 个独立文件）：
+OAuth 提供者模块（`src/lib/oauth/providers/` 下的 27 个独立文件）：
 
 - 注册表索引：`src/lib/oauth/providers/index.ts`
-- 独立服务商：`claude.ts`, `codex.ts`, `gemini.ts`, `antigravity.ts`, `agy.ts`, `qoder.ts`, `qwen.ts`, `kimi-coding.ts`, `github.ts`, `kiro.ts`, `cursor.ts`, `kilocode.ts`, `cline.ts`, `windsurf.ts`, `gitlab-duo.ts`, `trae.ts`
-- 薄封装层：`src/lib/oauth/providers.ts` — 从独立模块重新导出
+- 各个提供者：`agy.ts`、`antigravity.ts`、`claude.ts`、`cline.ts`、`codebuddy-cn.ts`、`codebuddy-intl.ts`、`codex.ts`、`cursor.ts`、`devin-desktop.ts`、`ghe-copilot.ts`、`github.ts`、`gitlab-duo.ts`、`grok-cli-oauth.ts`、`grok-cli.ts`、`kilocode.ts`、`kimi-coding.ts`、`kiro.ts`、`muse-code.ts`、`openference.ts`、`qoder.ts`、`trae.ts`、`workbuddy.ts`、`xai-oauth.ts`、`zed-hosted.ts`、`zed.ts`
+- 共享辅助程序：`codebuddyDeviceAuth.ts`（CodeBuddy CN/intl 设备流程）、`museCodeDeviceResponse.ts`
+- 轻量封装：`src/lib/oauth/providers.ts` — 从各个模块重新导出
 
 ## 5) 嵌入式服务（v3.8.4）
 
@@ -479,7 +485,7 @@ FSM 状态转换反馈到 Auto Combo 的评分中，使后台/自动化任务偏
 
 - Antigravity 429 引擎：`open-sse/services/antigravity429Engine.ts`（轮换
   身份、清洗响应头，通过 `antigravityCredits.ts`、`antigravityHeaderScrub.ts`、
-  `antigravityHeaders.ts`、`antigravityIdentity.ts`、`antigravityObfuscation.ts`、
+  `antigravityHeaders.ts`、`antigravityIdentity.ts`、
   `antigravityVersion.ts` 驱动积分/版本追踪）
 - ModelScope 配额策略：`open-sse/services/modelscopePolicy.ts`
 - Claude Code CCH（兼容通道握手）：`open-sse/services/claudeCodeCCH.ts`，
@@ -487,9 +493,6 @@ FSM 状态转换反馈到 Auto Combo 的评分中，使后台/自动化任务偏
   `claudeCodeToolRemapper.ts`
 - Claude Code 指纹塑造：`open-sse/services/claudeCodeFingerprint.ts`
 - Claude Code 混淆：`open-sse/services/claudeCodeObfuscation.ts`
-- ChatGPT TLS 客户端：`open-sse/services/chatgptTlsClient.ts`（为 ChatGPT-Web 会话
-  提供 curl-impersonate 风格的 TLS 指纹）
-- ChatGPT 图片缓存：`open-sse/services/chatgptImageCache.ts`
 
 完整隐身策略和操作指南参见
 [`docs/security/STEALTH_GUIDE.md`](../security/STEALTH_GUIDE.md)。
@@ -556,145 +559,145 @@ FSM 状态转换反馈到 Auto Combo 的评分中，使后台/自动化任务偏
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Client as CLI/SDK Client
+    participant Client as CLI/SDK 客户端
     participant Route as /api/v1/chat/completions
     participant Chat as src/sse/handlers/chat
     participant Core as open-sse/handlers/chatCore
-    participant Model as Model Resolver
-    participant Auth as Credential Selector
-    participant Exec as Provider Executor
-    participant Prov as Upstream Provider
-    participant Stream as Stream Translator
+    participant Model as 模型解析器
+    participant Auth as 凭据选择器
+    participant Exec as 提供者执行器
+    participant Prov as 上游提供者
+    participant Stream as 流转换器
     participant Usage as usageDb
 
     Client->>Route: POST /v1/chat/completions
     Route->>Chat: handleChat(request)
-    Chat->>Model: parse/resolve model or combo
+    Chat->>Model: 解析/解析确定模型或组合
 
-    alt Combo model
-        Chat->>Chat: iterate combo models (handleComboChat)
+    alt 组合模型
+        Chat->>Chat: 遍历组合模型 (handleComboChat)
     end
 
     Chat->>Auth: getProviderCredentials(provider)
-    Auth-->>Chat: active account + tokens/api key
+    Auth-->>Chat: 活跃账户 + 令牌/API 密钥
 
     Chat->>Core: handleChatCore(body, modelInfo, credentials)
-    Core->>Core: detect source format
-    Core->>Core: translate request to target format
+    Core->>Core: 检测源格式
+    Core->>Core: 将请求转换为目标格式
     Core->>Exec: execute(provider, transformedBody)
-    Exec->>Prov: upstream API call
-    Prov-->>Exec: SSE/JSON response
-    Exec-->>Core: response + metadata
+    Exec->>Prov: 调用上游 API
+    Prov-->>Exec: SSE/JSON 响应
+    Exec-->>Core: 响应 + 元数据
 
     alt 401/403
         Core->>Exec: refreshCredentials()
-        Exec-->>Core: updated tokens
-        Core->>Exec: retry request
+        Exec-->>Core: 更新后的令牌
+        Core->>Exec: 重试请求
     end
 
-    Core->>Stream: translate/normalize stream to client format
-    Stream-->>Client: SSE chunks / JSON response
+    Core->>Stream: 将流转换/规范化为客户端格式
+    Stream-->>Client: SSE 数据块 / JSON 响应
 
-    Stream->>Usage: extract usage + persist history/log
+    Stream->>Usage: 提取用量 + 持久化历史记录/日志
 ```
 
-## Combo + 帐户容灾流程
+## 组合 + 账户回退流程
 
 ```mermaid
 flowchart TD
-    A[Incoming model string] --> B{Is combo name?}
-    B -- Yes --> C[Load combo models sequence]
-    B -- No --> D[Single model path]
+    A[传入的模型字符串] --> B{是组合名称吗？}
+    B -- 是 --> C[加载组合模型序列]
+    B -- 否 --> D[单一模型路径]
 
-    C --> E[Try model N]
-    E --> F[Resolve provider/model]
+    C --> E[尝试模型 N]
+    E --> F[解析提供者/模型]
     D --> F
 
-    F --> G[Select account credentials]
-    G --> H{Credentials available?}
-    H -- No --> I[Return provider unavailable]
-    H -- Yes --> J[Execute request]
+    F --> G[选择账户凭据]
+    G --> H{凭据可用吗？}
+    H -- 否 --> I[返回提供者不可用]
+    H -- 是 --> J[执行请求]
 
-    J --> K{Success?}
-    K -- Yes --> L[Return response]
-    K -- No --> M{Fallback-eligible error?}
+    J --> K{成功吗？}
+    K -- 是 --> L[返回响应]
+    K -- 否 --> M{错误符合回退条件吗？}
 
-    M -- No --> N[Return error]
-    M -- Yes --> O[Mark account unavailable cooldown]
-    O --> P{Another account for provider?}
-    P -- Yes --> G
-    P -- No --> Q{In combo with next model?}
-    Q -- Yes --> E
-    Q -- No --> R[Return all unavailable]
+    M -- 否 --> N[返回错误]
+    M -- 是 --> O[将账户标记为在冷却期内不可用]
+    O --> P{该提供者还有其他账户吗？}
+    P -- 是 --> G
+    P -- 否 --> Q{当前位于组合中且还有下一个模型吗？}
+    Q -- 是 --> E
+    Q -- 否 --> R[返回全部不可用]
 ```
 
-容灾决策由 `open-sse/services/accountFallback.ts` 根据状态码和错误消息启发式算法驱动。Combo 路由增加了一层额外保护：服务商级 400 错误（如上游内容拦截和角色校验失败）会被视为模型局部故障，后续 Combo 目标仍可继续执行。
+回退决策由 `open-sse/services/accountFallback.ts` 根据状态码和错误消息启发式规则驱动。组合路由增加了一项额外保护：限定于提供者的 400 错误（例如上游内容拦截和角色验证失败）会被视为模型局部故障，因此后续组合目标仍可继续运行。
 
-## OAuth 接入和 Token 刷新生命周期
+## OAuth 接入与令牌刷新生命周期
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant UI as Dashboard UI
+    participant UI as 仪表板 UI
     participant OAuth as /api/oauth/[provider]/[action]
-    participant ProvAuth as Provider Auth Server
+    participant ProvAuth as 提供者授权服务器
     participant DB as localDb
     participant Test as /api/providers/[id]/test
-    participant Exec as Provider Executor
+    participant Exec as 提供者执行器
 
-    UI->>OAuth: GET authorize or device-code
-    OAuth->>ProvAuth: create auth/device flow
-    ProvAuth-->>OAuth: auth URL or device code payload
-    OAuth-->>UI: flow data
+    UI->>OAuth: GET authorize 或 device-code
+    OAuth->>ProvAuth: 创建授权/设备流程
+    ProvAuth-->>OAuth: 授权 URL 或设备代码载荷
+    OAuth-->>UI: 流程数据
 
-    UI->>OAuth: POST exchange or poll
-    OAuth->>ProvAuth: token exchange/poll
-    ProvAuth-->>OAuth: access/refresh tokens
-    OAuth->>DB: createProviderConnection(oauth data)
-    OAuth-->>UI: success + connection id
+    UI->>OAuth: POST exchange 或 poll
+    OAuth->>ProvAuth: 令牌交换/轮询
+    ProvAuth-->>OAuth: 访问/刷新令牌
+    OAuth->>DB: createProviderConnection(OAuth 数据)
+    OAuth-->>UI: 成功 + 连接 ID
 
     UI->>Test: POST /api/providers/[id]/test
-    Test->>Exec: validate credentials / optional refresh
-    Exec-->>Test: valid or refreshed token info
-    Test->>DB: update status/tokens/errors
-    Test-->>UI: validation result
+    Test->>Exec: 验证凭据/可选刷新
+    Exec-->>Test: 有效或已刷新的令牌信息
+    Test->>DB: 更新状态/令牌/错误
+    Test-->>UI: 验证结果
 ```
 
-实时流量中的 Token 刷新在 `open-sse/handlers/chatCore.ts` 内通过执行器的 `refreshCredentials()` 完成。
+实时流量期间的刷新在 `open-sse/handlers/chatCore.ts` 内通过执行器的 `refreshCredentials()` 执行。
 
-## 云端同步生命周期（启用 / 同步 / 禁用）
+## 云同步生命周期（启用 / 同步 / 禁用）
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant UI as Endpoint Page UI
+    participant UI as 端点页面 UI
     participant Sync as /api/sync/cloud
     participant DB as localDb
-    participant Cloud as External Cloud Sync
+    participant Cloud as 外部云同步
     participant Claude as ~/.claude/settings.json
 
     UI->>Sync: POST action=enable
-    Sync->>DB: set cloudEnabled=true
-    Sync->>DB: ensure API key exists
-    Sync->>Cloud: POST /sync/{machineId} (providers/aliases/combos/keys)
-    Cloud-->>Sync: sync result
+    Sync->>DB: 设置 cloudEnabled=true
+    Sync->>DB: 确保 API 密钥存在
+    Sync->>Cloud: POST /sync/{machineId}（提供者/别名/组合/密钥）
+    Cloud-->>Sync: 同步结果
     Sync->>Cloud: GET /{machineId}/v1/verify
-    Sync-->>UI: enabled + verification status
+    Sync-->>UI: 已启用 + 验证状态
 
     UI->>Sync: POST action=sync
     Sync->>Cloud: POST /sync/{machineId}
-    Cloud-->>Sync: remote data
-    Sync->>DB: update newer local tokens/status
-    Sync-->>UI: synced
+    Cloud-->>Sync: 远程数据
+    Sync->>DB: 更新本地较新的令牌/状态
+    Sync-->>UI: 已同步
 
     UI->>Sync: POST action=disable
-    Sync->>DB: set cloudEnabled=false
+    Sync->>DB: 设置 cloudEnabled=false
     Sync->>Cloud: DELETE /sync/{machineId}
-    Sync->>Claude: switch ANTHROPIC_BASE_URL back to local (if needed)
-    Sync-->>UI: disabled
+    Sync->>Claude: 将 ANTHROPIC_BASE_URL 切换回本地地址（如有需要）
+    Sync-->>UI: 已禁用
 ```
 
-当云端同步启用时，由 `CloudSyncScheduler` 触发周期同步。
+启用云同步后，`CloudSyncScheduler` 会触发定期同步。
 
 ## 数据模型与存储映射
 
@@ -808,21 +811,21 @@ erDiagram
 
 ```mermaid
 flowchart LR
-    subgraph LocalHost[Developer Host]
-        CLI[CLI Tools]
-        Browser[Dashboard Browser]
+    subgraph LocalHost[开发者主机]
+        CLI[CLI 工具]
+        Browser[仪表板浏览器]
     end
 
-    subgraph ContainerOrProcess[OmniRoute Runtime]
-        Next[Next.js Server\nPORT=20128]
-        Core[SSE Core + Executors]
+    subgraph ContainerOrProcess[OmniRoute 运行时]
+        Next[Next.js 服务器\nPORT=20128]
+        Core[SSE 核心 + 执行器]
         MainDB[(storage.sqlite)]
-        UsageDB[(usage tables + log artifacts)]
+        UsageDB[(用量表 + 日志工件)]
     end
 
-    subgraph External[External Services]
-        Providers[AI Providers]
-        SyncCloud[Cloud Sync Service]
+    subgraph External[外部服务]
+        Providers[AI 提供者]
+        SyncCloud[云同步服务]
     end
 
     CLI --> Next
@@ -896,106 +899,104 @@ flowchart LR
 
 每个服务商都有一个继承 `BaseExecutor`（在 `open-sse/executors/base.ts` 中）的专用执行器，该基类提供了 URL 构建、Header 构造、带指数退避的重试、凭据刷新钩子以及 `execute()` 编排方法。
 
-| 执行器                     | 服务商                                                                                                                                                       | 特殊处理                                          |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `DefaultExecutor`        | OpenAI, Claude, Gemini, Qwen, OpenRouter, GLM, Kimi, MiniMax, DeepSeek, Groq, xAI, Mistral, Perplexity, Together, Fireworks, Cerebras, Cohere, NVIDIA 等    | 每服务商动态 URL/Header 配置                       |
-| `AntigravityExecutor`    | Google Antigravity                                                                                                                                          | 自定义项目/会话 ID、Retry-After 解析、429 混淆     |
-| `AzureOpenAIExecutor`    | Azure OpenAI                                                                                                                                                | 基于部署的路由、api-version 查询参数强制执行       |
-| `BlackboxWebExecutor`    | Blackbox AI (web-mode)                                                                                                                                      | Web 会话反向 + TLS 指纹模拟                        |
-| `ChatGPTWebExecutor`     | ChatGPT web                                                                                                                                                 | TLS 客户端 + 会话 Cookie 管理（`chatgptTlsClient.ts`）|
-| `ClaudeIdentityExecutor` | Claude.ai (CCH 通道)                                                                                                                                        | 约束 + Tool 重映射管线、指纹塑造                   |
-| `CliProxyApiExecutor`    | CLIProxyAPI 兼容服务商                                                                                                                                      | 自定义认证和协议处理                               |
-| `CloudflareAiExecutor`   | Cloudflare Workers AI                                                                                                                                       | 帐户 ID 注入、基于 Neurons 的用量追踪              |
-| `CodexExecutor`          | OpenAI Codex                                                                                                                                                | 注入系统指令、强制推理力度                          |
-| `CommandCodeExecutor`    | Command Code                                                                                                                                                | OAuth + 每会话 Header 轮换                         |
-| `CursorExecutor`         | Cursor IDE                                                                                                                                                  | ConnectRPC 协议、Protobuf 编码、基于校验和的请求签名|
-| `DevinCliExecutor`       | Devin CLI                                                                                                                                                   | Devin 任务生命周期桥接（通过云代理模块）            |
-| `GithubExecutor`         | GitHub Copilot                                                                                                                                              | Copilot Token 刷新、VSCode 模仿 Header             |
-| `GitlabExecutor`         | GitLab Duo                                                                                                                                                  | GitLab OAuth + 项目级路由                          |
-| `GlmExecutor`            | Z.AI GLM（含 `glmt` 预设）                                                                                                                                  | Thinking Budget 感知、GLMT 预设常量                |
-| `GrokWebExecutor`        | xAI Grok web                                                                                                                                                | Web 会话反向、模式选择（think/standard）            |
-| `KieExecutor`            | KIE                                                                                                                                                         | 自定义 Token 签发 + 轮换会话锚点                   |
-| `KiroExecutor`           | AWS CodeWhisperer/Kiro                                                                                                                                      | AWS EventStream 二进制格式 → SSE 转换              |
-| `MuseSparkWebExecutor`   | Muse Spark (web)                                                                                                                                            | Web 会话反向 + 图片消息桥接                        |
-| `NlpCloudExecutor`       | NLP Cloud                                                                                                                                                   | 服务商专属请求体形状                               |
-| `OpenCodeExecutor`       | OpenCode                                                                                                                                                    | AI SDK 兼容服务商初始化                            |
-| `PerplexityWebExecutor`  | Perplexity web                                                                                                                                              | Web 会话反向，用于聊延续                            |
-| `PetalsExecutor`         | Petals distributed inference                                                                                                                                | 去中心化集群路由                                   |
-| `PollinationsExecutor`   | Pollinations AI                                                                                                                                             | 无需 API Key、带速率限制的请求                     |
-| `PuterExecutor`          | Puter                                                                                                                                                       | 基于浏览器的服务商集成                             |
-| `QoderExecutor`          | Qoder AI                                                                                                                                                    | PAT 和 OAuth 支持、多模型免费层                    |
-| `VertexExecutor`         | Google Vertex AI                                                                                                                                            | 服务帐户认证、基于区域的端点                       |
-| `WindsurfExecutor`       | Windsurf (Codeium)                                                                                                                                          | Codeium OAuth + 会话 Token 刷新                    |
+| 执行器                    | 服务商                                                                                                                                                   | 特殊处理                                             |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `DefaultExecutor`         | OpenAI, Claude, Gemini, Qwen, OpenRouter, GLM, Kimi, MiniMax, DeepSeek, Groq, xAI, Mistral, Perplexity, Together, Fireworks, Cerebras, Cohere, NVIDIA 等 | 每服务商动态 URL/Header 配置                         |
+| `AntigravityExecutor`     | Google Antigravity                                                                                                                                       | 自定义项目/会话 ID、Retry-After 解析、429 混淆       |
+| `AzureOpenAIExecutor`     | Azure OpenAI                                                                                                                                             | 基于部署的路由、api-version 查询参数强制执行         |
+| `BlackboxWebExecutor`     | Blackbox AI (web-mode)                                                                                                                                   | Web 会话反向 + TLS 指纹模拟                          |
+| `ClaudeIdentityExecutor`  | Claude.ai (CCH 通道)                                                                                                                                     | 约束 + Tool 重映射管线、指纹塑造                     |
+| `CliProxyApiExecutor`     | CLIProxyAPI 兼容服务商                                                                                                                                   | 自定义认证和协议处理                                 |
+| `CloudflareAiExecutor`    | Cloudflare Workers AI                                                                                                                                    | 帐户 ID 注入、基于 Neurons 的用量追踪                |
+| `CodexExecutor`           | OpenAI Codex                                                                                                                                             | 注入系统指令、强制推理力度                           |
+| `ChatGptWebCodexExecutor` | ChatGPT Web (Codex)                                                                                                                                      | 浏览器会话 Responses API 桥接与线程/轮次固定         |
+| `CommandCodeExecutor`     | Command Code                                                                                                                                             | OAuth + 每会话 Header 轮换                           |
+| `CursorExecutor`          | Cursor IDE                                                                                                                                               | ConnectRPC 协议、Protobuf 编码、基于校验和的请求签名 |
+| `DevinCliExecutor`        | Devin CLI                                                                                                                                                | Devin 任务生命周期桥接（通过云代理模块）             |
+| `GithubExecutor`          | GitHub Copilot                                                                                                                                           | Copilot Token 刷新、VSCode 模仿 Header               |
+| `GitlabExecutor`          | GitLab Duo                                                                                                                                               | GitLab OAuth + 项目级路由                            |
+| `GlmExecutor`             | Z.AI GLM（含 `glmt` 预设）                                                                                                                               | Thinking Budget 感知、GLMT 预设常量                  |
+| `GrokWebExecutor`         | xAI Grok web                                                                                                                                             | Web 会话反向、模式选择（think/standard）             |
+| `KieExecutor`             | KIE                                                                                                                                                      | 自定义 Token 签发 + 轮换会话锚点                     |
+| `KiroExecutor`            | AWS CodeWhisperer/Kiro                                                                                                                                   | AWS EventStream 二进制格式 → SSE 转换                |
+| `MuseSparkWebExecutor`    | Muse Spark (web)                                                                                                                                         | Web 会话反向 + 图片消息桥接                          |
+| `NlpCloudExecutor`        | NLP Cloud                                                                                                                                                | 服务商专属请求体形状                                 |
+| `OpenCodeExecutor`        | OpenCode                                                                                                                                                 | AI SDK 兼容服务商初始化                              |
+| `PerplexityWebExecutor`   | Perplexity web                                                                                                                                           | Web 会话反向，用于聊延续                             |
+| `PetalsExecutor`          | Petals distributed inference                                                                                                                             | 去中心化集群路由                                     |
+| `PollinationsExecutor`    | Pollinations AI                                                                                                                                          | 无需 API Key、带速率限制的请求                       |
+| `QoderExecutor`           | Qoder AI                                                                                                                                                 | PAT 和 OAuth 支持、多模型免费层                      |
+| `VertexExecutor`          | Google Vertex AI                                                                                                                                         | 服务帐户认证、基于区域的端点                         |
+| `DevinDesktopExecutor`    | Devin Desktop                                                                                                                                            | 导入的 API 密钥 + Connect-protobuf 聊天流            |
 
 其余所有服务商（含自定义兼容节点）使用 `DefaultExecutor`。
 
 ## 服务商兼容性矩阵
 
-> **注意：** 下表是 OmniRoute v3.8.0 中 237 个已注册服务商的代表性样本。
+> **注意：** 下表是 OmniRoute v3.8.0 中 351 个已注册服务商的代表性样本。
 > 完整且持续更新的列表请参阅
 > [`docs/reference/PROVIDER_REFERENCE.md`](../reference/PROVIDER_REFERENCE.md)（自动生成）或数据源头
 > `src/shared/constants/providers.ts`（加载时通过 Zod 校验）。
 
-| 服务商             | 格式              | 认证                   | 流式           | 非流式     | Token 刷新  | 用量 API          |
-| ----------------- | ---------------- | --------------------- | -------------- | ---------- | ----------- | ----------------- |
-| Claude            | claude           | API Key / OAuth       | ✅             | ✅         | ✅          | ⚠️ 仅管理员        |
-| Gemini            | gemini           | API Key / OAuth       | ✅             | ✅         | ✅          | ⚠️ Cloud Console   |
-| Antigravity       | antigravity      | OAuth                 | ✅             | ✅         | ✅          | ✅ 完整配额 API    |
-| OpenAI            | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Codex             | openai-responses | OAuth                 | ✅ 强制         | ❌         | ✅          | ✅ 速率限制        |
-| GitHub Copilot    | openai           | OAuth + Copilot Token | ✅             | ✅         | ✅          | ✅ 配额快照        |
-| Cursor            | cursor           | 自定义校验和           | ✅             | ✅         | ❌          | ❌                 |
-| Kiro              | kiro             | AWS SSO OIDC          | ✅ (EventStream)| ❌         | ✅          | ✅ 用量限制        |
-| Qwen              | openai           | OAuth                 | ✅             | ✅         | ✅          | ⚠️ 每请求          |
-| Qoder             | openai           | OAuth / PAT           | ✅             | ✅         | ✅          | ⚠️ 每请求          |
-| Kilo Code         | openai           | OAuth                 | ✅             | ✅         | ✅          | ❌                 |
-| Cline             | openai           | OAuth                 | ✅             | ✅         | ✅          | ❌                 |
-| Kimi Coding       | openai           | OAuth                 | ✅             | ✅         | ✅          | ❌                 |
-| OpenRouter        | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| GLM/Kimi/MiniMax  | claude           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| DeepSeek          | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Groq              | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| xAI (Grok)        | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Mistral           | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Perplexity        | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Together AI       | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Fireworks AI      | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Cerebras          | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Cohere            | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| NVIDIA NIM        | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Cloudflare AI     | openai           | API Token + 帐户 ID    | ✅             | ✅         | ❌          | ❌                 |
-| Pollinations      | openai           | 无需密钥                | ✅             | ✅         | ❌          | ❌                 |
-| Scaleway AI       | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| LongCat           | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Ollama Cloud      | openai           | API Key（可选）         | ✅             | ✅         | ❌          | ❌                 |
-| HuggingFace       | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Nebius            | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| SiliconFlow       | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Hyperbolic        | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Vertex AI         | gemini           | 服务帐户               | ✅             | ✅         | ✅          | ⚠️ Cloud Console   |
-| Puter             | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Command Code      | openai           | OAuth                 | ✅             | ✅         | ✅          | ⚠️ 每请求          |
-| Z.AI / GLM        | openai           | API Key / OAuth       | ✅             | ✅         | ❌          | ❌                 |
-| GLMT (preset)     | claude           | API Key               | ✅             | ✅         | ❌          | ⚠️ 每请求          |
-| Kimi Coding       | openai           | OAuth / API Key       | ✅             | ✅         | ✅          | ❌                 |
-| KIE               | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Windsurf          | openai           | OAuth (Codeium)       | ✅             | ✅         | ✅          | ⚠️ 每请求          |
-| GitLab Duo        | openai           | OAuth (GitLab)        | ✅             | ✅         | ✅          | ❌                 |
-| Devin CLI         | openai           | OAuth                 | ✅             | ✅         | ✅          | ✅ 任务 API        |
-| Codex Cloud       | openai-responses | OAuth                 | ✅             | ❌         | ✅          | ✅ 速率限制        |
-| Jules             | openai           | OAuth                 | ✅             | ✅         | ✅          | ✅ 任务 API        |
-| AgentRouter       | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| ChatGPT-Web       | openai           | 会话 Cookie + TLS      | ✅             | ✅         | ❌          | ❌                 |
-| Grok-Web          | openai           | 会话 Cookie            | ✅             | ✅         | ❌          | ❌                 |
-| Perplexity-Web    | openai           | 会话 Cookie            | ✅             | ✅         | ❌          | ❌                 |
-| BlackBox-Web      | openai           | 会话 Cookie + TLS      | ✅             | ✅         | ❌          | ❌                 |
-| Muse-Spark-Web    | openai           | 会话 Cookie            | ✅             | ✅         | ❌          | ❌                 |
-| ModelScope        | openai           | API Key               | ✅             | ✅         | ❌          | ⚠️ 配额策略        |
-| BazaarLink        | openai           | API Key               | ✅             | ✅         | ❌          | ❌                 |
-| Petals            | openai           | 无需密钥                | ✅             | ✅         | ❌          | ❌                 |
-| Qoder             | openai           | OAuth / PAT           | ✅             | ✅         | ✅          | ⚠️ 每请求          |
-| OpenCode (Go/Zen) | openai           | OAuth                 | ✅             | ✅         | ✅          | ❌                 |
-| CLIProxyAPI       | openai           | 自定义                  | ✅             | ✅         | ❌          | ❌                 |
+| 服务商              | 格式             | 认证                  | 流式             | 非流式 | Token 刷新 | 用量 API         |
+| ------------------- | ---------------- | --------------------- | ---------------- | ------ | ---------- | ---------------- |
+| Claude              | claude           | API Key / OAuth       | ✅               | ✅     | ✅         | ⚠️ 仅管理员      |
+| Gemini              | gemini           | API Key / OAuth       | ✅               | ✅     | ✅         | ⚠️ Cloud Console |
+| Antigravity         | antigravity      | OAuth                 | ✅               | ✅     | ✅         | ✅ 完整配额 API  |
+| OpenAI              | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Codex               | openai-responses | OAuth                 | ✅ 强制          | ❌     | ✅         | ✅ 速率限制      |
+| ChatGPT Web (Codex) | openai-responses | 浏览器会话            | ✅ 强制          | ❌     | ❌         | ❌               |
+| GitHub Copilot      | openai           | OAuth + Copilot Token | ✅               | ✅     | ✅         | ✅ 配额快照      |
+| Cursor              | cursor           | 自定义校验和          | ✅               | ✅     | ❌         | ❌               |
+| Kiro                | kiro             | AWS SSO OIDC          | ✅ (EventStream) | ❌     | ✅         | ✅ 用量限制      |
+| Qwen                | openai           | OAuth                 | ✅               | ✅     | ✅         | ⚠️ 每请求        |
+| Qoder               | openai           | OAuth / PAT           | ✅               | ✅     | ✅         | ⚠️ 每请求        |
+| Kilo Code           | openai           | OAuth                 | ✅               | ✅     | ✅         | ❌               |
+| Cline               | openai           | OAuth                 | ✅               | ✅     | ✅         | ❌               |
+| Kimi Coding         | openai           | OAuth                 | ✅               | ✅     | ✅         | ❌               |
+| OpenRouter          | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| GLM/Kimi/MiniMax    | claude           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| DeepSeek            | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Groq                | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| xAI (Grok)          | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Mistral             | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Perplexity          | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Together AI         | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Fireworks AI        | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Cerebras            | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Cohere              | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| NVIDIA NIM          | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Cloudflare AI       | openai           | API Token + 帐户 ID   | ✅               | ✅     | ❌         | ❌               |
+| Pollinations        | openai           | 无需密钥              | ✅               | ✅     | ❌         | ❌               |
+| Scaleway AI         | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| LongCat             | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Ollama Cloud        | openai           | API Key（可选）       | ✅               | ✅     | ❌         | ❌               |
+| HuggingFace         | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Nebius              | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| SiliconFlow         | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Hyperbolic          | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Vertex AI           | gemini           | 服务帐户              | ✅               | ✅     | ✅         | ⚠️ Cloud Console |
+| Command Code        | openai           | OAuth                 | ✅               | ✅     | ✅         | ⚠️ 每请求        |
+| Z.AI / GLM          | openai           | API Key / OAuth       | ✅               | ✅     | ❌         | ❌               |
+| GLMT (preset)       | claude           | API Key               | ✅               | ✅     | ❌         | ⚠️ 每请求        |
+| Kimi Coding         | openai           | OAuth / API Key       | ✅               | ✅     | ✅         | ❌               |
+| KIE                 | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Devin Desktop       | openai           | 导入的 API 密钥       | ✅ (Connect→SSE) | ✅     | ❌         | ⚠️ 每请求        |
+| GitLab Duo          | openai           | OAuth (GitLab)        | ✅               | ✅     | ✅         | ❌               |
+| Devin CLI           | openai           | 本地 CLI 登录         | ✅               | ✅     | ❌         | ✅ 任务 API      |
+| Codex Cloud         | openai-responses | OAuth                 | ✅               | ❌     | ✅         | ✅ 速率限制      |
+| Jules               | openai           | OAuth                 | ✅               | ✅     | ✅         | ✅ 任务 API      |
+| AgentRouter         | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Grok-Web            | openai           | 会话 Cookie           | ✅               | ✅     | ❌         | ❌               |
+| Perplexity-Web      | openai           | 会话 Cookie           | ✅               | ✅     | ❌         | ❌               |
+| BlackBox-Web        | openai           | 会话 Cookie + TLS     | ✅               | ✅     | ❌         | ❌               |
+| Muse-Spark-Web      | openai           | 会话 Cookie           | ✅               | ✅     | ❌         | ❌               |
+| ModelScope          | openai           | API Key               | ✅               | ✅     | ❌         | ⚠️ 配额策略      |
+| BazaarLink          | openai           | API Key               | ✅               | ✅     | ❌         | ❌               |
+| Petals              | openai           | 无需密钥              | ✅               | ✅     | ❌         | ❌               |
+| Qoder               | openai           | OAuth / PAT           | ✅               | ✅     | ✅         | ⚠️ 每请求        |
+| OpenCode (Go/Zen)   | openai           | OAuth                 | ✅               | ✅     | ✅         | ❌               |
+| CLIProxyAPI         | openai           | 自定义                | ✅               | ✅     | ❌         | ❌               |
 
 ## 格式转换覆盖
 
@@ -1031,25 +1032,25 @@ flowchart LR
 
 ## 支持的 API 端点
 
-| 端点                                                | 格式               | 处理器                                                             |
-| --------------------------------------------------- | ------------------ | ----------------------------------------------------------------- |
-| `POST /v1/chat/completions`                        | OpenAI Chat        | `src/sse/handlers/chat.ts`                                        |
-| `POST /v1/messages`                                | Claude Messages    | 同一处理器（自动检测）                                              |
-| `POST /v1/responses`                               | OpenAI Responses   | `open-sse/handlers/responsesHandler.ts`                           |
-| `POST /v1/embeddings`                              | OpenAI Embeddings  | `open-sse/handlers/embeddings.ts`                                 |
-| `GET /v1/embeddings`                               | 模型列表            | API 路由                                                          |
-| `POST /v1/images/generations`                      | OpenAI Images      | `open-sse/handlers/imageGeneration.ts`                            |
-| `GET /v1/images/generations`                       | 模型列表            | API 路由                                                          |
-| `POST /v1/providers/{provider}/chat/completions`   | OpenAI Chat        | 带模型校验的专用每服务商路由                                        |
-| `POST /v1/providers/{provider}/embeddings`         | OpenAI Embeddings  | 带模型校验的专用每服务商路由                                        |
-| `POST /v1/providers/{provider}/images/generations` | OpenAI Images      | 带模型校验的专用每服务商路由                                        |
-| `POST /v1/messages/count_tokens`                   | Claude Token Count | API 路由                                                          |
-| `GET /v1/models`                                   | OpenAI Models 列表  | API 路由（聊 + 向量嵌入 + 图片 + 自定义模型）                       |
-| `GET /api/models/catalog`                          | 目录               | 按服务商 + 类型分组的所有模型                                       |
-| `POST /v1beta/models/*:streamGenerateContent`      | Gemini native      | API 路由                                                          |
-| `GET/PUT/DELETE /api/settings/proxy`               | 代理配置            | 网络代理配置                                                       |
-| `POST /api/settings/proxy/test`                    | 代理连通性          | 代理健康/连通性测试端点                                            |
-| `GET/POST/DELETE /api/provider-models`             | 服务商模型          | 服务商模型元数据，支撑自定义和管理可用模型                          |
+| 端点                                               | 格式               | 处理器                                        |
+| -------------------------------------------------- | ------------------ | --------------------------------------------- |
+| `POST /v1/chat/completions`                        | OpenAI Chat        | `src/sse/handlers/chat.ts`                    |
+| `POST /v1/messages`                                | Claude Messages    | 同一处理器（自动检测）                        |
+| `POST /v1/responses`                               | OpenAI Responses   | `open-sse/handlers/responsesHandler.ts`       |
+| `POST /v1/embeddings`                              | OpenAI Embeddings  | `open-sse/handlers/embeddings.ts`             |
+| `GET /v1/embeddings`                               | 模型列表           | API 路由                                      |
+| `POST /v1/images/generations`                      | OpenAI Images      | `open-sse/handlers/imageGeneration.ts`        |
+| `GET /v1/images/generations`                       | 模型列表           | API 路由                                      |
+| `POST /v1/providers/{provider}/chat/completions`   | OpenAI Chat        | 带模型校验的专用每服务商路由                  |
+| `POST /v1/providers/{provider}/embeddings`         | OpenAI Embeddings  | 带模型校验的专用每服务商路由                  |
+| `POST /v1/providers/{provider}/images/generations` | OpenAI Images      | 带模型校验的专用每服务商路由                  |
+| `POST /v1/messages/count_tokens`                   | Claude Token Count | API 路由                                      |
+| `GET /v1/models`                                   | OpenAI Models 列表 | API 路由（聊 + 向量嵌入 + 图片 + 自定义模型） |
+| `GET /api/models/catalog`                          | 目录               | 按服务商 + 类型分组的所有模型                 |
+| `POST /v1beta/models/*:streamGenerateContent`      | Gemini native      | API 路由                                      |
+| `GET/PUT/DELETE /api/settings/proxy`               | 代理配置           | 网络代理配置                                  |
+| `POST /api/settings/proxy/test`                    | 代理连通性         | 代理健康/连通性测试端点                       |
+| `GET/POST/DELETE /api/provider-models`             | 服务商模型         | 服务商模型元数据，支撑自定义和管理可用模型    |
 
 ## 旁路处理器
 

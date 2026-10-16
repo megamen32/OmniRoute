@@ -1,269 +1,338 @@
 # OmniRoute — Dashboard Features Gallery (Polski)
 
-🌐 **Languages:** 🇺🇸 [English](../../../../docs/FEATURES.md) · 🇸🇦 [ar](../../ar/docs/FEATURES.md) · 🇧🇬 [bg](../../bg/docs/FEATURES.md) · 🇧🇩 [bn](../../bn/docs/FEATURES.md) · 🇨🇿 [cs](../../cs/docs/FEATURES.md) · 🇩🇰 [da](../../da/docs/FEATURES.md) · 🇩🇪 [de](../../de/docs/FEATURES.md) · 🇪🇸 [es](../../es/docs/FEATURES.md) · 🇮🇷 [fa](../../fa/docs/FEATURES.md) · 🇫🇮 [fi](../../fi/docs/FEATURES.md) · 🇫🇷 [fr](../../fr/docs/FEATURES.md) · 🇮🇳 [gu](../../gu/docs/FEATURES.md) · 🇮🇱 [he](../../he/docs/FEATURES.md) · 🇮🇳 [hi](../../hi/docs/FEATURES.md) · 🇭🇺 [hu](../../hu/docs/FEATURES.md) · 🇮🇩 [id](../../id/docs/FEATURES.md) · 🇮🇹 [it](../../it/docs/FEATURES.md) · 🇯🇵 [ja](../../ja/docs/FEATURES.md) · 🇰🇷 [ko](../../ko/docs/FEATURES.md) · 🇮🇳 [mr](../../mr/docs/FEATURES.md) · 🇲🇾 [ms](../../ms/docs/FEATURES.md) · 🇳🇱 [nl](../../nl/docs/FEATURES.md) · 🇳🇴 [no](../../no/docs/FEATURES.md) · 🇵🇭 [phi](../../phi/docs/FEATURES.md) · 🇵🇱 [pl](../../pl/docs/FEATURES.md) · 🇵🇹 [pt](../../pt/docs/FEATURES.md) · 🇧🇷 [pt-BR](../../pt-BR/docs/FEATURES.md) · 🇷🇴 [ro](../../ro/docs/FEATURES.md) · 🇷🇺 [ru](../../ru/docs/FEATURES.md) · 🇸🇰 [sk](../../sk/docs/FEATURES.md) · 🇸🇪 [sv](../../sv/docs/FEATURES.md) · 🇰🇪 [sw](../../sw/docs/FEATURES.md) · 🇮🇳 [ta](../../ta/docs/FEATURES.md) · 🇮🇳 [te](../../te/docs/FEATURES.md) · 🇹🇭 [th](../../th/docs/FEATURES.md) · 🇹🇷 [tr](../../tr/docs/FEATURES.md) · 🇺🇦 [uk-UA](../../uk-UA/docs/FEATURES.md) · 🇵🇰 [ur](../../ur/docs/FEATURES.md) · 🇻🇳 [vi](../../vi/docs/FEATURES.md) · 🇨🇳 [zh-CN](../../zh-CN/docs/FEATURES.md)
+🌐 **Languages:** 🇺🇸 [English](../../../../guides/FEATURES.md) · 🇪🇹 [am](../../../am/docs/guides/FEATURES.md) · 🇸🇦 [ar](../../../ar/docs/guides/FEATURES.md) · 🇦🇿 [az](../../../az/docs/guides/FEATURES.md) · 🇧🇬 [bg](../../../bg/docs/guides/FEATURES.md) · 🇧🇩 [bn](../../../bn/docs/guides/FEATURES.md) · 🇧🇦 [bs](../../../bs/docs/guides/FEATURES.md) · 🇨🇿 [cs](../../../cs/docs/guides/FEATURES.md) · 🇩🇰 [da](../../../da/docs/guides/FEATURES.md) · 🇩🇪 [de](../../../de/docs/guides/FEATURES.md) · 🇬🇷 [el](../../../el/docs/guides/FEATURES.md) · 🇪🇸 [es](../../../es/docs/guides/FEATURES.md) · 🇪🇪 [et](../../../et/docs/guides/FEATURES.md) · 🇮🇷 [fa](../../../fa/docs/guides/FEATURES.md) · 🇫🇮 [fi](../../../fi/docs/guides/FEATURES.md) · 🇫🇷 [fr](../../../fr/docs/guides/FEATURES.md) · 🇮🇪 [ga](../../../ga/docs/guides/FEATURES.md) · 🇮🇳 [gu](../../../gu/docs/guides/FEATURES.md) · 🇳🇬 [ha](../../../ha/docs/guides/FEATURES.md) · 🇮🇱 [he](../../../he/docs/guides/FEATURES.md) · 🇮🇳 [hi](../../../hi/docs/guides/FEATURES.md) · 🇭🇷 [hr](../../../hr/docs/guides/FEATURES.md) · 🇭🇺 [hu](../../../hu/docs/guides/FEATURES.md) · 🇦🇲 [hy](../../../hy/docs/guides/FEATURES.md) · 🇮🇩 [id](../../../id/docs/guides/FEATURES.md) · 🇳🇬 [ig](../../../ig/docs/guides/FEATURES.md) · 🇮🇹 [it](../../../it/docs/guides/FEATURES.md) · 🇯🇵 [ja](../../../ja/docs/guides/FEATURES.md) · 🇬🇪 [ka](../../../ka/docs/guides/FEATURES.md) · 🇰🇭 [km](../../../km/docs/guides/FEATURES.md) · 🇮🇳 [kn](../../../kn/docs/guides/FEATURES.md) · 🇰🇷 [ko](../../../ko/docs/guides/FEATURES.md) · 🇱🇹 [lt](../../../lt/docs/guides/FEATURES.md) · 🇱🇻 [lv](../../../lv/docs/guides/FEATURES.md) · 🇮🇳 [ml](../../../ml/docs/guides/FEATURES.md) · 🇮🇳 [mr](../../../mr/docs/guides/FEATURES.md) · 🇲🇾 [ms](../../../ms/docs/guides/FEATURES.md) · 🇲🇹 [mt](../../../mt/docs/guides/FEATURES.md) · 🇲🇲 [my](../../../my/docs/guides/FEATURES.md) · 🇳🇵 [ne](../../../ne/docs/guides/FEATURES.md) · 🇳🇱 [nl](../../../nl/docs/guides/FEATURES.md) · 🇳🇴 [no](../../../no/docs/guides/FEATURES.md) · 🇮🇳 [or](../../../or/docs/guides/FEATURES.md) · 🇮🇳 [pa](../../../pa/docs/guides/FEATURES.md) · 🇵🇭 [phi](../../../phi/docs/guides/FEATURES.md) · 🇵🇹 [pt](../../../pt/docs/guides/FEATURES.md) · 🇧🇷 [pt-BR](../../../pt-BR/docs/guides/FEATURES.md) · 🇷🇴 [ro](../../../ro/docs/guides/FEATURES.md) · 🇷🇺 [ru](../../../ru/docs/guides/FEATURES.md) · 🇱🇰 [si](../../../si/docs/guides/FEATURES.md) · 🇸🇰 [sk](../../../sk/docs/guides/FEATURES.md) · 🇸🇮 [sl](../../../sl/docs/guides/FEATURES.md) · 🇷🇸 [sr](../../../sr/docs/guides/FEATURES.md) · 🇸🇪 [sv](../../../sv/docs/guides/FEATURES.md) · 🇰🇪 [sw](../../../sw/docs/guides/FEATURES.md) · 🇮🇳 [ta](../../../ta/docs/guides/FEATURES.md) · 🇮🇳 [te](../../../te/docs/guides/FEATURES.md) · 🇹🇭 [th](../../../th/docs/guides/FEATURES.md) · 🇹🇷 [tr](../../../tr/docs/guides/FEATURES.md) · 🇺🇦 [uk-UA](../../../uk-UA/docs/guides/FEATURES.md) · 🇵🇰 [ur](../../../ur/docs/guides/FEATURES.md) · 🇺🇿 [uz](../../../uz/docs/guides/FEATURES.md) · 🇻🇳 [vi](../../../vi/docs/guides/FEATURES.md) · 🇳🇬 [yo](../../../yo/docs/guides/FEATURES.md) · 🇨🇳 [zh-CN](../../../zh-CN/docs/guides/FEATURES.md) · 🇹🇼 [zh-TW](../../../zh-TW/docs/guides/FEATURES.md)
 
 ---
 
-Visual guide to every section of the OmniRoute dashboard.
+🌐 **Języki:** 🇺🇸 [English](./FEATURES.md) | 🇪🇹 [አማርኛ](../i18n/am/docs/guides/FEATURES.md) | 🇸🇦 [العربية](../i18n/ar/docs/guides/FEATURES.md) | 🇦🇿 [Azərbaycan dili](../i18n/az/docs/guides/FEATURES.md) | 🇧🇬 [Български](../i18n/bg/docs/guides/FEATURES.md) | 🇧🇩 [বাংলা](../i18n/bn/docs/guides/FEATURES.md) | 🇧🇦 [Bosanski](../i18n/bs/docs/guides/FEATURES.md) | 🇨🇿 [Čeština](../i18n/cs/docs/guides/FEATURES.md) | 🇩🇰 [Dansk](../i18n/da/docs/guides/FEATURES.md) | 🇩🇪 [Deutsch](../i18n/de/docs/guides/FEATURES.md) | 🇬🇷 [Ελληνικά](../i18n/el/docs/guides/FEATURES.md) | 🇪🇸 [Español](../i18n/es/docs/guides/FEATURES.md) | 🇪🇪 [Eesti](../i18n/et/docs/guides/FEATURES.md) | 🇮🇷 [فارسی](../i18n/fa/docs/guides/FEATURES.md) | 🇫🇮 [Suomi](../i18n/fi/docs/guides/FEATURES.md) | 🇫🇷 [Français](../i18n/fr/docs/guides/FEATURES.md) | 🇮🇪 [Gaeilge](../i18n/ga/docs/guides/FEATURES.md) | 🇮🇳 [ગુજરાતી](../i18n/gu/docs/guides/FEATURES.md) | 🇳🇬 [Hausa](../i18n/ha/docs/guides/FEATURES.md) | 🇮🇱 [עברית](../i18n/he/docs/guides/FEATURES.md) | 🇮🇳 [हिन्दी](../i18n/hi/docs/guides/FEATURES.md) | 🇭🇷 [Hrvatski](../i18n/hr/docs/guides/FEATURES.md) | 🇭🇺 [Magyar](../i18n/hu/docs/guides/FEATURES.md) | 🇦🇲 [Հայերեն](../i18n/hy/docs/guides/FEATURES.md) | 🇮🇩 [Bahasa Indonesia](../i18n/id/docs/guides/FEATURES.md) | 🇳🇬 [Igbo](../i18n/ig/docs/guides/FEATURES.md) | 🇮🇹 [Italiano](../i18n/it/docs/guides/FEATURES.md) | 🇯🇵 [日本語](../i18n/ja/docs/guides/FEATURES.md) | 🇬🇪 [ქართული](../i18n/ka/docs/guides/FEATURES.md) | 🇰🇭 [ខ្មែរ](../i18n/km/docs/guides/FEATURES.md) | 🇮🇳 [ಕನ್ನಡ](../i18n/kn/docs/guides/FEATURES.md) | 🇰🇷 [한국어](../i18n/ko/docs/guides/FEATURES.md) | 🇱🇹 [Lietuvių](../i18n/lt/docs/guides/FEATURES.md) | 🇱🇻 [Latviešu](../i18n/lv/docs/guides/FEATURES.md) | 🇮🇳 [മലയാളം](../i18n/ml/docs/guides/FEATURES.md) | 🇮🇳 [मराठी](../i18n/mr/docs/guides/FEATURES.md) | 🇲🇾 [Bahasa Melayu](../i18n/ms/docs/guides/FEATURES.md) | 🇲🇹 [Malti](../i18n/mt/docs/guides/FEATURES.md) | 🇲🇲 [မြန်မာ](../i18n/my/docs/guides/FEATURES.md) | 🇳🇵 [नेपाली](../i18n/ne/docs/guides/FEATURES.md) | 🇳🇱 [Nederlands](../i18n/nl/docs/guides/FEATURES.md) | 🇳🇴 [Norsk](../i18n/no/docs/guides/FEATURES.md) | 🇮🇳 [ଓଡ଼ିଆ](../i18n/or/docs/guides/FEATURES.md) | 🇮🇳 [ਪੰਜਾਬੀ](../i18n/pa/docs/guides/FEATURES.md) | 🇵🇭 [Filipino](../i18n/phi/docs/guides/FEATURES.md) | 🇵🇱 [Polski](../i18n/pl/docs/guides/FEATURES.md) | 🇵🇹 [Português (Portugal)](../i18n/pt/docs/guides/FEATURES.md) | 🇧🇷 [Português (Brasil)](../i18n/pt-BR/docs/guides/FEATURES.md) | 🇷🇴 [Română](../i18n/ro/docs/guides/FEATURES.md) | 🇷🇺 [Русский](../i18n/ru/docs/guides/FEATURES.md) | 🇱🇰 [සිංහල](../i18n/si/docs/guides/FEATURES.md) | 🇸🇰 [Slovenčina](../i18n/sk/docs/guides/FEATURES.md) | 🇸🇮 [Slovenščina](../i18n/sl/docs/guides/FEATURES.md) | 🇷🇸 [Српски](../i18n/sr/docs/guides/FEATURES.md) | 🇸🇪 [Svenska](../i18n/sv/docs/guides/FEATURES.md) | 🇰🇪 [Kiswahili](../i18n/sw/docs/guides/FEATURES.md) | 🇮🇳 [தமிழ்](../i18n/ta/docs/guides/FEATURES.md) | 🇮🇳 [తెలుగు](../i18n/te/docs/guides/FEATURES.md) | 🇹🇭 [ไทย](../i18n/th/docs/guides/FEATURES.md) | 🇹🇷 [Türkçe](../i18n/tr/docs/guides/FEATURES.md) | 🇺🇦 [Українська](../i18n/uk-UA/docs/guides/FEATURES.md) | 🇵🇰 [اردو](../i18n/ur/docs/guides/FEATURES.md) | 🇺🇿 [Oʻzbekcha](../i18n/uz/docs/guides/FEATURES.md) | 🇻🇳 [Tiếng Việt](../i18n/vi/docs/guides/FEATURES.md) | 🇳🇬 [Yorùbá](../i18n/yo/docs/guides/FEATURES.md) | 🇨🇳 [中文 (简体)](../i18n/zh-CN/docs/guides/FEATURES.md) | 🇹🇼 [中文 (繁體)](../i18n/zh-TW/docs/guides/FEATURES.md)
+
+Wizualny przewodnik po każdej sekcji panelu OmniRoute.
+
+> 📅 **Ostatnia aktualizacja:** 2026-06-28 — **v3.8.40**
 
 ---
 
-## 🔌 Providers
+## ✨ Najważniejsze zmiany w v3.8.0
 
+Cykl v3.7.x → v3.8.0 wprowadził automatyczny routing bez konfiguracji, nowych dostawców, przepływy OAuth, większą odporność oraz znacznie bogatsze możliwości CLI. Najważniejsze funkcje przedstawiono poniżej — pełne informacje znajdują się w dalszej części dokumentu oraz w podlinkowanych specyfikacjach.
 
-![Providers Dashboard](screenshots/01-providers.png)
+- 🤖 **Auto Combo / automatyczny routing bez konfiguracji** — używaj prefiksów `auto/coding`, `auto/fast`, `auto/cheap`, `auto/offline`, `auto/smart`, `auto/lkgp`, `auto/chaos`. Mechanizm opiera się na 16-czynnikowym systemie oceny i 6 starannie dobranych **pakietach trybów** (ship-fast, cost-saver, quality-first, offline-friendly, reliability-first, chaos-mode)
+- 🆕 **Dostawca Command Code** (#2199) — pełnoprawna rejestracja z katalogiem modeli i śledzeniem limitów
+- 🆕 **Dostawca Z.AI** — nowy dostawca z bezpłatnym planem i etykietami limitów
+- 🎬 **Rozszerzenie multimedialne KIE** — rozbudowany katalog obejmujący modele generowania wideo
+- 🔐 **Uwierzytelnianie Devin** — aplikacja Desktop importuje istniejący klucz API Devin; CLI korzysta z lokalnych danych logowania `devin auth login`
+- 🆓 **8 nowych bezpłatnych dostawców** — LLM7, Lepton, UncloseAI, BazaarLink, Completions, Enally, FreeTheAi, Command Code
+- 🎯 **Routing warstw W1–W4 uwzględniający manifesty** — manifesty dostawców sterują ważonym wyborem warstwy
+- 🎨 **Pełna zgodność Cursor z OpenAI** — kompleksowa obsługa wywołań narzędzi, strumieniowania i zarządzania sesjami
+- 📊 **Wykorzystanie planu Cursor Pro** — dane o limitach i cyklach są dostępne w panelu limitów dostawców
+- ⚡ **Podział według warstw usług / analityka szybkiej warstwy Codex** — widoczność zużycia dla poszczególnych warstw
+- 📌 **Trwały routing dla sesji** — sesje Codex pozostają przypisane do tego samego konta między kolejnymi interakcjami
+- 🔊 **Ulepszenia Inworld TTS** — katalogi głosów oraz usprawnienia strumieniowania i opóźnień
+- 🔑 **Bezinterfejsowe uwierzytelnianie Kiro** — logowanie za pośrednictwem lokalnego magazynu SQLite `kiro-cli`, bez konieczności używania przeglądarki
+- 📉 **Monitorowanie limitów i ograniczeń DeepSeek** — dzienne i miesięczne wykorzystanie jest dostępne w panelu
+- 🔄 **Strategia routingu uwzględniająca resetowanie limitów** — kombinacje preferują teraz konta, których okno limitu zostanie zresetowane najwcześniej
+- ⏱️ **`fallbackDelayMs`** i **dynamiczne wykrywanie limitu narzędzi** — dokładniejsze sterowanie czasem przełączania awaryjnego oraz limity liczby narzędzi dla poszczególnych dostawców
+- 🔧 **Degradacja trybu działania w tle (Responses API)** — przełącza się na tryb synchroniczny i wyświetla ustrukturyzowane ostrzeżenie, gdy usługa nadrzędna nie obsługuje odpytywania w tle
+- 🚦 **Klasyfikacja błędów 429 dla poszczególnych dostawców** + przełącznik `useUpstream429BreakerHints` — precyzyjniejsze działanie mechanizmu odcinającego z wykorzystaniem informacji o ograniczeniach częstotliwości z usługi nadrzędnej
+- 🩺 **Panel okresów karencji modeli** — umożliwia obserwowanie blokad poszczególnych modeli i ich ręczne ponowne włączanie z poziomu interfejsu
+- 🔒 **Dynamiczne wykrywanie certyfikatów MITM w systemie Linux** — działa w Debian/Ubuntu, Fedora/RHEL, Arch i innych dystrybucjach
+- 💻 **Pakiet ulepszeń CLI** — ponad 20 poleceń, w tym `omniroute providers`, `omniroute combos`, `omniroute doctor`, `omniroute setup`
+- 🔍 **Wykrywanie modeli osadzania Qdrant** — automatyczne sondowanie modelu magazynu wektorowego
+- 🔑 **Klucze API / klucze Bearer z zakresem `manage`** — programowe wykonywanie operacji administracyjnych za pośrednictwem API
+- 🏥 **Analityka kondycji celów kombinacji** + **ustrukturyzowany kreator kombinacji** — kondycja poszczególnych celów oraz kreator interfejsu do tworzenia kroków `(provider, model, connection)`
+- 🤝 **Dostawca GitLab Duo OAuth** — logowanie przy użyciu danych uwierzytelniających GitLab
+- 🧠 **Pamięć podręczna Reasoning Replay Cache** — hybrydowe przechowywanie śladów rozumowania w pamięci i SQLite
+
+📚 **Powiązana dokumentacja:** [Framework umiejętności](../frameworks/SKILLS.md) · [System pamięci](../frameworks/MEMORY.md) · [Agenci chmurowi](../frameworks/CLOUD_AGENT.md) · [Webhooki](../frameworks/WEBHOOKS.md) · [Pamięć podręczna Reasoning Replay Cache](../routing/REASONING_REPLAY.md)
 
 ---
 
-## 🎨 Combos
+## 🔌 Dostawcy
 
-Create model routing combos with 13 strategies: priority, weighted, round-robin, random, least-used, cost-optimized, strict-random, auto, fill-first, p2c, lkgp, context-optimized, and **context-relay**. Each combo chains multiple models with automatic fallback and includes quick templates and readiness checks.
+Zarządzaj połączeniami z dostawcami AI: dostawcami OAuth (Claude Code, Codex), dostawcami korzystającymi z kluczy API (Groq, DeepSeek, OpenRouter) oraz bezpłatnymi dostawcami (Qoder, Kiro). Konta Kiro obejmują śledzenie salda kredytów — pozostałe kredyty, łączny limit oraz data odnowienia są widoczne w Panelu → Użycie.
 
-Recent combo improvements:
+Połączenia OpenRouter mogą przechowywać ustawienie `preset` dla każdego połączenia w Ustawieniach zaawansowanych. Gdy jest ono ustawione, OmniRoute wysyła je jako pole najwyższego poziomu żądania OpenRouter, na przykład `"preset": "email-copywriter"`, chyba że żądanie klienta zawiera już własne ustawienie `preset`.
 
-- **Structured combo builder** — create each step by selecting provider, model, and exact account/connection
-- **Repeated provider support** — reuse the same provider many times in one combo as long as the `(provider, model, connection)` tuple is unique
-- **Combo target health** — analytics and health surfaces now distinguish individual combo targets/steps instead of collapsing everything into model strings
-- **Composite tier ordering** — `defaultTier -> fallbackTier` now influences runtime execution/fallback order for top-level combo steps
-
-![Combos Dashboard](screenshots/02-combos.png)
+![Panel dostawców](../screenshots/01-providers.png)
 
 ---
 
-## 📊 Analytics
+## 🎨 Kombinacje
 
-Comprehensive usage analytics with token consumption, cost estimates, activity heatmaps, weekly distribution charts, and per-provider breakdowns.
+Twórz kombinacje routingu modeli za pomocą 19 publicznych strategii: priorytetowej, ważonej, round-robin, przekazywania kontekstu, wypełniania od pierwszego, p2c (wybór spośród dwóch możliwości), losowej, najrzadziej używanej, zoptymalizowanej pod kątem kosztów, uwzględniającej reset, okna resetowania, zapasu, ściśle losowej, automatycznej, lkgp (ostatni znany działający dostawca), zoptymalizowanej pod kątem kontekstu, zoptymalizowanej pod kątem pamięci podręcznej, **fusion** (równoległe wysyłanie zapytań do panelu modeli, a następnie synteza jednej odpowiedzi przez model oceniający) oraz **pipeline**. Każda kombinacja łączy wiele modeli z automatycznym mechanizmem awaryjnym oraz zawiera szybkie szablony i kontrole gotowości.
 
-![Analytics Dashboard](screenshots/03-analytics.png)
+Najnowsze ulepszenia kombinacji:
+
+- **Ustrukturyzowany kreator kombinacji** — twórz każdy krok, wybierając dostawcę, model oraz konkretne konto/połączenie
+- **Obsługa powtarzających się dostawców** — używaj tego samego dostawcy wielokrotnie w jednej kombinacji, o ile krotka `(provider, model, connection)` jest unikatowa
+- **Kondycja celów kombinacji** — analityka i widoki kondycji rozróżniają teraz poszczególne cele/kroki kombinacji, zamiast sprowadzać wszystko do ciągów znaków modeli
+- **Kolejność poziomów złożonych** — `defaultTier -> fallbackTier` wpływa teraz na kolejność wykonywania i przełączania awaryjnego w czasie działania dla kroków kombinacji najwyższego poziomu
+- **Szablony komunikatów systemowych** — parametr `system_message` kombinacji obsługuje po stronie serwera
+  symbole zastępcze `{{MODEL_ID}}`, `{{PROVIDER_ID}}`, `{{ACCOUNT}}` i `{{FINGERPRINT}}`,
+  rozwijane na podstawie faktycznie wybranego celu tuż przed wysłaniem.
+  Dozwolone są wyłącznie symbole z listy dopuszczonych, bez rekursji; nieznane symbole zastępcze pozostają bez zmian; puste wartości
+  są rozwijane do pustych ciągów; komunikaty systemowe klienta nigdy nie są modyfikowane. `{{FINGERPRINT}}`
+  jest rozwiązywany wyłącznie dla bezpłatnych dostawców opartych na odciskach palca, z przypiętym lub
+  automatycznie rotowanym odciskiem palca — w pozostałych przypadkach jest rozwijany do pustego ciągu (np.
+  dla połączeń z jednym odciskiem palca lub dostawców niekorzystających z odcisków palca). Rozwijanie obejmuje
+  standardową pętlę wysyłania, round-robin oraz przypięte sesje pamięci podręcznej kontekstu;
+  strategie fusion, chaos, pipeline i nested-execute nie rozwijają
+  jeszcze symboli zastępczych.
+
+![Panel kombinacji](../screenshots/02-combos.png)
 
 ---
 
-## 🏥 System Health
+## 📊 Analityka
 
-Real-time monitoring: uptime, memory, version, latency percentiles (p50/p95/p99), cache statistics, provider circuit breaker states, active quota-monitored sessions, and combo target health.
+Kompleksowa analityka użycia obejmująca zużycie tokenów, szacunkowe koszty, mapy cieplne aktywności, wykresy rozkładu tygodniowego oraz zestawienia według dostawców.
 
-![Health Dashboard](screenshots/04-health.png)
+![Panel analityki](../screenshots/03-analytics.png)
+
+---
+
+## 🏥 Kondycja systemu
+
+Monitorowanie w czasie rzeczywistym: czas działania, pamięć, wersja, percentyle opóźnień (p50/p95/p99), statystyki pamięci podręcznej, stany wyłączników automatycznych dostawców, aktywne sesje z monitorowaniem limitów oraz kondycja celów kombinacji.
+
+![Panel kondycji](../screenshots/04-health.png)
 
 ---
 
 ## 🔧 Translator Playground
 
-Four modes for debugging API translations: **Playground** (format converter), **Chat Tester** (live requests), **Test Bench** (batch tests), and **Live Monitor** (real-time stream).
+Cztery tryby debugowania tłumaczeń API: **Playground** (konwerter formatów), **Chat Tester** (żądania na żywo), **Test Bench** (testy wsadowe) oraz **Live Monitor** (strumień w czasie rzeczywistym).
 
-![Translator Playground](screenshots/05-translator.png)
+![Translator Playground](../screenshots/05-translator.png)
 
 ---
 
 ## 🎮 Model Playground _(v2.0.9+)_
 
-Test any model directly from the dashboard. Select provider, model, and endpoint, write prompts with Monaco Editor, stream responses in real-time, abort mid-stream, and view timing metrics.
+Testuj dowolny model bezpośrednio z poziomu panelu. Wybierz dostawcę, model i punkt końcowy, twórz prompty w edytorze Monaco Editor, odbieraj strumieniowo odpowiedzi w czasie rzeczywistym, przerywaj je w trakcie przesyłania i przeglądaj metryki czasowe.
 
 ---
 
-## 🎨 Themes _(v2.0.5+)_
+## 🎨 Motywy _(v2.0.5+)_
 
-Customizable color themes for the entire dashboard. Choose from 7 preset colors (Coral, Blue, Red, Green, Violet, Orange, Cyan) or create a custom theme by picking any hex color. Supports light, dark, and system mode.
-
----
-
-## ⚙️ Settings
-
-Comprehensive settings panel with tabs:
-
-- **General** — System storage, backup management (export/import database)
-- **Appearance** — Theme selector (dark/light/system), color theme presets and custom colors, health log visibility, sidebar item visibility controls
-- **Security** — API endpoint protection, custom provider blocking, IP filtering, session info
-- **Routing** — Model aliases, background task degradation
-- **Resilience** — Rate limit persistence, circuit breaker tuning, auto-disable banned accounts, provider expiration monitoring, **Context Relay** handoff threshold and summary model configuration
-- **Advanced** — Configuration overrides, configuration audit trail, fallback degradation mode
-
-![Settings Dashboard](screenshots/06-settings.png)
+Konfigurowalne motywy kolorystyczne dla całego panelu. Wybierz jeden z 7 gotowych kolorów (koralowy, niebieski, czerwony, zielony, fioletowy, pomarańczowy, cyjan) lub utwórz własny motyw, wybierając dowolny kolor w formacie szesnastkowym. Obsługuje tryb jasny, ciemny i systemowy.
 
 ---
 
-## 🔧 CLI Tools
+## ⚙️ Ustawienia
 
-One-click configuration for AI coding tools: Claude Code, Codex CLI, OpenClaw, Kilo Code, Antigravity, Cline, Continue, Cursor, and Factory Droid. Features automated config apply/reset, connection profiles, and model mapping.
+Rozbudowany panel ustawień z **7 kartami**:
 
-![CLI Tools Dashboard](screenshots/07-cli-tools.png)
+- **Ogólne** — Pamięć systemowa, zarządzanie kopiami zapasowymi (eksport/import bazy danych)
+- **Wygląd** — Wybór motywu (ciemny/jasny/systemowy), gotowe motywy kolorystyczne i kolory niestandardowe, widoczność dziennika stanu, elementów paska bocznego i separatorów grup oraz tuneli punktów końcowych
+- **AI** — Funkcje asystenta AI, domyślne ustawienia routingu (Auto Combo `auto/coding`, `auto/fast`, `auto/cheap`, `auto/smart`), pamięć podręczna odtwarzania rozumowania oraz przełączniki umiejętności/pamięci
+- **Bezpieczeństwo** — Ochrona punktów końcowych API, blokowanie niestandardowych dostawców, filtrowanie adresów IP, informacje o sesji
+- **Routing** — Aliasy modeli, degradacja zadań w tle, routing warstw uwzględniający manifest (W1–W4), `fallbackDelayMs`, routing przypisany do sesji
+- **Odporność** — Trwałe przechowywanie limitów żądań, dostrajanie mechanizmu circuit breaker, automatyczne wyłączanie zablokowanych kont, monitorowanie wygaśnięcia dostawców, próg przekazania **Context Relay** i konfiguracja modelu podsumowującego, klasyfikacja błędów 429 dla poszczególnych dostawców oraz przełącznik `useUpstream429BreakerHints`, okresy wyciszenia modeli
+- **Zaawansowane** — Nadpisywanie konfiguracji, dziennik audytu konfiguracji, tryb degradacji mechanizmu rezerwowego, degradacja trybu działania w tle dla Responses API
 
----
-
-## 🤖 CLI Agents _(v2.0.11+)_
-
-Dashboard for discovering and managing CLI agents. Shows a grid of 17 built-in agents (Codex, Claude, Goose, OpenClaw, Aider, OpenCode, Cline, Qwen Code, ForgeCode, Amazon Q, Open Interpreter, Cursor CLI, Warp, **Windsurf**, **Devin CLI**, **Kimi Coding**, **Command Code**) with:
-
-- **Installation status** — Installed / Not Found with version detection
-- **Protocol badges** — stdio, HTTP, etc.
-- **Custom agents** — Register any CLI tool via form (name, binary, version command, spawn args)
-- **CLI Fingerprint Matching** — Per-provider toggle to match native CLI request signatures, reducing ban risk while preserving proxy IP
+![Panel ustawień](../screenshots/06-settings.png)
 
 ---
 
-## 🔗 Context Relay _(v3.5.5+)_
+## 🔧 Narzędzia CLI
 
-A combo strategy that preserves session continuity when account rotation happens mid-conversation. Before the active account is exhausted, OmniRoute generates a structured handoff summary in the background. After the next request resolves to a different account, the summary is injected as a system message so the new account continues with full context.
+Konfiguracja narzędzi AI do programowania jednym kliknięciem: Claude Code, Codex CLI, OpenClaw, Kilo Code, Antigravity, Cline, Continue, Cursor i Factory Droid. Obejmuje automatyczne stosowanie/resetowanie konfiguracji, profile połączeń i mapowanie modeli.
 
-Configurable via combo-level or global settings:
-
-- **Handoff Threshold** — Quota usage percentage that triggers summary generation (default 85%)
-- **Max Messages For Summary** — How much recent history to condense
-- **Summary Model** — Optional override model for generating the handoff summary
-
-Currently supports Codex account rotation. See [Context Relay documentation](features/context-relay.md).
+![Panel narzędzi CLI](../screenshots/07-cli-tools.png)
 
 ---
 
-## 🛡️ Proxy Hardening _(v3.5.5+)_
+## 🤖 Agenci CLI _(v2.0.11+)_
 
-Comprehensive proxy configuration enforcement across the entire request pipeline:
+Panel do wykrywania agentów CLI i zarządzania nimi. Wyświetla siatkę 16 wbudowanych agentów (Codex, Claude, Goose, OpenClaw, Aider, OpenCode, Cline, ForgeCode, Amazon Q, Open Interpreter, Cursor CLI, Warp, **Windsurf**, **Devin CLI**, **Kimi Coding**, **Command Code**) wraz z następującymi informacjami i funkcjami:
 
-- **Token Health Check** — Background OAuth refresh now resolves proxy config per connection, preventing failures in proxy-required environments
-- **API Key Validation** — Provider key validation (`POST /api/providers/validate`) routes through `runWithProxyContext`, honoring provider-level and global proxy settings
-- **undici Dispatcher Fix** — Proxy dispatchers use undici's own fetch implementation instead of Node's built-in fetch, resolving `invalid onRequestStart method` errors on Node.js 22
-- **Node.js Version Detection** — Login page proactively detects incompatible Node.js versions (24+) and displays a warning banner with instructions to use Node 22 LTS
-
----
-
-## 📧 Email Privacy Masking _(v3.5.6+)_
-
-OAuth account emails are now masked in the provider dashboard (e.g. `di*****@g****.com`) to prevent accidental exposure when sharing screenshots or recording demos. The full email address remains accessible via hover tooltip (`title` attribute).
+- **Stan instalacji** — Zainstalowano / Nie znaleziono, z wykrywaniem wersji
+- **Odznaki protokołów** — stdio, HTTP itp.
+- **Agenci niestandardowi** — Rejestrowanie dowolnego narzędzia CLI za pomocą formularza (nazwa, plik binarny, polecenie wersji, argumenty uruchomieniowe)
+- **Dopasowywanie odcisku klienta CLI** — Przełącznik dla każdego dostawcy umożliwiający dopasowanie natywnych sygnatur żądań CLI, co zmniejsza ryzyko blokady przy zachowaniu adresu IP serwera proxy
+- **Lokalne uwierzytelnianie Devin** — Devin CLI używa `devin auth login`; przepływ OAuth w przeglądarce nie jest wymagany
 
 ---
 
-## 👁️ Model Visibility Toggle _(v3.5.6+)_
+## 🔗 Przekazywanie kontekstu _(v3.5.5+)_
 
-The provider page model list now includes:
+Strategia combo, która zachowuje ciągłość sesji, gdy w trakcie konwersacji następuje rotacja kont. Zanim aktywne konto wyczerpie swój limit, OmniRoute generuje w tle ustrukturyzowane podsumowanie przekazania. Gdy kolejne żądanie zostanie przypisane do innego konta, podsumowanie jest wstawiane jako komunikat systemowy, dzięki czemu nowe konto kontynuuje pracę z pełnym kontekstem.
 
-- **Real-time search/filter bar** — Quickly find specific models
-- **Per-model visibility toggle** (👁 icon) — Hidden models are grayed out and excluded from the `/v1/models` catalog
-- **Active-count badge** (`N/M active`) — Shows at a glance how many models are enabled vs total
+Funkcję można skonfigurować na poziomie combo lub w ustawieniach globalnych:
 
----
+- **Próg przekazania** — Procent wykorzystania limitu, który uruchamia generowanie podsumowania (domyślnie 85%)
+- **Maksymalna liczba wiadomości w podsumowaniu** — Zakres ostatniej historii do skondensowania
+- **Model podsumowania** — Opcjonalny model zastępczy do generowania podsumowania przekazania
 
-## 🔧 OAuth Env Repair _(v3.6.1+)_
-
-One-click "Repair env" action for OAuth providers that restores missing environment variables and fixes broken auth state. Accessible from `Dashboard → Providers → [OAuth Provider] → Repair env`. Automatically detects and repairs:
-
-- Missing OAuth client credentials
-- Corrupted env file entries
-- Backup path sanitization
+Obecnie obsługiwana jest rotacja kont Codex. Zobacz [dokumentację przekazywania kontekstu](../architecture/ARCHITECTURE.md).
 
 ---
 
-## 🗑️ Uninstall / Full Uninstall _(v3.6.2+)_
+## 🗜️ Kompresja promptów _(v3.7.9+)_
 
-Clean removal scripts for all installation methods:
+Sekcja Context & Cache udostępnia teraz dedykowane strony dla Caveman, RTK oraz Compression Combos:
 
-| Command                  | Action                                                                              |
-| ------------------------ | ----------------------------------------------------------------------------------- |
-| `npm run uninstall`      | Removes the system app but **keeps your DB and configurations** in `~/.omniroute`.  |
-| `npm run uninstall:full` | Removes the app AND permanently **erases all configurations, keys, and databases**. |
+- **Caveman** — pakiety reguł uwzględniające język, podgląd, ustawienia trybu wyjściowego i analityka
+- **RTK** — kompresja uwzględniająca polecenia dla powłoki, git, testów, kompilacji, pakietów, Docker, infrastruktury, JSON oraz danych wyjściowych śladów stosu
+- **Compression Combos** — nazwane potoki, takie jak `rtk -> caveman`, przypisywane do combo routingu; domyślne łączne obliczenia zapewniają średnio `~89%` oraz `78-95%` oszczędności kwalifikującego się kontekstu, gdy stosowane są oba mechanizmy
+- **Odzyskiwanie surowych danych wyjściowych** — opcjonalne, zanonimizowane odnośniki RTK do surowych danych wyjściowych, przeznaczone do debugowania błędów kompresji
 
----
-
-## 🖼️ Media _(v2.0.3+)_
-
-Generate images, videos, and music from the dashboard. Supports OpenAI, xAI, Together, Hyperbolic, SD WebUI, ComfyUI, AnimateDiff, Stable Audio Open, and MusicGen.
+Zobacz [przewodnik po kompresji](../compression/COMPRESSION_GUIDE.md), [kompresję RTK](../compression/RTK_COMPRESSION.md) oraz
+[mechanizmy kompresji](../compression/COMPRESSION_ENGINES.md).
 
 ---
 
-## 📝 Request Logs
+## 🛡️ Wzmocnienie zabezpieczeń proxy _(v3.5.5+)_
 
-Real-time request logging with filtering by provider, model, account, and API key. Shows status codes, token usage, latency, and response details.
+Kompleksowe egzekwowanie konfiguracji proxy w całym potoku obsługi żądań:
 
-![Usage Logs](screenshots/08-usage.png)
-
----
-
-## 🌐 API Endpoint
-
-Your unified API endpoint with capability breakdown: Chat Completions, Responses API, Embeddings, Image Generation, Reranking, Audio Transcription, Text-to-Speech, Moderations, and registered API keys. Cloudflare Quick Tunnel integration and cloud proxy support for remote access.
-
-![Endpoint Dashboard](screenshots/09-endpoint.png)
+- **Kontrola stanu tokenu** — Odświeżanie OAuth w tle rozpoznaje teraz konfigurację proxy dla każdego połączenia, zapobiegając błędom w środowiskach wymagających proxy
+- **Weryfikacja klucza API** — Weryfikacja klucza dostawcy (`POST /api/providers/validate`) jest kierowana przez `runWithProxyContext` z uwzględnieniem ustawień proxy na poziomie dostawcy i ustawień globalnych
+- **Poprawka modułu rozsyłającego undici** — Moduły rozsyłające proxy używają implementacji fetch należącej do undici zamiast wbudowanej implementacji Node, co eliminuje błędy `invalid onRequestStart method` w Node.js 22
+- **Wykrywanie wersji Node.js** — Strona logowania aktywnie wykrywa niezgodne wersje Node.js (24+) i wyświetla baner ostrzegawczy z instrukcjami dotyczącymi użycia Node 22 LTS
 
 ---
 
-## 🔑 API Key Management
+## 📧 Maskowanie adresów e-mail dla ochrony prywatności _(v3.5.6+)_
 
-Create, scope, and revoke API keys. Each key can be restricted to specific models/providers with full access or read-only permissions. Visual key management with usage tracking.
-
----
-
-## 📋 Audit Log
-
-Administrative action tracking with filtering by action type, actor, target, IP address, and timestamp. Full security event history.
+Adresy e-mail kont OAuth są domyślnie maskowane (np. `di*****@g****.com`), aby zapobiec ich przypadkowemu ujawnieniu podczas udostępniania zrzutów ekranu lub nagrywania prezentacji. Użyj opcji Ustawienia → Wygląd → Widoczność adresu e-mail konta, aby globalnie wyświetlać lub maskować pełne adresy e-mail kont na ekranach dostawców, combo, dzienników, limitów i placu zabaw.
 
 ---
 
-## 🖥️ Desktop Application
+## 👁️ Przełącznik widoczności modeli _(v3.5.6+)_
 
-Native Electron desktop app for Windows, macOS, and Linux. Run OmniRoute as a standalone application with system tray integration, offline support, auto-update, and one-click install.
+Lista modeli na stronie dostawcy zawiera teraz:
 
-Key features:
-
-- Server readiness polling (no blank screen on cold start)
-- System tray with port management
-- Content Security Policy
-- Single-instance lock
-- Auto-update on restart
-- Platform-conditional UI (macOS traffic lights, Windows/Linux default titlebar)
-- Hardened Electron build packaging — symlinked `node_modules` in the standalone bundle is detected and rejected before packaging, preventing runtime dependency on the build machine (v2.5.5+)
-- **Graceful shutdown** — Electron `before-quit` shuts down Next.js cleanly, preventing SQLite WAL database locks (v3.6.2+)
-
-📖 See [`electron/README.md`](../electron/README.md) for full documentation.
+- **Pasek wyszukiwania/filtrowania w czasie rzeczywistym** — Umożliwia szybkie znajdowanie konkretnych modeli
+- **Przełącznik widoczności dla każdego modelu** (ikona 👁) — Ukryte modele są wyszarzone i wykluczone z katalogu `/v1/models`
+- **Znacznik liczby aktywnych modeli** (`N/M aktywnych`) — Pozwala szybko sprawdzić, ile modeli jest włączonych w porównaniu z ich łączną liczbą
 
 ---
 
-## 🌐 V1 WebSocket Bridge _(v3.6.6+)_
+## 🔧 Naprawa zmiennych środowiskowych OAuth _(v3.6.1+)_
 
-OmniRoute now supports **OpenAI-compatible WebSocket clients** via the `/v1/ws` upgrade endpoint. The custom `scripts/v1-ws-bridge.mjs` server wraps Next.js and upgrades WS connections to full bidirectional streaming sessions. Authentication uses the same API key or session cookie as HTTP requests.
+Dostępna jednym kliknięciem akcja „Napraw zmienne środowiskowe” dla dostawców OAuth, która przywraca brakujące zmienne środowiskowe i naprawia uszkodzony stan uwierzytelniania. Dostępna w `Panel → Dostawcy → [Dostawca OAuth] → Napraw zmienne środowiskowe`. Automatycznie wykrywa i naprawia:
 
-Key behaviours:
-
-- WS upgrade validated by `src/lib/ws/handshake.ts` before the connection is established
-- Streams terminated cleanly on session close or upstream error
-- Works alongside the existing HTTP+SSE streaming path simultaneously
+- Brakujące dane uwierzytelniające klienta OAuth
+- Uszkodzone wpisy w pliku zmiennych środowiskowych
+- Oczyszczanie ścieżki kopii zapasowej
 
 ---
 
-## 🔑 Sync Tokens & Config Bundle _(v3.6.6+)_
+## 🗑️ Odinstalowanie / Pełne odinstalowanie _(v3.6.2+)_
 
-Multi-device and external operator access is now possible via **scoped sync tokens**:
+Skrypty umożliwiające czyste usunięcie aplikacji dla wszystkich metod instalacji:
 
-- **`POST /api/sync/tokens`** — Issue a new sync token (scoped, with optional expiry)
-- **`DELETE /api/sync/tokens/:id`** — Revoke a token
-- **`GET /api/sync/bundle`** — Download a versioned, ETag-keyed JSON snapshot of all non-sensitive settings (passwords redacted)
-
-The config bundle is built by `src/lib/sync/bundle.ts`. Consumers compare the `ETag` response header to detect changes without re-downloading the full payload.
-
----
-
-## 🧠 GLM Thinking Preset _(v3.6.6+)_
-
-**GLM Thinking (`glmt`)** is now a registered first-class provider: 65 536 max output tokens, 24 576 thinking budget, 900 s default timeout, Claude-compatible API format, and shared usage sync with the GLM family.
-
-**Hybrid token counting** also lands in v3.6.6: when a Claude-compatible provider exposes `/messages/count_tokens`, OmniRoute calls it before large requests with graceful estimation fallback.
+| Polecenie                | Działanie                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| `npm run uninstall`      | Usuwa aplikację systemową, ale **zachowuje bazę danych i konfiguracje** w `~/.omniroute`. |
+| `npm run uninstall:full` | Usuwa aplikację ORAZ trwale **kasuje wszystkie konfiguracje, klucze i bazy danych**.      |
 
 ---
 
-## 🛡️ Safe Outbound Fetch & SSRF Guard _(v3.6.6+)_
+## 🖼️ Multimedia _(v2.0.3+)_
 
-All provider validation and model discovery calls now go through a two-layer outbound guard:
-
-1. **URL guard** (`src/shared/network/outboundUrlGuard.ts`) — Blocks private/loopback/link-local IP ranges before the socket is opened.
-2. **Safe fetch wrapper** (`src/shared/network/safeOutboundFetch.ts`) — Applies the URL guard, normalises timeouts, and retries transient errors with exponential backoff.
-
-Guard violations surface as HTTP 422 (`URL_GUARD_BLOCKED`) and are written to the compliance audit log via `providerAudit.ts`.
+Generuj obrazy, filmy i muzykę z poziomu panelu. Obsługuje OpenAI, xAI, Together, Hyperbolic, SD WebUI, ComfyUI, AnimateDiff, Stable Audio Open oraz MusicGen.
 
 ---
 
-## 🔄 Cooldown-Aware Retries _(v3.6.6+)_
+## 📝 Dzienniki żądań
 
-Chat requests now **automatically retry** when an upstream provider returns a model-scoped cooldown. Configurable via `REQUEST_RETRY` (default: 2) and `MAX_RETRY_INTERVAL_SEC` (default: 30 s). Rate-limit header learning improved across `x-ratelimit-reset-requests`, `x-ratelimit-reset-tokens`, and `Retry-After` — per-model cooldown state is visible in the Resilience dashboard.
+Rejestrowanie żądań w czasie rzeczywistym z filtrowaniem według dostawcy, modelu, konta i klucza API. Wyświetla kody stanu, użycie tokenów, opóźnienia i szczegóły odpowiedzi.
+
+![Dzienniki użycia](../screenshots/08-usage.png)
 
 ---
 
-## 📋 Compliance Audit v2 _(v3.6.6+)_
+## 🌐 Punkt końcowy API
 
-The audit log has been expanded with cursor-based pagination, request context enrichment (request ID, user agent, IP), structured auth events, provider CRUD events with diff context, and SSRF-blocked validation logging. New events emitted by `src/lib/compliance/providerAudit.ts`.
+Ujednolicony punkt końcowy API z podziałem na obsługiwane funkcje: uzupełnianie czatu, Responses API, osadzanie, generowanie obrazów, ponowne ustalanie rankingu, transkrypcja dźwięku, zamiana tekstu na mowę, moderowanie oraz zarejestrowane klucze API. Do zdalnego dostępu dostępna jest obsługa Cloudflare Quick Tunnel, Tailscale Funnel, ngrok Tunnel i serwera proxy w chmurze.
+
+![Panel punktu końcowego](../screenshots/09-endpoint.png)
+
+---
+
+## 🔑 Zarządzanie kluczami API
+
+Twórz, ograniczaj zakres i unieważniaj klucze API. Każdy klucz można ograniczyć do określonych modeli lub dostawców, nadając mu pełny dostęp albo uprawnienia tylko do odczytu. Wizualne zarządzanie kluczami ze śledzeniem użycia.
+
+---
+
+## 📋 Dziennik audytu
+
+Śledzenie działań administracyjnych z filtrowaniem według typu działania, wykonawcy, celu, adresu IP i znacznika czasu. Pełna historia zdarzeń związanych z bezpieczeństwem.
+
+---
+
+## 🖥️ Aplikacja komputerowa
+
+Natywna aplikacja komputerowa Electron dla systemów Windows, macOS i Linux. Uruchamiaj OmniRoute jako samodzielną aplikację z integracją z zasobnikiem systemowym, obsługą trybu offline, automatycznymi aktualizacjami i instalacją jednym kliknięciem.
+
+Najważniejsze funkcje:
+
+- Sprawdzanie gotowości serwera (brak pustego ekranu podczas uruchamiania od zera)
+- Zasobnik systemowy z zarządzaniem portami
+- Polityka bezpieczeństwa treści
+- Blokada pojedynczej instancji
+- Automatyczna aktualizacja po ponownym uruchomieniu
+- Interfejs zależny od platformy (przyciski sterowania oknem w systemie macOS, domyślny pasek tytułu w systemach Windows/Linux)
+- Wzmocnione zabezpieczenia podczas pakowania kompilacji Electron — dowiązany symbolicznie katalog `node_modules` w samodzielnym pakiecie jest wykrywany i odrzucany przed pakowaniem, co zapobiega zależności środowiska uruchomieniowego od maszyny kompilującej (v2.5.5+)
+- **Łagodne zamykanie** — zdarzenie Electron `before-quit` poprawnie zamyka Next.js, zapobiegając blokadom bazy danych SQLite WAL (v3.6.2+)
+
+📖 Pełna dokumentacja znajduje się w pliku [`electron/README.md`](../../electron/README.md).
+
+---
+
+## 🌐 Most WebSocket V1 _(v3.6.6+)_
+
+OmniRoute obsługuje teraz **klientów WebSocket zgodnych z OpenAI** za pośrednictwem punktu końcowego aktualizacji `/v1/ws`. Niestandardowy serwer `scripts/dev/v1-ws-bridge.mjs` opakowuje Next.js i aktualizuje połączenia WS do pełnych, dwukierunkowych sesji strumieniowych. Uwierzytelnianie korzysta z tego samego klucza API lub pliku cookie sesji co żądania HTTP.
+
+Najważniejsze zachowania:
+
+- Aktualizacja WS jest weryfikowana przez `src/lib/ws/handshake.ts` przed ustanowieniem połączenia
+- Strumienie są prawidłowo kończone po zamknięciu sesji lub wystąpieniu błędu po stronie usługi nadrzędnej
+- Działa jednocześnie z istniejącą ścieżką strumieniową HTTP+SSE
+
+---
+
+## 🔑 Tokeny synchronizacji i pakiet konfiguracji _(v3.6.6+)_
+
+Dostęp z wielu urządzeń i dla operatorów zewnętrznych jest teraz możliwy za pośrednictwem **tokenów synchronizacji o określonym zakresie**:
+
+- **`POST /api/sync/tokens`** — Wydaje nowy token synchronizacji (o określonym zakresie, z opcjonalnym terminem wygaśnięcia)
+- **`DELETE /api/sync/tokens/:id`** — Unieważnia token
+- **`GET /api/sync/bundle`** — Pobiera wersjonowaną migawkę JSON wszystkich ustawień niewrażliwych, identyfikowaną za pomocą ETag (hasła są maskowane)
+
+Pakiet konfiguracji jest tworzony przez `src/lib/sync/bundle.ts`. Klienci porównują nagłówek odpowiedzi `ETag`, aby wykrywać zmiany bez ponownego pobierania całej zawartości.
+
+---
+
+## 🧠 Ustawienie wstępne GLM Thinking _(v3.6.6+)_
+
+**GLM Thinking (`glmt`)** jest teraz zarejestrowanym, pełnoprawnym dostawcą: maksymalnie 65 536 tokenów wyjściowych, budżet rozumowania wynoszący 24 576 tokenów, domyślny limit czasu 900 s, format API zgodny z Claude oraz współdzielona synchronizacja użycia z rodziną GLM.
+
+W wersji v3.6.6 wprowadzono również **hybrydowe zliczanie tokenów**: gdy dostawca zgodny z Claude udostępnia `/messages/count_tokens`, OmniRoute wywołuje ten punkt końcowy przed dużymi żądaniami, a w razie niepowodzenia płynnie przechodzi na szacowanie.
+
+---
+
+## 🛡️ Bezpieczne żądania wychodzące i ochrona przed SSRF _(v3.6.6+)_
+
+Wszystkie wywołania służące do walidacji dostawców i wykrywania modeli przechodzą teraz przez dwuwarstwową ochronę ruchu wychodzącego:
+
+1. **Ochrona adresów URL** (`src/shared/network/outboundUrlGuard.ts`) — Najpierw sprawdza nazwę hosta lub literał adresu IP celu w zapisanej postaci; w trybie wyłącznie publicznym opakowanie bezpiecznego pobierania rozwiązuje również nazwę i odrzuca prywatne adresy wynikowe. Domyślnie blokuje punkty końcowe metadanych chmurowych — cały zakres 169.254.0.0/16 oraz znane nazwy hostów metadanych; `OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS=false` blokuje także hosty prywatne i lokalne, natomiast `OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS=true` (lub starsza zmienna `OUTBOUND_SSRF_GUARD_ENABLED=false`) wyłącza te kontrole. Wartość zapisana za pomocą przełącznika flagi w panelu ma pierwszeństwo przed odpowiadającą jej zmienną, a wbudowani lokalni dostawcy pomijają ochronę podczas walidacji klucza. Zobacz `docs/reference/ENVIRONMENT.md`.
+2. **Opakowanie bezpiecznego pobierania** (`src/shared/network/safeOutboundFetch.ts`) — Stosuje ochronę adresów URL, normalizuje limity czasu i ponawia żądania po błędach przejściowych, używając wykładniczego opóźnienia.
+
+Naruszenia reguł ochrony są zgłaszane jako `URL_GUARD_BLOCKED` — HTTP 503 za pośrednictwem `getSafeOutboundFetchErrorStatus` (400 w trasie wykrywania modeli) — a rzeczywiste blokady SSRF podczas walidacji są zapisywane w dzienniku audytu jako zdarzenia `provider.validation.ssrf_blocked`.
+
+---
+
+## 🔄 Ponawianie żądań z uwzględnieniem okresu oczekiwania _(v3.6.6+)_
+
+Żądania czatu są teraz **automatycznie ponawiane**, gdy dostawca nadrzędny zwróci okres oczekiwania dotyczący danego modelu. Funkcję można skonfigurować za pomocą `REQUEST_RETRY` (domyślnie: 2) i `MAX_RETRY_INTERVAL_SEC` (domyślnie: 30 s). Ulepszono interpretowanie nagłówków limitów częstotliwości dla `x-ratelimit-reset-requests`, `x-ratelimit-reset-tokens` i `Retry-After` — stan okresu oczekiwania dla poszczególnych modeli jest widoczny w panelu Odporność.
+
+---
+
+## 📋 Audyt zgodności v2 _(v3.6.6+)_
+
+Dziennik audytu rozszerzono o stronicowanie oparte na kursorze, wzbogacanie kontekstu żądania (identyfikator żądania, agent użytkownika, adres IP), ustrukturyzowane zdarzenia uwierzytelniania, zdarzenia CRUD dostawców z kontekstem różnic oraz rejestrowanie walidacji zablokowanych z powodu SSRF. Nowe zdarzenia są emitowane przez `src/lib/compliance/providerAudit.ts`.

@@ -1,19 +1,16 @@
-import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/shared/components/ThemeProvider";
 import { NextIntlClientProvider } from "next-intl";
-import { getMessages, getLocale } from "next-intl/server";
+import { getMessages, getLocale, getTranslations } from "next-intl/server";
 import { RTL_LOCALES } from "@/i18n/config";
 import { normalizeComplianceEventTypes } from "@/i18n/request";
-import { getSettings } from "@/lib/db/settings";
+import { pickMessages } from "@/i18n/pickMessages";
+import routeNamespaces from "@/i18n/routeNamespaces.generated.json";
+import { getRootLayoutSettings } from "@/lib/db/rootLayoutSettings";
 import type { Viewport } from "next";
 import { PwaRegister } from "@/shared/components/PwaRegister";
 import { LocaleAutoDetect } from "@/shared/components/LocaleAutoDetect";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-});
+import { BasePathNetworkProvider } from "@/shared/components/BasePathNetworkProvider";
 
 export const viewport: Viewport = {
   themeColor: "#0b0f1a",
@@ -21,9 +18,9 @@ export const viewport: Viewport = {
 };
 
 export async function generateMetadata() {
-  const settings = await getSettings();
-  const instanceName = settings?.instanceName || "OmniRoute";
-  const customFaviconUrl = settings?.customFaviconUrl || settings?.customFaviconBase64;
+  const settings = await getRootLayoutSettings();
+  const instanceName = settings.instanceName;
+  const customFaviconUrl = settings.customFaviconUrl || settings.customFaviconBase64;
 
   return {
     title: `${instanceName} — AI Gateway for Multi-Provider LLMs`,
@@ -54,12 +51,54 @@ export async function generateMetadata() {
 
 export default async function RootLayout({ children }) {
   const locale = await getLocale();
-  const messages = normalizeComplianceEventTypes((await getMessages()) as Record<string, unknown>);
+  const t = await getTranslations("sidebar");
+  // Serialize ONLY the public-surface namespaces into the flight payload.
+  // The full merged catalog is ~664 KB across 132 namespaces and used to be
+  // embedded in every rendered page (757-865 KB HTML even for /login and
+  // 404). Dashboard sections re-scope it with their own providers via
+  // SectionI18nProvider — see scripts/i18n/generate-route-namespaces.mjs.
+  // IMPORTANT: never remove the explicit `messages` prop — next-intl then
+  // falls back to embedding the whole catalog again.
+  const messages = normalizeComplianceEventTypes(
+    pickMessages((await getMessages()) as Record<string, unknown>, routeNamespaces.root)
+  );
   const isRtl = RTL_LOCALES.includes(locale as (typeof RTL_LOCALES)[number]);
 
   return (
     <html lang={locale} dir={isRtl ? "rtl" : "ltr"} suppressHydrationWarning>
       <head>
+        {/* Pre-hydration cleanup: browser extensions (Bitdefender's
+            bis_skin_checked, Grammarly's data-gr-ext-installed, LanguageTool's
+            data-lt-installed, etc.) inject attributes into the DOM after SSR
+            but before React hydrates, causing hydration mismatch warnings in
+            dev. Strip them synchronously and observe for late injections; the
+            observer auto-disconnects after 5s (well past typical hydration). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function () {
+                var ATTRS = ["bis_skin_checked", "data-google-query-id", "data-new-gr-c-s-check-loaded", "data-gr-ext-installed", "data-lt-installed", "data-lt-tmp-id"];
+                function strip(el) {
+                  for (var i = 0; i < ATTRS.length; i++) {
+                    if (el.hasAttribute(ATTRS[i])) el.removeAttribute(ATTRS[i]);
+                  }
+                }
+                strip(document.documentElement);
+                if (typeof MutationObserver === "undefined") return;
+                var obs = new MutationObserver(function (muts) {
+                  for (var i = 0; i < muts.length; i++) {
+                    var m = muts[i];
+                    if (m.type === "attributes" && ATTRS.indexOf(m.attributeName) !== -1) {
+                      m.target.removeAttribute(m.attributeName);
+                    }
+                  }
+                });
+                obs.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ATTRS });
+                setTimeout(function () { obs.disconnect(); }, 5000);
+              })();
+            `,
+          }}
+        />
         {/* Material Symbols icon font is self-hosted via globals.css
             (@import "material-symbols/outlined.css") so icons render even when
             the Google Fonts CDN is unreachable (#3695). */}
@@ -101,17 +140,19 @@ export default async function RootLayout({ children }) {
           }}
         />
       </head>
-      <body className={`${inter.variable} font-sans antialiased`} suppressHydrationWarning>
+      <body className="font-sans antialiased" suppressHydrationWarning>
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#6366f1] focus:text-white focus:rounded-lg focus:text-sm focus:font-semibold focus:shadow-lg"
         >
-          Skip to content
+          {t("skipToContent")}
         </a>
         <NextIntlClientProvider locale={locale} messages={messages}>
-          <PwaRegister />
-          <LocaleAutoDetect />
-          <ThemeProvider>{children}</ThemeProvider>
+          <BasePathNetworkProvider>
+            <PwaRegister />
+            <LocaleAutoDetect />
+            <ThemeProvider>{children}</ThemeProvider>
+          </BasePathNetworkProvider>
         </NextIntlClientProvider>
       </body>
     </html>

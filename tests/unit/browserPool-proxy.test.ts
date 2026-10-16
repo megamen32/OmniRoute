@@ -1,6 +1,34 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolvePlaywrightProxy } from "../../open-sse/services/browserPool.ts";
+import {
+  resolveBrowserContextProxy,
+  resolvePlainBrowserLaunchOptions,
+  resolvePlaywrightProxy,
+} from "../../open-sse/services/browserPool.ts";
+
+describe("resolvePlainBrowserLaunchOptions", () => {
+  it("keeps existing browser-pool callers headless by default", () => {
+    const options = resolvePlainBrowserLaunchOptions({});
+
+    assert.equal(options.headless, true);
+    assert.equal(options.executablePath, undefined);
+    assert.equal(options.args?.includes("--window-position=-32000,-32000"), false);
+  });
+
+  it("uses an explicitly selected system browser for headed first-party sessions", () => {
+    const options = resolvePlainBrowserLaunchOptions({
+      headless: false,
+      executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    });
+
+    assert.equal(options.headless, false);
+    assert.equal(
+      options.executablePath,
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    );
+    assert.equal(options.args?.includes("--window-position=-32000,-32000"), true);
+  });
+});
 
 describe("resolvePlaywrightProxy", () => {
   it("returns undefined when no proxy is configured", async () => {
@@ -83,5 +111,22 @@ describe("resolvePlaywrightProxy", () => {
       },
     });
     assert.strictEqual(capturedKey, "gemini-web");
+  });
+
+  it("allows a scoped context key to use its stable provider key for proxy lookup", async () => {
+    let capturedKey = "";
+    const proxy = await resolveBrowserContextProxy(
+      "claude-web:account-scope",
+      { proxyProviderKey: "claude-web" },
+      {
+        resolveProxy: async (id) => {
+          capturedKey = id;
+          return { type: "http", host: "proxy.example.com", port: 8080 };
+        },
+      }
+    );
+
+    assert.equal(capturedKey, "claude-web");
+    assert.deepEqual(proxy, { server: "http://proxy.example.com:8080" });
   });
 });

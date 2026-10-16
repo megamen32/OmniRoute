@@ -17,6 +17,7 @@ vi.mock("next-intl", () => ({
   useTranslations: (namespace?: string) => {
     const messages: Record<string, string> = {
       "endpoint.apiEndpointsCatalogUnavailable": "API catalog unavailable",
+      "endpoint.catalogStats": "{endpoints} endpoints across {categories} categories",
       "endpoint.apiEndpointsSearchPlaceholder": "Search endpoints",
       "endpoint.badgeLoopbackTooltip": "Loopback only",
       "endpoint.badgeAlwaysProtectedTooltip": "Always protected",
@@ -29,10 +30,14 @@ vi.mock("next-intl", () => ({
       "endpoint.showInternal": "Show internal",
       "endpoint.hideInternal": "Hide internal",
       "endpoint.vscodeAliasTitle": "VS Code Token Alias",
-      "endpoint.vscodeAliasDescriptionReady": "Ready-to-paste compatibility URLs using the /api/v1/vscode/{token}/... endpoint.",
-      "endpoint.vscodeAliasDescriptionError": "Showing placeholder URLs because CLI keys could not be loaded in this session.",
-      "endpoint.vscodeAliasDescriptionLoading": "Loading CLI keys. Placeholder URLs are shown until a key is available.",
-      "endpoint.vscodeAliasDescriptionPlaceholder": "Showing placeholder URLs. Create or activate an API key in CLI Tools to replace {token}.",
+      "endpoint.vscodeAliasDescriptionReady":
+        "Ready-to-paste compatibility URLs using the /api/v1/vscode/{token}/... endpoint.",
+      "endpoint.vscodeAliasDescriptionError":
+        "Showing placeholder URLs because CLI keys could not be loaded in this session.",
+      "endpoint.vscodeAliasDescriptionLoading":
+        "Loading CLI keys. Placeholder URLs are shown until a key is available.",
+      "endpoint.vscodeAliasDescriptionPlaceholder":
+        "Showing placeholder URLs. Create or activate an API key in CLI Tools to replace {token}.",
       "endpoint.vscodeAliasManage": "CLI Tools",
       "endpoint.vscodeAliasBaseLabel": "VS Code base",
       "endpoint.vscodeAliasModelsLabel": "VS Code models",
@@ -49,10 +54,17 @@ vi.mock("next-intl", () => ({
       "endpoint.execute": "Execute",
       "endpoint.executing": "Executing",
       "endpoint.close": "Close",
+      "endpoint.example": "Example",
       "endpoint.openJsonResponse": "Open JSON response",
     };
 
-    return (key: string) => messages[`${namespace}.${key}`] || key;
+    return (key: string, values?: Record<string, string | number>) => {
+      const template = messages[`${namespace}.${key}`] || key;
+      return Object.entries(values || {}).reduce(
+        (text, [name, value]) => text.replace(`{${name}}`, String(value)),
+        template
+      );
+    };
   },
 }));
 
@@ -114,6 +126,7 @@ describe("ApiEndpointsTab", () => {
       cleanupCallbacks.pop()?.();
     }
     document.body.innerHTML = "";
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
@@ -168,12 +181,15 @@ describe("ApiEndpointsTab", () => {
 
     await waitForText("VS Code Token Alias");
     await waitForText("OmniRoute API");
+    await waitForText("1 endpoints across 1 categories");
+    await waitForText("/api/v1/vscode/sk-live-123/models");
     expect(document.body.textContent).toContain("1 endpoints across 1 categories");
     expect(document.body.textContent).toContain("/api/v1/vscode/sk-live-123/models");
     expect(document.body.textContent).toContain("/api/v1/chat/completions");
   });
 
   it("renders curl example using window.location.origin when NEXT_PUBLIC_BASE_URL is unset", async () => {
+    vi.stubEnv("NEXT_PUBLIC_BASE_URL", "");
     fetchMock.mockImplementation(async (input) => {
       if (input === "/api/cli-tools/keys") {
         return jsonResponse({ keys: [] });
@@ -203,16 +219,16 @@ describe("ApiEndpointsTab", () => {
     renderApiEndpointsTab();
 
     await waitForText("OmniRoute API");
+    await waitForText("1 endpoints across 1 categories");
 
     // Expand the endpoint to reveal the curl example
-    const endpointRow = Array.from(document.body.querySelectorAll("code")).find((node) =>
-      node.textContent?.includes("/api/v1/chat/completions")
+    const endpointRow = Array.from(document.body.querySelectorAll("code")).find(
+      (node) => node.textContent?.trim() === "/api/v1/chat/completions"
     );
-    if (endpointRow?.parentElement) {
-      await act(async () => {
-        endpointRow.parentElement!.click();
-      });
-    }
+    expect(endpointRow).toBeTruthy();
+    act(() => {
+      endpointRow!.parentElement!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     await waitForText("curl -X POST");
 
@@ -221,7 +237,7 @@ describe("ApiEndpointsTab", () => {
 
     expect(
       expectedOrigins.some((origin) =>
-        renderedText.includes(`curl -X POST ${origin}/v1/chat/completions`)
+        renderedText.includes(`curl -X POST ${origin}/api/v1/chat/completions`)
       )
     ).toBe(true);
   });

@@ -1,11 +1,27 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, Button, Badge, Modal, Input, ModelSelectModal } from "@/shared/components";
 import { MITM_TOOL_HOSTS } from "@/shared/constants/mitmToolHosts";
 import { useTranslations } from "next-intl";
 
 import ProviderIcon from "@/shared/components/ProviderIcon";
+import { CANONICAL_EFFORT_VALUES } from "@/shared/reasoning/effortStandardization";
+
+// Reasoning-effort override per Antigravity model row (ported from upstream
+// decolua/9router#2584). Empty value ("") means "Default" — preserve whatever
+// thinking/effort Antigravity's own request already carries; an explicit tier overrides
+// it end-to-end via `reasoningEffortOverride` (see `open-sse/translator/request/antigravity-to-openai.ts`).
+const REASONING_EFFORT_OPTIONS = ["", ...CANONICAL_EFFORT_VALUES];
+
+/** Read the `{ model?, reasoningEffort? }` entry for an alias, upgrading a legacy plain
+ * string mapping (still possible right after a save that only touched other aliases). */
+function getMappingEntry(mappings: Record<string, unknown>, alias: string) {
+  const raw = mappings[alias];
+  if (typeof raw === "string") return { model: raw };
+  if (raw && typeof raw === "object") return raw as { model?: string; reasoningEffort?: string };
+  return {};
+}
 
 export default function AntigravityToolCard({
   tool,
@@ -33,22 +49,12 @@ export default function AntigravityToolCard({
   const [modelAliases, setModelAliases] = useState({});
 
   // (#523) Store the key *id* (not the masked string) so the backend can
-  // resolve the real secret from DB before writing to config files.
-  useEffect(() => {
-    if (apiKeys?.length > 0 && !selectedApiKeyId) {
-      setSelectedApiKeyId(apiKeys[0].id);
-    }
-  }, [apiKeys, selectedApiKeyId]);
+  // resolve the real secret from DB before writing to config files. Default to
+  // the first available key while the user hasn't picked one — derived during
+  // render instead of synced through an effect (react-hooks/set-state-in-effect).
+  const effectiveApiKeyId = selectedApiKeyId || (apiKeys?.length > 0 ? apiKeys[0].id : "");
 
-  useEffect(() => {
-    if (isExpanded && !status) {
-      fetchStatus();
-      loadSavedMappings();
-      fetchModelAliases();
-    }
-  }, [isExpanded, status]);
-
-  const loadSavedMappings = async () => {
+  const loadSavedMappings = useCallback(async () => {
     try {
       const res = await fetch(`/api/cli-tools/antigravity-mitm/alias?tool=${tool.id}`);
       if (res.ok) {
@@ -62,9 +68,9 @@ export default function AntigravityToolCard({
     } catch (error) {
       console.log("Error loading saved mappings:", error);
     }
-  };
+  }, [tool.id]);
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/cli-tools/antigravity-mitm");
       if (res.ok) {
@@ -75,9 +81,9 @@ export default function AntigravityToolCard({
       console.log("Error fetching status:", error);
       setStatus({ running: false });
     }
-  };
+  }, []);
 
-  const fetchModelAliases = async () => {
+  const fetchModelAliases = useCallback(async () => {
     try {
       const res = await fetch("/api/models/alias");
       const data = await res.json();
@@ -85,7 +91,16 @@ export default function AntigravityToolCard({
     } catch (error) {
       console.log("Error fetching model aliases:", error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!(isExpanded && !status)) return;
+    // Load in an async continuation so every setState happens after an await
+    // (react-hooks/set-state-in-effect: no synchronous setState in effect bodies).
+    void (async () => {
+      await Promise.all([fetchStatus(), loadSavedMappings(), fetchModelAliases()]);
+    })();
+  }, [isExpanded, status, fetchStatus, loadSavedMappings, fetchModelAliases]);
 
   // MITM elevation is decided by the *server* OS, not by this browser's user
   // agent. The server reports `isWin` and `needsSudoPassword` in GET status —
@@ -93,9 +108,7 @@ export default function AntigravityToolCard({
   // browser hitting a Windows server does not (#822).
   const serverIsWindows = status?.isWin === true;
   const canRunWithoutPassword =
-    serverIsWindows ||
-    status?.hasCachedPassword === true ||
-    status?.needsSudoPassword === false;
+    serverIsWindows || status?.hasCachedPassword === true || status?.needsSudoPassword === false;
 
   const handleStart = () => {
     if (canRunWithoutPassword) {
@@ -121,7 +134,7 @@ export default function AntigravityToolCard({
     try {
       // (#523) Prefer keyId lookup so the backend writes the real key to disk.
       const selectedKeyId =
-        selectedApiKeyId?.trim() || (apiKeys?.length > 0 ? apiKeys[0].id : null);
+        effectiveApiKeyId?.trim() || (apiKeys?.length > 0 ? apiKeys[0].id : null);
 
       const res = await fetch("/api/cli-tools/antigravity-mitm", {
         method: "POST",
@@ -204,7 +217,10 @@ export default function AntigravityToolCard({
     if (currentEditingAlias) {
       setModelMappings((prev) => ({
         ...prev,
-        [currentEditingAlias]: model.value,
+        [currentEditingAlias]: {
+          ...getMappingEntry(prev, currentEditingAlias),
+          model: model.value,
+        },
       }));
     }
   };
@@ -212,8 +228,17 @@ export default function AntigravityToolCard({
   const handleModelMappingChange = (alias, value) => {
     setModelMappings((prev) => ({
       ...prev,
-      [alias]: value,
+      [alias]: { ...getMappingEntry(prev, alias), model: value },
     }));
+  };
+
+  const handleReasoningEffortChange = (alias, reasoningEffort) => {
+    setModelMappings((prev) => {
+      const entry = { ...getMappingEntry(prev, alias) };
+      if (reasoningEffort) entry.reasoningEffort = reasoningEffort;
+      else delete entry.reasoningEffort;
+      return { ...prev, [alias]: entry };
+    });
   };
 
   const handleSaveMappings = async () => {
@@ -265,7 +290,7 @@ export default function AntigravityToolCard({
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-text-muted truncate">{tool.description}</p>
+            <p className="text-xs text-text-muted truncate">{t(`toolDescriptions.${tool.id}`)}</p>
           </div>
         </div>
         <span
@@ -319,7 +344,7 @@ export default function AntigravityToolCard({
                 </span>
                 {apiKeys.length > 0 ? (
                   <select
-                    value={selectedApiKeyId}
+                    value={effectiveApiKeyId}
                     onChange={(e) => setSelectedApiKeyId(e.target.value)}
                     className="flex-1 px-2 py-1.5 bg-surface rounded text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
                   >
@@ -336,39 +361,55 @@ export default function AntigravityToolCard({
                 )}
               </div>
 
-              {(tool.defaultModels || []).map((model) => (
-                <div key={model.alias} className="flex items-center gap-2">
-                  <span className="w-32 shrink-0 text-sm font-semibold text-text-main text-right">
-                    {model.name}
-                  </span>
-                  <span className="material-symbols-outlined text-text-muted text-[14px]">
-                    arrow_forward
-                  </span>
-                  <input
-                    type="text"
-                    value={modelMappings[model.alias] || ""}
-                    onChange={(e) => handleModelMappingChange(model.alias, e.target.value)}
-                    placeholder={t("modelPlaceholder")}
-                    className="flex-1 px-2 py-1.5 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  />
-                  <button
-                    onClick={() => openModelSelector(model.alias)}
-                    disabled={!hasActiveProviders}
-                    className={`px-2 py-1.5 rounded border text-xs transition-colors shrink-0 whitespace-nowrap ${hasActiveProviders ? "bg-surface border-border text-text-main hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}
-                  >
-                    {t("select")}
-                  </button>
-                  {modelMappings[model.alias] && (
-                    <button
-                      onClick={() => handleModelMappingChange(model.alias, "")}
-                      className="p-1 text-text-muted hover:text-red-500 rounded transition-colors"
-                      title={t("clear")}
+              {(tool.defaultModels || []).map((model) => {
+                const entry = getMappingEntry(modelMappings, model.alias);
+                return (
+                  <div key={model.alias} className="flex items-center gap-2">
+                    <span className="w-32 shrink-0 text-sm font-semibold text-text-main text-right">
+                      {model.name}
+                    </span>
+                    <span className="material-symbols-outlined text-text-muted text-[14px]">
+                      arrow_forward
+                    </span>
+                    <input
+                      type="text"
+                      value={entry.model || ""}
+                      onChange={(e) => handleModelMappingChange(model.alias, e.target.value)}
+                      placeholder={t("modelPlaceholder")}
+                      className="flex-1 px-2 py-1.5 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    />
+                    <select
+                      value={entry.reasoningEffort || ""}
+                      onChange={(e) => handleReasoningEffortChange(model.alias, e.target.value)}
+                      title={t("reasoningEffortHint")}
+                      aria-label={t("reasoningEffort", { model: model.name })}
+                      className="w-28 shrink-0 px-2 py-1.5 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
                     >
-                      <span className="material-symbols-outlined text-[14px]">close</span>
+                      {REASONING_EFFORT_OPTIONS.map((tier) => (
+                        <option key={tier || "default"} value={tier}>
+                          {tier ? t(`reasoningEffortTier.${tier}`) : t("reasoningEffortDefault")}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => openModelSelector(model.alias)}
+                      disabled={!hasActiveProviders}
+                      className={`px-2 py-1.5 rounded border text-xs transition-colors shrink-0 whitespace-nowrap ${hasActiveProviders ? "bg-surface border-border text-text-main hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}
+                    >
+                      {t("select")}
                     </button>
-                  )}
-                </div>
-              ))}
+                    {(entry.model || entry.reasoningEffort) && (
+                      <button
+                        onClick={() => handleModelMappingChange(model.alias, "")}
+                        className="p-1 text-text-muted hover:text-red-500 rounded transition-colors"
+                        title={t("clear")}
+                      >
+                        <span className="material-symbols-outlined text-[14px]">close</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
 
               <div className="flex items-center gap-2">
                 <Button
@@ -480,7 +521,11 @@ export default function AntigravityToolCard({
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         onSelect={handleModelSelect}
-        selectedModel={currentEditingAlias ? modelMappings[currentEditingAlias] : null}
+        selectedModel={
+          currentEditingAlias
+            ? getMappingEntry(modelMappings, currentEditingAlias).model || null
+            : null
+        }
         activeProviders={activeProviders}
         modelAliases={modelAliases}
         title={t("selectModelForAlias", { alias: currentEditingAlias || "" })}

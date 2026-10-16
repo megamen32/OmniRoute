@@ -21,6 +21,44 @@ export const MANAGE_SCOPE = "manage";
 export const MANAGEMENT_API_KEY_SCOPES = new Set<string>(["manage", "admin"]);
 
 /**
+ * Narrow, additive scope (#7895) that grants a non-loopback caller ONLY the
+ * `/api/mcp/` LOCAL_ONLY carve-out (see `LOCAL_ONLY_MANAGE_SCOPE_BYPASS_PREFIXES`
+ * in `src/server/authz/routeGuard.ts`) — it does NOT grant broader management
+ * API access. Deliberately kept OUT of `MANAGEMENT_API_KEY_SCOPES`, mirroring the
+ * existing narrow-additive-scope precedent (`SELF_USAGE_SCOPE`,
+ * `API_KEY_BYPASS_PROVIDER_QUOTA_SCOPE`). A key holding `manage`/`admin` still
+ * passes the carve-out unchanged; `mcp:connect` is an alternative, lower-privilege
+ * path for remote MCP-only callers.
+ */
+export const MCP_CONNECT_SCOPE = "mcp:connect";
+
+/**
+ * Narrow scopes (#14304) for the cache management routes. A machine client
+ * that holds `read:cache` may read `/api/cache`, and one that holds
+ * `write:cache` may flush it. Like `mcp:connect`, these stay OUT of
+ * `MANAGEMENT_API_KEY_SCOPES`: they open only the cache routes, never the
+ * rest of the management API. `manage` and `admin` still pass both.
+ */
+export const CACHE_READ_SCOPE = "read:cache";
+export const CACHE_WRITE_SCOPE = "write:cache";
+
+export function hasCacheScope(scopes: readonly string[] = [], scope: string): boolean {
+  if (hasManageScope(scopes)) return true;
+  return scopes.includes(scope);
+}
+
+/**
+ * Check whether any of the given scopes authorizes the `/api/mcp/` LOCAL_ONLY
+ * carve-out specifically — i.e. either a full management scope (`manage`/`admin`)
+ * or the narrow `mcp:connect` scope. Use this ONLY for the `/api/mcp/` bypass
+ * check; every other management route must keep using `hasManageScope`.
+ */
+export function hasMcpConnectOrManageScope(scopes: readonly string[] = []): boolean {
+  if (hasManageScope(scopes)) return true;
+  return scopes.includes(MCP_CONNECT_SCOPE);
+}
+
+/**
  * Check whether any of the given scopes authorizes management API access.
  */
 export function hasManageScope(scopes: readonly string[] = []): boolean {

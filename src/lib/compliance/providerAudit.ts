@@ -76,6 +76,9 @@ export function summarizeProviderConnectionForAudit(connection: unknown) {
   if (Object.keys(providerSpecificData).length > 0) {
     const sanitizedProviderSpecificData = { ...providerSpecificData };
     delete sanitizedProviderSpecificData.consoleApiKey;
+    delete sanitizedProviderSpecificData.alibabaConsoleCookie;
+    delete sanitizedProviderSpecificData.alibabaConsoleSecToken;
+    delete sanitizedProviderSpecificData.xiaomiMimoConsoleCookie;
     sanitized.providerSpecificData = sanitizedProviderSpecificData;
   }
 

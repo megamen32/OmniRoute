@@ -13,14 +13,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
-import { runSingleModelTest } from "@/lib/api/modelTestRunner";
-import { setModelIsHidden } from "@/lib/localDb";
+import { DEFAULT_MODEL_TEST_TIMEOUT_MS, runSingleModelTest } from "@/lib/api/modelTestRunner";
+import { setModelIsHidden } from "@/lib/db/models";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { getSettings } from "@/lib/db/settings";
+import { getProviderConnections } from "@/lib/db/providers";
 import { isFreeModel, providerHasFreeModels } from "@/shared/utils/freeModels";
 import * as log from "@/sse/utils/logger";
 
-const PER_MODEL_TIMEOUT_MS = 20_000;
 const CONSECUTIVE_RATE_LIMIT_STOP_THRESHOLD = 3;
 /** Web-session providers (esp. Arena/CF) ban burst probes — pause between models. */
 const SLOW_PROBE_PROVIDERS = new Set(["lmarena", "lma"]);
@@ -41,28 +41,34 @@ const testAllSchema = z.object({
 });
 
 export interface BatchTestResultEntry {
-  status: "ok" | "error";
+  status: "ok" | "error" | "slow";
   latencyMs: number;
   responseText?: string;
   error?: string;
   statusCode?: number;
   rateLimited?: boolean;
+  isTransient?: boolean;
+  isQuota?: boolean;
   hidden?: boolean;
   isTimeout?: boolean;
+  skipped?: boolean;
 }
 
 function toBatchEntry(
   result: Awaited<ReturnType<typeof runSingleModelTest>>
 ): BatchTestResultEntry {
   const entry: BatchTestResultEntry = {
-    status: result.status === "ok" ? "ok" : "error",
+    status: result.status === "ok" ? "ok" : result.status === "slow" ? "slow" : "error",
     latencyMs: result.latencyMs,
   };
   if (result.responseText !== undefined) entry.responseText = result.responseText;
   if (result.error !== undefined) entry.error = result.error;
   if (result.statusCode !== undefined) entry.statusCode = result.statusCode;
   if (result.rateLimited === true) entry.rateLimited = true;
+  if (result.isTransient === true) entry.isTransient = true;
+  if (result.isQuota === true) entry.isQuota = true;
   if (result.isTimeout === true) entry.isTimeout = true;
+  if (result.skipped === true) entry.skipped = true;
   return entry;
 }
 
@@ -90,6 +96,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: validation.error.format() }, { status: 400 });
   }
   const { providerId, modelIds, connectionId, respectRateLimit, autoHideFailed } = validation.data;
+  const providerConnections = await getProviderConnections({ provider: providerId });
+  if (providerConnections.length > 0 && providerConnections.every((connection) => connection.isActive === false)) {
+    return NextResponse.json({ error: { message: `Provider ${providerId} has no active connections` } }, { status: 409 });
+  }
 
   // #6328 (follow-up to #6495): REMOVE — not just hide — paid Test-all dispatches
   // when hidePaidModels is on. Paid ids are skipped inside the loop with a
@@ -151,7 +161,8 @@ export async function POST(request: Request) {
         providerId,
         modelId,
         ...(effectiveConnectionId ? { connectionId: effectiveConnectionId } : {}),
-        timeoutMs: PER_MODEL_TIMEOUT_MS,
+        timeoutMs: DEFAULT_MODEL_TEST_TIMEOUT_MS,
+        streamChat: true,
       });
       entry = toBatchEntry(result);
       testedUpstream += 1;
@@ -174,17 +185,29 @@ export async function POST(request: Request) {
       consecutiveRateLimits = 0;
     }
 
+    // #9511: quota entries (403 with "insufficient balance" etc.) are NOT
+    // bot-blocks — they should not count toward the bot-block stop threshold.
     const botBlocked =
-      entry.statusCode === 403 ||
-      (typeof entry.error === "string" &&
-        /cloudflare|bot management|recaptcha|cf-chl|just a moment/i.test(entry.error));
+      !entry.isQuota &&
+      (entry.statusCode === 403 ||
+        (typeof entry.error === "string" &&
+          /cloudflare|bot management|recaptcha|cf-chl|just a moment/i.test(entry.error)));
     if (botBlocked) {
       consecutiveBotBlocks += 1;
     } else if (entry.status === "ok") {
       consecutiveBotBlocks = 0;
     }
 
-    if (autoHideFailed && entry.status === "error" && !entry.rateLimited && !entry.isTimeout) {
+    if (
+      autoHideFailed &&
+      entry.status === "error" &&
+      !entry.rateLimited &&
+      !entry.isTimeout &&
+      !entry.isTransient &&
+      !entry.isQuota &&
+      // #14780: a skipped probe (web-session provider) never ran — not a failure.
+      !entry.skipped
+    ) {
       try {
         await setModelIsHidden(providerId, modelId, true);
         entry.hidden = true;

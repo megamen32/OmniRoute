@@ -21,9 +21,9 @@
  *   4. ~/.local/share/devin/bin/devin          (Linux installer)
  *
  * Model selection:
- *   Passed directly to ACP session/new as `model` param (e.g. "swe-1.6-fast",
- *   "claude-sonnet-4.6", "gpt-5.5-high"). Devin CLI resolves them against its
- *   model_configs_v2.bin catalog on startup.
+ *   Passed directly to ACP session/new as `model` param (e.g. "swe-1-6-fast",
+ *   "claude-sonnet-4-6", "gpt-5-5-high"). Devin CLI resolves them against its
+ *   model_configs_v4.bin catalog on startup.
  */
 
 import { spawn } from "node:child_process";
@@ -145,10 +145,18 @@ export class DevinCliExecutor extends BaseExecutor {
 
     log?.info?.("DEVIN", `devin acp → model=${model}, bin=${devinBin}`);
 
+    // Set when the consumer cancels the body (client disconnect). Enqueueing or closing a
+    // cancelled controller throws ERR_INVALID_STATE, and the child's `close` handler would
+    // raise that inside an EventEmitter listener — an uncaught exception for the whole server.
+    let consumerGone = false;
+    let childProcess: ReturnType<typeof spawn> | null = null;
+
     const sseStream = new ReadableStream<Uint8Array>({
       start(controller) {
         const enc = new TextEncoder();
-        const emit = (data: string) => controller.enqueue(enc.encode(data));
+        const emit = (data: string) => {
+          if (!consumerGone) controller.enqueue(enc.encode(data));
+        };
 
         const env: NodeJS.ProcessEnv = { ...process.env };
         if (apiKey) env.WINDSURF_API_KEY = apiKey;
@@ -156,9 +164,11 @@ export class DevinCliExecutor extends BaseExecutor {
         const child = spawn(devinBin, ["acp", "--agent-type", "summarizer"], {
           env,
           stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
           // On Windows, devin.exe may need shell resolution
           shell: process.platform === "win32",
         });
+        childProcess = child;
 
         let spawnError: Error | null = null;
         let stdinClosed = false;
@@ -169,11 +179,7 @@ export class DevinCliExecutor extends BaseExecutor {
             err.message.includes("ENOENT") || err.message.includes("not found")
               ? `Devin CLI not found: ${devinBin}. Install via https://cli.devin.ai or set CLI_DEVIN_BIN env var.`
               : `Devin CLI spawn error: ${err.message}`;
-          emit(
-            `data: ${JSON.stringify({ error: { message: msg, type: "devin_cli_error", code: "spawn_failed" } })}\n\n`
-          );
-          emit("data: [DONE]\n\n");
-          controller.close();
+          finish(msg);
         });
 
         if (signal) {
@@ -249,7 +255,7 @@ export class DevinCliExecutor extends BaseExecutor {
           }, 2000);
           killTimer.unref?.();
 
-          controller.close();
+          if (!consumerGone) controller.close();
         };
 
         // ── stdout reader (NDJSON) ──────────────────────────────────────────
@@ -274,9 +280,12 @@ export class DevinCliExecutor extends BaseExecutor {
             // ── Initialize response ───────────────────────────────────────
             if (!initDone && msg.result !== undefined && !msg.method) {
               initDone = true;
-              // Create session: send session/new with model and a temp cwd
+              // Create session: send session/new with model and a temp cwd.
+              // `mcpServers` is NOT optional — devin CLI 3000.2.x rejects the
+              // request with -32602 `missing field \`mcpServers\`` if omitted.
               sendRpc("session/new", {
                 cwd: process.cwd(),
+                mcpServers: [],
                 model: model || undefined,
               });
               continue;
@@ -295,25 +304,68 @@ export class DevinCliExecutor extends BaseExecutor {
               promptSent = true;
               sendRpc("session/prompt", {
                 sessionId,
-                content: [{ type: "text", text: promptText }],
+                // ACP names this field `prompt`; `content` is rejected with
+                // -32602 `missing field \`prompt\`` by devin CLI 3000.2.x.
+                prompt: [{ type: "text", text: promptText }],
               });
               continue;
             }
 
-            // ── session/prompt response (ack) ─────────────────────────────
-            if (sessionCreated && promptSent && msg.result !== undefined && !msg.method) {
-              // Acknowledged — streaming notifications will follow
-              continue;
-            }
+            // NOTE: `session/prompt` is a unary call — its response IS the end of
+            // the turn (it carries `stopReason`), not an ack. Swallowing it here
+            // used to hang the request until the client timed out, so the final
+            // result is handled by the branch further down instead.
 
             // ── Streaming notifications (session/update) ──────────────────
             if (msg.method === "session/update" || msg.method === "$/update") {
               const params = msg.params as Record<string, unknown> | undefined;
               if (!params) continue;
 
-              const type = params.type as string | undefined;
+              // devin CLI 3000.2.x nests the payload:
+              //   params.update = { sessionUpdate: "agent_message_chunk",
+              //                     content: { type: "text", text: "…" } }
+              // Older/other ACP agents use a flat `params.type` + `params.content`.
+              const update = params.update as Record<string, unknown> | undefined;
+              const kind = (update?.sessionUpdate as string | undefined) ?? undefined;
+              const type = kind ?? (params.type as string | undefined);
 
-              if (type === "message_delta" || type === "text_delta" || type === "content_delta") {
+              if (kind === "agent_message_chunk") {
+                const delta = extractChunkText(update?.content);
+                if (delta) {
+                  if (!roleEmitted) {
+                    emit(
+                      `data: ${JSON.stringify({
+                        id: responseId,
+                        object: "chat.completion.chunk",
+                        created,
+                        model,
+                        choices: [
+                          {
+                            index: 0,
+                            delta: { role: "assistant", content: "" },
+                            finish_reason: null,
+                          },
+                        ],
+                      })}\n\n`
+                    );
+                    roleEmitted = true;
+                  }
+                  totalText += delta;
+                  emit(
+                    `data: ${JSON.stringify({
+                      id: responseId,
+                      object: "chat.completion.chunk",
+                      created,
+                      model,
+                      choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+                    })}\n\n`
+                  );
+                }
+              } else if (
+                type === "message_delta" ||
+                type === "text_delta" ||
+                type === "content_delta"
+              ) {
                 const delta =
                   (params.content as string) ||
                   (params.delta as string) ||
@@ -428,6 +480,10 @@ export class DevinCliExecutor extends BaseExecutor {
           capabilities: {},
         });
       },
+      cancel() {
+        consumerGone = true;
+        if (childProcess && !childProcess.killed) childProcess.kill("SIGTERM");
+      },
     });
 
     return {
@@ -449,6 +505,20 @@ export class DevinCliExecutor extends BaseExecutor {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Try to extract text from a final ACP session/prompt result object. */
+/**
+ * Pull display text out of an ACP `session/update` content payload, which may be
+ * a bare string, a single `{type:"text", text}` block, or an array of blocks.
+ */
+function extractChunkText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((c) => extractChunkText(c)).join("");
+  if (content && typeof content === "object") {
+    const text = (content as Record<string, unknown>).text;
+    if (typeof text === "string") return text;
+  }
+  return "";
+}
+
 function extractResultText(result: Record<string, unknown>): string {
   // Common result shapes:
   // { message: { content: "..." } }

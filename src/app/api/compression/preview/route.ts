@@ -93,10 +93,17 @@ function messagesToText(messages: Array<{ role: string; content: unknown }>): st
     .join("\n");
 }
 
-function buildStep(engine: string, fuzzy?: { enabled: boolean }) {
-  return engine === "session-dedup" && fuzzy?.enabled
-    ? { engine, config: { fuzzy: { enabled: true } } }
-    : { engine };
+function buildStep(
+  engine: string,
+  fuzzy?: { enabled: boolean },
+  /** Optional detail bag (e.g. headroom.minRows from saved settings). */
+  detail?: Record<string, unknown>
+) {
+  const config: Record<string, unknown> = { ...(detail ?? {}) };
+  if (engine === "session-dedup" && fuzzy?.enabled) {
+    config.fuzzy = { enabled: true };
+  }
+  return Object.keys(config).length > 0 ? { engine, config } : { engine };
 }
 
 function headroomParticipates(
@@ -111,6 +118,25 @@ function headroomParticipates(
   if (engineId) return engineId === "headroom";
   if (pipeline) return pipeline.includes("headroom");
   return mode === "stacked";
+}
+
+/**
+ * Resolve the optional headroom detail (minRows) from a synthesized compression config.
+ * Extracted from dispatchCompression to keep that dispatcher under the complexity gate (#8056/#8058).
+ */
+function resolveHeadroomDetail(config: unknown): {
+  headroomDetail: CompressionConfig["headroom"] | undefined;
+  headroomStepDetail: { minRows: number } | undefined;
+} {
+  const headroomDetail =
+    config && typeof config === "object" && config !== null
+      ? (config as CompressionConfig).headroom
+      : undefined;
+  const headroomStepDetail =
+    headroomDetail && typeof headroomDetail.minRows === "number"
+      ? { minRows: headroomDetail.minRows }
+      : undefined;
+  return { headroomDetail, headroomStepDetail };
 }
 
 async function dispatchCompression(
@@ -131,11 +157,29 @@ async function dispatchCompression(
   // (CompressionConfig.riskGate) — uniform across all three branches and type-safe.
   // QuantumLock uses the same pattern: when enabled the studio forces cachingContext so the dry-run
   // badge shows what WOULD be stabilized in production (real caching gains show in telemetry only).
+  // When the client/settings carry a headroom detail sub-object, thread it so
+  // buildStepOptions can merge minRows into the headroom engine stepConfig (#8056).
+  const { headroomDetail, headroomStepDetail } = resolveHeadroomDetail(opts.config);
+  // The Aggressive/Ultra engine pages send their form values as config.aggressive /
+  // config.ultra (EngineConfigPage handlePreview) and the engines read
+  // options.config.<engine>, so thread them into the synthesized config like headroom —
+  // otherwise single-engine/pipeline previews silently run on built-in defaults.
+  const sentConfig = (opts.config ?? {}) as Partial<CompressionConfig>;
+
   if (opts.engineId) {
     const q = quantumExtras(opts.quantumLock);
     return applyCompressionAsync(requestBody, "stacked", {
       config: {
-        stackedPipeline: [buildStep(opts.engineId, opts.fuzzyDedup)],
+        stackedPipeline: [
+          buildStep(
+            opts.engineId,
+            opts.fuzzyDedup,
+            opts.engineId === "headroom" ? headroomStepDetail : undefined
+          ),
+        ],
+        ...(headroomDetail ? { headroom: headroomDetail } : {}),
+        ...(sentConfig.aggressive ? { aggressive: sentConfig.aggressive } : {}),
+        ...(sentConfig.ultra ? { ultra: sentConfig.ultra } : {}),
         ...(opts.fidelityGate ? { fidelityGate: opts.fidelityGate } : {}),
         ...(opts.riskGate ? { riskGate: opts.riskGate } : {}),
         ...q.configPatch,
@@ -147,7 +191,12 @@ async function dispatchCompression(
     const q = quantumExtras(opts.quantumLock);
     return applyCompressionAsync(requestBody, "stacked", {
       config: {
-        stackedPipeline: opts.pipeline.map((engine) => buildStep(engine, opts.fuzzyDedup)),
+        stackedPipeline: opts.pipeline.map((engine) =>
+          buildStep(engine, opts.fuzzyDedup, engine === "headroom" ? headroomStepDetail : undefined)
+        ),
+        ...(headroomDetail ? { headroom: headroomDetail } : {}),
+        ...(sentConfig.aggressive ? { aggressive: sentConfig.aggressive } : {}),
+        ...(sentConfig.ultra ? { ultra: sentConfig.ultra } : {}),
         ...(opts.fidelityGate ? { fidelityGate: opts.fidelityGate } : {}),
         ...(opts.riskGate ? { riskGate: opts.riskGate } : {}),
         ...q.configPatch,
@@ -186,8 +235,18 @@ export async function POST(req: Request) {
     );
   }
 
-  const { messages, mode, engineId: rawEngineId, pipeline, config, fidelityGate, fuzzyDedup, riskGate, quantumLock, heatmap: heatmapMode } =
-    parsed.data;
+  const {
+    messages,
+    mode,
+    engineId: rawEngineId,
+    pipeline,
+    config,
+    fidelityGate,
+    fuzzyDedup,
+    riskGate,
+    quantumLock,
+    heatmap: heatmapMode,
+  } = parsed.data;
   // Alias: `mode: "caveman"` is a synonym for `engineId: "caveman"` (single-engine stacked run).
   // The caveman engine is not a top-level CompressionMode, but it IS a registered engine.
   const engineId = mode === "caveman" && !rawEngineId ? "caveman" : rawEngineId;
@@ -198,7 +257,13 @@ export async function POST(req: Request) {
 
   try {
     const start = Date.now();
-    const requestBody = { messages };
+    // #14983 made fuzzy dedup run only for callers that advertise omniroute_ccr_retrieve
+    // (its marker is otherwise unresolvable). The studio is a dry run with no real caller, so
+    // with the fuzzy toggle on it simulates a CCR-capable one (same as the compression
+    // benchmark harness) — without this the toggle is a silent no-op.
+    const requestBody = fuzzyDedup?.enabled
+      ? { messages, tools: [{ type: "function", function: { name: "omniroute_ccr_retrieve" } }] }
+      : { messages };
     const result = await dispatchCompression(requestBody as Record<string, unknown>, {
       engineId,
       pipeline,
@@ -236,8 +301,12 @@ export async function POST(req: Request) {
       heatmapMode as HeatmapMode | undefined
     );
 
+    const headroomMinRows =
+      typeof config?.headroom?.minRows === "number" && Number.isFinite(config.headroom.minRows)
+        ? config.headroom.minRows
+        : DEFAULT_MIN_ROWS;
     const encoderComparison = headroomParticipates(engineId, pipeline, effectiveMode)
-      ? summarizeEncoderCandidates(messages, DEFAULT_MIN_ROWS, countTextTokens)
+      ? summarizeEncoderCandidates(messages, headroomMinRows, countTextTokens)
       : null;
 
     // #6461: when fallbackApplied=true, synthesize a deduped reason list from data the

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Card, Toggle } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useTranslations } from "next-intl";
@@ -23,7 +23,65 @@ const DEFAULTS: ModelLockoutSettings = {
   useExponentialBackoff: true,
 };
 
+type WebkitAudioWindow = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
 
+function scheduleNotifyChime(context: AudioContext): void {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const startsAt = context.currentTime;
+  const endsAt = startsAt + 0.1;
+
+  // A short, locally synthesized tone avoids shipping a third-party audio asset.
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(880, startsAt);
+  gain.gain.setValueAtTime(0.0001, startsAt);
+  gain.gain.exponentialRampToValueAtTime(0.045, startsAt + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startsAt + 0.09);
+
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.onended = () => {
+    oscillator.disconnect();
+    gain.disconnect();
+  };
+  oscillator.start(startsAt);
+  oscillator.stop(endsAt);
+}
+
+function playNotifyChime(contextRef: { current: AudioContext | null }): void {
+  try {
+    if (typeof window === "undefined") return;
+
+    const AudioContextConstructor =
+      window.AudioContext ?? (window as WebkitAudioWindow).webkitAudioContext;
+    if (!AudioContextConstructor) return;
+
+    if (!contextRef.current || contextRef.current.state === "closed") {
+      contextRef.current = new AudioContextConstructor();
+    }
+
+    const context = contextRef.current;
+    if (context.state !== "running") {
+      void context
+        .resume()
+        .then(() => {
+          try {
+            scheduleNotifyChime(context);
+          } catch {
+            // Sound is optional and must never block a settings change.
+          }
+        })
+        .catch(() => undefined);
+      return;
+    }
+
+    scheduleNotifyChime(context);
+  } catch {
+    // Sound is optional and must never block a settings change.
+  }
+}
 
 function NumberField({
   label,
@@ -73,12 +131,28 @@ export default function ModelLockoutCard() {
   const t = useTranslations("settings");
   const tc = useTranslations("common");
   const notify = useNotificationStore();
+  const notifyAudioContextRef = useRef<AudioContext | null>(null);
 
   const [data, setData] = useState<ModelLockoutSettings>(DEFAULTS);
   const [draft, setDraft] = useState<ModelLockoutSettings>(DEFAULTS);
   const [errorCodesInput, setErrorCodesInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  useEffect(
+    () => () => {
+      const context = notifyAudioContextRef.current;
+      notifyAudioContextRef.current = null;
+      if (context && context.state !== "closed") {
+        try {
+          void context.close().catch(() => undefined);
+        } catch {
+          // Sound cleanup is optional and must never block the page from unmounting.
+        }
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -91,23 +165,17 @@ export default function ModelLockoutCard() {
         if (!mounted) return;
 
         const raw = (json as Record<string, unknown>).modelLockout as
-          | Record<string, unknown>
-          | undefined;
+          Record<string, unknown> | undefined;
 
         const parsed: ModelLockoutSettings = {
-          enabled:
-            typeof raw?.enabled === "boolean" ? raw.enabled : DEFAULTS.enabled,
+          enabled: typeof raw?.enabled === "boolean" ? raw.enabled : DEFAULTS.enabled,
           errorCodes: Array.isArray(raw?.errorCodes)
             ? [...(raw.errorCodes as number[])].sort((a, b) => a - b)
             : [...DEFAULTS.errorCodes].sort((a, b) => a - b),
           baseCooldownMs:
-            typeof raw?.baseCooldownMs === "number"
-              ? raw.baseCooldownMs
-              : DEFAULTS.baseCooldownMs,
+            typeof raw?.baseCooldownMs === "number" ? raw.baseCooldownMs : DEFAULTS.baseCooldownMs,
           maxCooldownMs:
-            typeof raw?.maxCooldownMs === "number"
-              ? raw.maxCooldownMs
-              : DEFAULTS.maxCooldownMs,
+            typeof raw?.maxCooldownMs === "number" ? raw.maxCooldownMs : DEFAULTS.maxCooldownMs,
           maxBackoffSteps:
             typeof raw?.maxBackoffSteps === "number"
               ? raw.maxBackoffSteps
@@ -122,11 +190,7 @@ export default function ModelLockoutCard() {
         setDraft(parsed);
         setErrorCodesInput("");
       } catch (error) {
-        notify.error(
-          error instanceof Error
-            ? error.message
-            : "Failed to load model lockout settings"
-        );
+        notify.error(error instanceof Error ? error.message : t("modelLockoutLoadFailed"));
       } finally {
         if (mounted) setLoading(false);
       }
@@ -136,7 +200,7 @@ export default function ModelLockoutCard() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [notify, t]);
 
   const hasChanges =
     draft.enabled !== data.enabled ||
@@ -149,13 +213,10 @@ export default function ModelLockoutCard() {
 
   function validateDraft(d: ModelLockoutSettings): string | null {
     if (d.baseCooldownMs < 5000 || d.baseCooldownMs > 600000)
-      return `Base Cooldown must be between 5,000ms and 600,000ms`;
-    if (d.maxCooldownMs < 5000 || d.maxCooldownMs > 3600000)
-      return `Max Cooldown must be between 5,000ms and 3,600,000ms`;
-    if (d.maxCooldownMs < d.baseCooldownMs)
-      return `Max Cooldown must be ≥ Base Cooldown`;
-    if (d.maxBackoffSteps < 0 || d.maxBackoffSteps > 20)
-      return `Max Backoff Steps must be between 0 and 20`;
+      return t("modelLockoutBaseRangeError");
+    if (d.maxCooldownMs < 5000 || d.maxCooldownMs > 3600000) return t("modelLockoutMaxRangeError");
+    if (d.maxCooldownMs < d.baseCooldownMs) return t("modelLockoutOrderError");
+    if (d.maxBackoffSteps < 0 || d.maxBackoffSteps > 20) return t("modelLockoutStepsRangeError");
     return null;
   }
 
@@ -178,10 +239,10 @@ export default function ModelLockoutCard() {
         const issues = err?.error?.issues ?? err?.error?.details;
         if (Array.isArray(issues) && issues.length > 0) {
           const fieldLabels: Record<string, string> = {
-            "modelLockout.baseCooldownMs": "Base Cooldown",
-            "modelLockout.maxCooldownMs": "Max Cooldown",
-            "modelLockout.maxBackoffSteps": "Max Backoff Steps",
-            "modelLockout.errorCodes": "Error Codes",
+            "modelLockout.baseCooldownMs": t("modelLockoutBaseCooldown"),
+            "modelLockout.maxCooldownMs": t("modelLockoutMaxCooldown"),
+            "modelLockout.maxBackoffSteps": t("modelLockoutMaxBackoffSteps"),
+            "modelLockout.errorCodes": t("modelLockoutErrorCodes"),
           };
           const msg = issues
             .map(
@@ -192,29 +253,21 @@ export default function ModelLockoutCard() {
             .join("\n");
           if (msg) throw new Error(msg);
         }
-        throw new Error(
-          err?.error?.message || `HTTP ${res.status}`
-        );
+        throw new Error(err?.error?.message || `HTTP ${res.status}`);
       }
       const json = await res.json();
       const raw = (json as Record<string, unknown>).modelLockout as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       if (raw) {
         setData({
-          enabled:
-            typeof raw.enabled === "boolean" ? raw.enabled : saveDraft.enabled,
+          enabled: typeof raw.enabled === "boolean" ? raw.enabled : saveDraft.enabled,
           errorCodes: Array.isArray(raw.errorCodes)
             ? [...(raw.errorCodes as number[])].sort((a, b) => a - b)
             : [...saveDraft.errorCodes].sort((a, b) => a - b),
           baseCooldownMs:
-            typeof raw.baseCooldownMs === "number"
-              ? raw.baseCooldownMs
-              : saveDraft.baseCooldownMs,
+            typeof raw.baseCooldownMs === "number" ? raw.baseCooldownMs : saveDraft.baseCooldownMs,
           maxCooldownMs:
-            typeof raw.maxCooldownMs === "number"
-              ? raw.maxCooldownMs
-              : saveDraft.maxCooldownMs,
+            typeof raw.maxCooldownMs === "number" ? raw.maxCooldownMs : saveDraft.maxCooldownMs,
           maxBackoffSteps:
             typeof raw.maxBackoffSteps === "number"
               ? raw.maxBackoffSteps
@@ -228,13 +281,9 @@ export default function ModelLockoutCard() {
         setData(saveDraft);
       }
       setErrorCodesInput("");
-      notify.success(t("savedSuccessfully") || "Settings saved successfully");
+      notify.success(t("savedSuccessfully"));
     } catch (error) {
-      notify.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to save model lockout settings"
-      );
+      notify.error(error instanceof Error ? error.message : t("modelLockoutSaveFailed"));
     } finally {
       setSaving(false);
     }
@@ -253,12 +302,18 @@ export default function ModelLockoutCard() {
       setErrorCodesInput("");
       return;
     }
-    setDraft((prev) => ({ ...prev, errorCodes: [...prev.errorCodes, code].sort((a, b) => a - b) }));
+    setDraft((prev) => ({
+      ...prev,
+      errorCodes: [...prev.errorCodes, code].sort((a, b) => a - b),
+    }));
     setErrorCodesInput("");
   };
 
   const removeErrorCode = (code: number) => {
-    setDraft((prev) => ({ ...prev, errorCodes: prev.errorCodes.filter((c) => c !== code) }));
+    setDraft((prev) => ({
+      ...prev,
+      errorCodes: prev.errorCodes.filter((c) => c !== code),
+    }));
   };
 
   const handleResetDefaults = () => {
@@ -275,28 +330,12 @@ export default function ModelLockoutCard() {
     return `${ms}ms`;
   };
 
-  const notifyRef = useRef<HTMLAudioElement | null>(null);
-  const playNotify = useCallback(() => {
-    try {
-      if (notifyRef.current) {
-        notifyRef.current.pause();
-        notifyRef.current.currentTime = 0;
-      } else {
-        notifyRef.current = new Audio("/audio/ui-notify.mp3");
-        notifyRef.current.volume = 0.3;
-      }
-      void notifyRef.current.play();
-    } catch { /* audio not available */ }
-  }, []);
-
   if (loading) {
     return (
       <Card className="p-6">
         <div className="flex items-center gap-2 text-sm text-text-muted">
-          <span className="material-symbols-outlined animate-spin">
-            progress_activity
-          </span>
-          Loading model lockout settings...
+          <span className="material-symbols-outlined animate-spin">progress_activity</span>
+          {t("modelLockoutLoading")}
         </div>
       </Card>
     );
@@ -307,39 +346,23 @@ export default function ModelLockoutCard() {
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-xl text-primary">
-              gpp_maybe
-            </span>
-            <h2 className="text-lg font-bold">
-              {t("modelLockout") || "Model Lockout"}
-            </h2>
+            <span className="material-symbols-outlined text-xl text-primary">gpp_maybe</span>
+            <h2 className="text-lg font-bold">{t("modelLockout")}</h2>
           </div>
-          <p className="text-sm text-text-muted">
-            {t("modelLockoutPageDescription")}
-          </p>
+          <p className="text-sm text-text-muted">{t("modelLockoutPageDescription")}</p>
         </div>
         {hasChanges ? (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="secondary" onClick={handleReset}>
               {tc("cancel")}
             </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              icon="save"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              {saving ? tc("saving") || "Saving..." : tc("save")}
+            <Button size="sm" variant="primary" icon="save" onClick={handleSave} disabled={saving}>
+              {saving ? tc("saving") : tc("save")}
             </Button>
           </div>
         ) : (
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={handleResetDefaults}
-          >
-            Reset defaults
+          <Button size="sm" variant="secondary" onClick={handleResetDefaults}>
+            {t("resetDefaults")}
           </Button>
         )}
       </div>
@@ -351,7 +374,7 @@ export default function ModelLockoutCard() {
             checked={draft.enabled}
             onChange={(checked) => {
               setDraft((prev) => ({ ...prev, enabled: checked }));
-              playNotify();
+              playNotifyChime(notifyAudioContextRef);
             }}
             label={t("modelLockoutEnabled")}
             description={t("modelLockoutEnabledDescription")}
@@ -382,7 +405,7 @@ export default function ModelLockoutCard() {
                     type="button"
                     onClick={() => removeErrorCode(code)}
                     className="inline-flex size-4 items-center justify-center rounded-sm hover:bg-primary/20 transition-colors"
-                    aria-label={`Remove ${code}`}
+                    aria-label={t("removeErrorCode", { code })}
                   >
                     <span className="material-symbols-outlined text-sm leading-none">close</span>
                   </button>
@@ -407,7 +430,7 @@ export default function ModelLockoutCard() {
                   commitErrorCodes();
                 }
               }}
-              placeholder="Add error code..."
+              placeholder={t("addErrorCode")}
               className="w-32 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary transition-colors placeholder:text-text-muted/50"
             />
             <button
@@ -416,14 +439,14 @@ export default function ModelLockoutCard() {
               disabled={!errorCodesInput.trim()}
               className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-muted hover:text-text-main hover:border-primary/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Add
+              {tc("add")}
             </button>
           </div>
 
           {/* Suggested common codes — chips as clickable suggestions */}
           {draft.errorCodes.length === 0 && errorCodesInput === "" && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-text-muted mr-1">Suggestions:</span>
+              <span className="mr-1 text-xs text-text-muted">{t("suggestions")}</span>
               {[403, 404, 429, 502, 503, 504].map((code) => (
                 <button
                   key={code}
@@ -448,9 +471,7 @@ export default function ModelLockoutCard() {
               max={600000}
               suffix="ms"
               hint="5,000ms — 600,000ms"
-              onChange={(baseCooldownMs) =>
-                setDraft((prev) => ({ ...prev, baseCooldownMs }))
-              }
+              onChange={(baseCooldownMs) => setDraft((prev) => ({ ...prev, baseCooldownMs }))}
             />
             <p className="mt-1.5 text-xs text-text-muted">
               {t("modelLockoutBaseCooldownDescription")}
@@ -464,10 +485,8 @@ export default function ModelLockoutCard() {
               min={draft.baseCooldownMs}
               max={3600000}
               suffix="ms"
-              hint="≥ Base Cooldown — 3,600,000ms"
-              onChange={(maxCooldownMs) =>
-                setDraft((prev) => ({ ...prev, maxCooldownMs }))
-              }
+              hint={t("modelLockoutMaxCooldownHint")}
+              onChange={(maxCooldownMs) => setDraft((prev) => ({ ...prev, maxCooldownMs }))}
             />
             <p className="mt-1.5 text-xs text-text-muted">
               {t("modelLockoutMaxCooldownDescription")}
@@ -484,7 +503,7 @@ export default function ModelLockoutCard() {
                 ...prev,
                 useExponentialBackoff: checked,
               }));
-              playNotify();
+              playNotifyChime(notifyAudioContextRef);
             }}
             label={t("modelLockoutExponentialBackoff")}
             description={t("modelLockoutExponentialBackoffDescription")}
@@ -497,9 +516,7 @@ export default function ModelLockoutCard() {
             label={t("modelLockoutMaxBackoffSteps")}
             value={draft.maxBackoffSteps}
             min={0}
-            onChange={(maxBackoffSteps) =>
-              setDraft((prev) => ({ ...prev, maxBackoffSteps }))
-            }
+            onChange={(maxBackoffSteps) => setDraft((prev) => ({ ...prev, maxBackoffSteps }))}
           />
           <p className="mt-1.5 text-xs text-text-muted">
             {t("modelLockoutMaxBackoffStepsDescription")}

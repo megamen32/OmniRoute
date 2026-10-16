@@ -12,12 +12,16 @@
  * This guard removes `temperature`/`top_p` only when the resolved effort is active
  * (anything other than `none`). It is scoped to the `openai` provider (raw
  * api.openai.com Chat Completions): the `codex` provider's Responses requests are
- * already covered by the CodexExecutor allowlist (which drops both params), and
+ * already covered by CodexExecutor.transformRequest (STRIP_RULES drops
+ * temperature/top_p before native passthrough returns; the Responses allowlist
+ * also omits them on the translated path), and
  * other providers manage their own sampling rules.
  *
  * Refs: litellm#27351 (GPT-5.1 accepts temperature only when effort=none),
  * Azure Foundry reasoning matrix, openai-python#2072.
  */
+
+import { FORMATS } from "../translator/formats.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -57,7 +61,7 @@ export function stripGpt5SamplingWhenReasoning<T extends Record<string, unknown>
   log?: { warn?: (tag: string, message: string) => void } | null
 ): T {
   if (provider !== "openai") return body;
-  if (typeof model !== "string" || !/^gpt-5/i.test(model)) return body;
+  if (typeof model !== "string" || !/^gpt-[56]/i.test(model)) return body;
 
   const record = asRecord(body);
   if (!record) return body;
@@ -76,6 +80,96 @@ export function stripGpt5SamplingWhenReasoning<T extends Record<string, unknown>
     "PARAMS",
     `Stripped ${stripped.join(", ")} for reasoning-active ${model} ` +
       `(GPT-5 rejects sampling params unless reasoning_effort=none)`
+  );
+  return next as T;
+}
+
+const REASONING_FIELDS = ["reasoning_effort", "reasoning"] as const;
+
+/**
+ * True when the request carries a non-empty `tools` array holding at least one
+ * function-shaped tool entry (`{type:"function", ...}` or a bare `{name, ...}`
+ * without a `type`, the OpenAI Chat Completions convention).
+ */
+function hasFunctionTools(record: JsonRecord): boolean {
+  if (!Array.isArray(record.tools) || record.tools.length === 0) return false;
+  return record.tools.some((toolValue) => {
+    const tool = asRecord(toolValue);
+    if (!tool) return false;
+    const toolType = typeof tool.type === "string" ? tool.type : "";
+    return toolType === "" || toolType === "function";
+  });
+}
+
+function disableLunaToolReasoning<T extends JsonRecord>(
+  body: T,
+  log?: { warn?: (tag: string, message: string) => void } | null
+): T {
+  if (body.reasoning_effort === "none" && !Object.hasOwn(body, "reasoning")) return body;
+  const next: JsonRecord = { ...body, reasoning_effort: "none" };
+  delete next.reasoning;
+  log?.warn?.(
+    "PARAMS",
+    "Set reasoning_effort=none for GPT-6 Luna function tools on Chat Completions"
+  );
+  return next as T;
+}
+
+/**
+ * Raw api.openai.com Chat Completions rejects GPT-5.x reasoning models that
+ * carry BOTH function `tools` and an active `reasoning_effort` with HTTP 400:
+ * "Function tools with reasoning_effort are not supported for <model> in
+ * /v1/chat/completions. Please use /v1/responses instead." Historically the
+ * plain `openai` provider always stayed on `/chat/completions` for every
+ * GPT-5.x model, so this combination reached the upstream 400 with no way to
+ * recover other than dropping the reasoning fields.
+ *
+ * That is no longer true for every GPT-5.x model: the public GPT-5.6 family
+ * is tagged with `targetFormat: "openai-responses"` (see
+ * `GPT_5_6_API_CAPABILITIES` in `config/providers/shared.ts`, closes #2540 /
+ * 9router#2547) and is routed to `/v1/responses` instead, which natively
+ * accepts tools + reasoning together — /v1/responses is literally the
+ * endpoint the 400 message tells callers to use. Gate on the resolved
+ * `targetFormat` (the fact chatCore already computed for this request)
+ * rather than a model-name list: only strip when the request is actually
+ * going out over `/chat/completions`. If a future GPT-5.x family also moves
+ * to `/responses`, this guard keeps working with no change needed here.
+ * Port of 9router#2540.
+ */
+export function stripGpt5ReasoningWhenTools<T extends Record<string, unknown>>(
+  body: T,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  targetFormat: string | null | undefined,
+  log?: { warn?: (tag: string, message: string) => void } | null
+): T {
+  if (provider !== "openai") return body;
+  if (typeof model !== "string" || !/^gpt-[56]/i.test(model)) return body;
+  // Already routed to /v1/responses (e.g. GPT-5.6, #7242) — that endpoint
+  // supports tools + reasoning natively, nothing to strip.
+  if (targetFormat === FORMATS.OPENAI_RESPONSES) return body;
+
+  const record = asRecord(body);
+  if (!record) return body;
+  if (!hasFunctionTools(record)) return body;
+  // #16440: omission enables Luna's default reasoning, so stripping is insufficient.
+  // https://developers.openai.com/api/docs/models/gpt-6-luna
+  if (model.toLowerCase() === "gpt-6-luna") return disableLunaToolReasoning(body, log);
+  if (!hasActiveReasoning(record, model)) return body;
+
+  const stripped: string[] = [];
+  for (const field of REASONING_FIELDS) {
+    if (Object.hasOwn(record, field)) stripped.push(field);
+  }
+  if (stripped.length === 0) return body;
+
+  const next: JsonRecord = { ...record };
+  for (const field of stripped) delete next[field];
+
+  log?.warn?.(
+    "PARAMS",
+    `Stripped ${stripped.join(", ")} for ${model} (function tools + reasoning_effort ` +
+      `are rejected on /v1/chat/completions; use /v1/responses instead)`
   );
   return next as T;
 }

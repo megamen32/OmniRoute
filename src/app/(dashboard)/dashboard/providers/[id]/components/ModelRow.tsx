@@ -278,7 +278,7 @@ export interface ModelRowProps {
   onToggleHidden?: (modelId: string, hidden: boolean) => Promise<void>;
   togglingHidden?: boolean;
   onTestModel?: (modelId: string, fullModel: string) => Promise<void>;
-  testStatus?: "ok" | "error" | null;
+  testStatus?: "ok" | "error" | "quota" | null;
   testingModel?: boolean;
 }
 
@@ -400,19 +400,38 @@ export default function ModelRow({
         </button>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {onToggleHidden && testStatus === "error" && (
+          <button
+            onClick={() => onToggleHidden(model.id, true)}
+            disabled={togglingHidden}
+            className={`flex items-center gap-1 rounded p-0.5 text-[11px] text-red-500 hover:bg-sidebar transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${togglingHidden ? "animate-pulse" : ""}`}
+            title={providerText(
+              t,
+              "blacklistModelTooltip",
+              "Blacklist this model — hide it from the catalog"
+            )}
+          >
+            <span className="material-symbols-outlined text-sm">
+              {togglingHidden ? "progress_activity" : "block"}
+            </span>
+            <span>{providerText(t, "blacklistModel", "Blacklist")}</span>
+          </button>
+        )}
         {onTestModel && (
           <button
             onClick={() => onTestModel(model.id, fullModel)}
             disabled={testingModel}
-            className={`rounded p-0.5 hover:bg-sidebar transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${testStatus === "ok" ? "text-green-500" : testStatus === "error" ? "text-red-500" : "text-text-muted hover:text-primary"}`}
+            className={`rounded p-0.5 hover:bg-sidebar transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${testStatus === "ok" ? "text-green-500" : testStatus === "quota" ? "text-amber-500" : testStatus === "error" ? "text-red-500" : "text-text-muted hover:text-primary"}`}
             title={
               testingModel
                 ? t("testingModel")
                 : testStatus === "ok"
                   ? "OK"
-                  : testStatus === "error"
-                    ? "Error"
-                    : t("testModel")
+                  : testStatus === "quota"
+                    ? t("modelTestQuotaTooltip")
+                    : testStatus === "error"
+                      ? providerText(t, "errorShort", "Error")
+                      : t("testModel")
             }
           >
             {testingModel ? (
@@ -421,6 +440,8 @@ export default function ModelRow({
               </span>
             ) : testStatus === "ok" ? (
               <span className="material-symbols-outlined text-sm">check_circle</span>
+            ) : testStatus === "quota" ? (
+              <span className="material-symbols-outlined text-sm">warning</span>
             ) : testStatus === "error" ? (
               <span className="material-symbols-outlined text-sm">error</span>
             ) : (

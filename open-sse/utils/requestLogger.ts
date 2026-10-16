@@ -1,5 +1,7 @@
 import { getPendingById } from "@/lib/usage/usageHistory";
+import { getChatLogMaxDepth, getChatLogArrayTailItems } from "@/lib/logEnv";
 import { sanitizeErrorMessage } from "./error.ts";
+import { redactUrlQuerySecrets } from "./errorSanitization.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -11,12 +13,14 @@ type HeaderInput =
   | undefined;
 
 export type RequestPipelinePayloads = {
+  routeDecision?: JsonRecord;
   clientRawRequest?: JsonRecord;
   openaiRequest?: JsonRecord;
   providerRequest?: JsonRecord;
   providerResponse?: JsonRecord;
   clientResponse?: JsonRecord;
   error?: JsonRecord;
+  toolLoop?: { legs: JsonRecord[] };
   streamChunks?: {
     provider?: string[];
     openai?: string[];
@@ -26,7 +30,13 @@ export type RequestPipelinePayloads = {
 
 type RequestLogger = {
   sessionPath: null;
-  logClientRawRequest: (endpoint: unknown, body: unknown, headers?: HeaderInput) => void;
+  logClientRawRequest: (
+    endpoint: unknown,
+    body: unknown,
+    headers?: HeaderInput,
+    effectiveInput?: unknown
+  ) => void;
+  logRouteDecision: (decision: unknown) => void;
   logOpenAIRequest: (body: unknown) => void;
   logTargetRequest: (url: unknown, headers: HeaderInput, body: unknown) => void;
   logProviderResponse: (
@@ -35,11 +45,13 @@ type RequestLogger = {
     headers: HeaderInput,
     body: unknown
   ) => void;
+  logProviderDiagnostic: (diagnostic: JsonRecord | null) => void;
   appendProviderChunk: (chunk: string) => void;
   appendOpenAIChunk: (chunk: string) => void;
   logConvertedResponse: (body: unknown) => void;
   appendConvertedChunk: (chunk: string) => void;
   logError: (error: unknown, requestBody?: unknown) => void;
+  logToolLoopReceipt: (receipt: unknown) => void;
   getPipelinePayloads: () => RequestPipelinePayloads | null;
 };
 
@@ -57,8 +69,16 @@ type RequestLoggerOptions = {
 const DEFAULT_MAX_STREAM_CHUNK_BYTES = 128 * 1024;
 const DEFAULT_MAX_STREAM_CHUNK_ITEMS = 10_240;
 const MAX_LOG_STRING_LENGTH = 64 * 1024;
-export const MAX_LOG_ARRAY_ITEMS = 24;
+// Was its own separate hardcoded 24, independent of the sibling
+// cloneBoundedChatLogPayload (chatCore/logTruncation.ts) implementation's
+// configurable cap — the two duplicated the same "bound an array for
+// logging" policy with different, drifting limits. Sharing
+// getChatLogArrayTailItems() keeps both bounding passes over the same
+// artifact data consistent. Read once at module load, matching this file's
+// existing plain-constant shape; CHAT_LOG_ARRAY_TAIL_ITEMS still overrides it.
+export const MAX_LOG_ARRAY_ITEMS = getChatLogArrayTailItems();
 const MAX_LOG_OBJECT_KEYS = 80;
+const MAX_TOOL_LOOP_LEGS = 4;
 
 function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
   if (!headers) return {};
@@ -69,7 +89,20 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
       : { ...(headers as Record<string, unknown>) };
 
   const masked = { ...headerEntries };
-  const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token"];
+  const sensitiveKeys = [
+    "authorization",
+    "x-api-key",
+    "apikey",
+    "cookie",
+    "token",
+    "secret",
+    "password",
+    "runtimekey",
+    "storage-state",
+    "storagestate",
+    "capability",
+    "x-omniroute-lease-owner",
+  ];
 
   for (const key of Object.keys(masked)) {
     const lowerKey = key.toLowerCase();
@@ -77,7 +110,12 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
     if (lowerKey.startsWith("x-ratelimit-")) {
       continue;
     }
-    if (!sensitiveKeys.some((candidate) => lowerKey.includes(candidate))) {
+    if (lowerKey === "x-omniroute-lease-owner") {
+      masked[key] = "[REDACTED]";
+      continue;
+    }
+    const compactedKey = lowerKey.replace(/-/g, "");
+    if (!sensitiveKeys.some((candidate) => compactedKey.includes(candidate.replace(/-/g, "")))) {
       continue;
     }
 
@@ -92,6 +130,17 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
   return masked;
 }
 
+/**
+ * Provider URLs can carry the credential in the query string (Vertex Express / Google
+ * media `?key=`, search providers' `api_key=`). Captured URLs are persisted to call-log
+ * artifacts, so mask those params before storing; anything else passes through as-is.
+ */
+function maskUrlSecrets(url: unknown): unknown {
+  if (typeof url === "string") return redactUrlQuerySecrets(url);
+  if (url instanceof URL) return redactUrlQuerySecrets(url.toString());
+  return url;
+}
+
 function createEmptyStreamChunks() {
   return {
     provider: [] as string[],
@@ -100,9 +149,47 @@ function createEmptyStreamChunks() {
   };
 }
 
+const TRUNCATED_ARRAY_MARKER = "_omniroute_truncated_array";
+const TRUNCATED_KEYS_MARKER = "_omniroute_truncated_keys";
+
+function isTruncatedArrayMarker(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as JsonRecord)[TRUNCATED_ARRAY_MARKER] === true
+  );
+}
+
+function slicePrefixWithoutSplitSurrogate(value: string, end: number): string {
+  const code = end > 0 ? value.charCodeAt(end - 1) : 0;
+  // A cut that keeps a high surrogate (U+D800–U+DBFF) without its pair becomes
+  // U+FFFD in the Buffer round-trip below. Shorten by one code unit instead.
+  const cut = code >= 0xd800 && code <= 0xdbff ? end - 1 : end;
+  return value.slice(0, cut);
+}
+
+function sliceSuffixWithoutSplitSurrogate(value: string, length: number): string {
+  const start = Math.max(0, value.length - Math.max(0, length));
+  const prev = start > 0 ? value.charCodeAt(start - 1) : 0;
+  const curr = start < value.length ? value.charCodeAt(start) : 0;
+  const split = prev >= 0xd800 && prev <= 0xdbff && curr >= 0xdc00 && curr <= 0xdfff;
+  return value.slice(split ? start + 1 : start);
+}
+
 function truncateLogString(value: string, maxLength = MAX_LOG_STRING_LENGTH): string {
   if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.floor(maxLength / 2))}\n[...truncated ${value.length - maxLength} chars...]\n${value.slice(-Math.ceil(maxLength / 2))}`;
+  // The marker has to fit INSIDE the budget (#7847): keeping maxLength characters and then
+  // adding the marker produced a result longer than maxLength, so re-bounding an already
+  // bounded string truncated it a second time and the function was not idempotent.
+  const marker = `\n[...truncated ${value.length - maxLength} chars...]\n`;
+  const keep = Math.max(0, maxLength - marker.length);
+  const head = slicePrefixWithoutSplitSurrogate(value, Math.floor(keep / 2));
+  const tail = sliceSuffixWithoutSplitSurrogate(value, Math.ceil(keep / 2));
+  // Flatten the bounded string before it is retained anywhere (call-log details,
+  // previews): String#slice() returns a V8 SlicedString whose parent is the whole
+  // source, so a 64 KB preview would keep a multi-megabyte request body alive.
+  return Buffer.from(`${head}${marker}${tail}`, "utf8").toString("utf8");
 }
 
 /**
@@ -122,9 +209,23 @@ export function cloneBoundedForLog(value: unknown, depth = 0, key: string | null
   if (value === null || value === undefined) return value;
   if (typeof value === "string") return truncateLogString(value);
   if (typeof value !== "object") return value;
-  if (depth >= 6) return "[MaxDepth]";
+  // Binary/opaque byte views (Uint8Array, Buffer, DataView, ...) are not
+  // "real" arrays to Array.isArray(); without this guard they fall through
+  // to the generic-object branch below and get expanded into one JS key per
+  // decoded byte instead of being treated as an opaque buffer (see #7297).
+  if (ArrayBuffer.isView(value)) {
+    return `[binary ${(value as ArrayBufferView).byteLength} bytes]`;
+  }
+  if (depth >= getChatLogMaxDepth()) return "[MaxDepth]";
 
   if (Array.isArray(value)) {
+    // Idempotence (#7847): an already-bounded array is [marker, ...tail] — MAX_LOG_ARRAY_ITEMS + 1
+    // entries, which is over the limit. Re-truncating it would drop the marker plus one real
+    // item and rewrite originalLength with the truncated length (25 instead of the true 800), so
+    // the log would misreport how much was cut. Keep the original marker, re-bound only the tail.
+    if (isTruncatedArrayMarker(value[0])) {
+      return [value[0], ...value.slice(1).map((item) => cloneBoundedForLog(item, depth + 1))];
+    }
     const exempt = key === "tools";
     const shouldTruncate = !exempt && value.length > MAX_LOG_ARRAY_ITEMS;
     const source = shouldTruncate ? value.slice(-MAX_LOG_ARRAY_ITEMS) : value;
@@ -132,7 +233,7 @@ export function cloneBoundedForLog(value: unknown, depth = 0, key: string | null
     if (shouldTruncate) {
       return [
         {
-          _omniroute_truncated_array: true,
+          [TRUNCATED_ARRAY_MARKER]: true,
           originalLength: value.length,
           retainedTailItems: MAX_LOG_ARRAY_ITEMS,
         },
@@ -143,12 +244,19 @@ export function cloneBoundedForLog(value: unknown, depth = 0, key: string | null
   }
 
   const result: JsonRecord = {};
-  const entries = Object.entries(value as JsonRecord);
+  // Idempotence (#7847): our own marker key must not be counted as payload, or a re-bounded
+  // object would push a real key out to make room for it and report `1` dropped instead of 20.
+  const carriedDropped = (value as JsonRecord)[TRUNCATED_KEYS_MARKER];
+  const carried = typeof carriedDropped === "number" ? carriedDropped : 0;
+  const entries = Object.entries(value as JsonRecord).filter(
+    ([k]) => !(carried > 0 && k === TRUNCATED_KEYS_MARKER)
+  );
   for (const [k, item] of entries.slice(0, MAX_LOG_OBJECT_KEYS)) {
     result[k] = cloneBoundedForLog(item, depth + 1, k);
   }
-  if (entries.length > MAX_LOG_OBJECT_KEYS) {
-    result._omniroute_truncated_keys = entries.length - MAX_LOG_OBJECT_KEYS;
+  const dropped = Math.max(0, entries.length - MAX_LOG_OBJECT_KEYS) + carried;
+  if (dropped > 0) {
+    result[TRUNCATED_KEYS_MARKER] = dropped;
   }
   return result;
 }
@@ -215,7 +323,16 @@ function compactPipelinePayloads(
       continue;
     }
 
-    result[key as keyof RequestPipelinePayloads] = value;
+    if (key === "toolLoop" && value && typeof value === "object") {
+      const legs = (value as { legs?: unknown }).legs;
+      if (Array.isArray(legs) && legs.length > 0) {
+        result.toolLoop = { legs: legs as JsonRecord[] };
+      }
+      continue;
+    }
+
+    const payloadKey = key as Exclude<keyof RequestPipelinePayloads, "streamChunks" | "toolLoop">;
+    result[payloadKey] = value as JsonRecord;
   }
 
   return hasOwnValues(result) ? result : null;
@@ -302,19 +419,25 @@ export async function createRequestLogger(
   const chunkMethods = makeStreamChunkMethods(options, captureStreamChunks);
 
   if (options.enabled === false) {
+    let routeDecision: JsonRecord | null = null;
     return {
       sessionPath: null,
       logClientRawRequest() {},
+      logRouteDecision(decision) {
+        routeDecision = cloneBoundedForLog(decision) as JsonRecord;
+      },
       logOpenAIRequest() {},
       logTargetRequest() {},
       logProviderResponse() {},
+      logProviderDiagnostic() {},
       appendProviderChunk: chunkMethods.appendProviderChunk,
       appendOpenAIChunk: chunkMethods.appendOpenAIChunk,
       logConvertedResponse() {},
       appendConvertedChunk: chunkMethods.appendConvertedChunk,
       logError() {},
+      logToolLoopReceipt() {},
       getPipelinePayloads() {
-        return null;
+        return routeDecision ? { routeDecision } : null;
       },
     };
   }
@@ -326,13 +449,31 @@ export async function createRequestLogger(
   return {
     sessionPath: null,
 
-    logClientRawRequest(endpoint, body, headers = {}) {
+    logClientRawRequest(endpoint, body, headers = {}, effectiveInput) {
       payloads.clientRawRequest = {
         timestamp: new Date().toISOString(),
         endpoint,
         headers: maskSensitiveHeaders(headers),
         body: cloneBoundedForLog(body),
+        // The actual `input` this request dispatched with, captured AFTER
+        // OmniRoute's own previous_response_id reconstruction (see
+        // src/sse/handlers/chat.ts) -- `body` above is deliberately the
+        // pre-reconstruction raw client bytes (captureDeferredClientRawBody's
+        // whole point) and is NOT what got sent for a continued turn.
+        // resolvePreviousResponseState must chain off this field, not
+        // `body.input`: reading the raw pre-reconstruction input for a
+        // request that was itself a continuation compounds into progressively
+        // truncated history a few hops deep (live incident 2026-09-03,
+        // manifested as a malformed request with no leading system/user
+        // message rejected by the upstream provider).
+        ...(effectiveInput !== undefined
+          ? { effectiveInput: cloneBoundedForLog(effectiveInput) }
+          : {}),
       };
+    },
+
+    logRouteDecision(decision) {
+      payloads.routeDecision = cloneBoundedForLog(decision) as JsonRecord;
     },
 
     logOpenAIRequest(body) {
@@ -345,7 +486,7 @@ export async function createRequestLogger(
     logTargetRequest(url, headers, body) {
       payloads.providerRequest = {
         timestamp: new Date().toISOString(),
-        url,
+        url: maskUrlSecrets(url),
         headers: maskSensitiveHeaders(headers),
         body: cloneBoundedForLog(body),
       };
@@ -358,6 +499,24 @@ export async function createRequestLogger(
         statusText,
         headers: maskSensitiveHeaders(headers),
         body: cloneBoundedForLog(body),
+      };
+    },
+
+    /**
+     * Record a terminal upstream failure by its already-allowlisted classification INSTEAD of
+     * its response (#3229).
+     *
+     * Deliberately narrower than {@link logProviderResponse}: no status text, no response
+     * headers, no upstream body. Callers pass a small fixed-shape record they have already
+     * projected to a closed set of scalars/enums — this method does not sanitize arbitrary
+     * provider data and must never be handed a raw upstream payload. Used for providers whose
+     * error bodies may echo request content, where the only safe thing to retain is the
+     * classification itself.
+     */
+    logProviderDiagnostic(diagnostic) {
+      payloads.providerResponse = {
+        timestamp: new Date().toISOString(),
+        diagnostic: (diagnostic ? cloneBoundedForLog(diagnostic) : null) as JsonRecord | null,
       };
     },
 
@@ -377,6 +536,14 @@ export async function createRequestLogger(
         error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
         requestBody: cloneBoundedForLog(requestBody),
       };
+    },
+
+    logToolLoopReceipt(receipt) {
+      const legs = payloads.toolLoop?.legs ?? [];
+      if (legs.length >= MAX_TOOL_LOOP_LEGS) return;
+      const cloned = cloneBoundedForLog(receipt);
+      if (!cloned || typeof cloned !== "object" || Array.isArray(cloned)) return;
+      payloads.toolLoop = { legs: [...legs, cloned as JsonRecord] };
     },
 
     getPipelinePayloads() {

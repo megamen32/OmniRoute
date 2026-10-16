@@ -37,11 +37,20 @@ const CHAT_OPENAI_COMPAT_PROVIDER_IDS = [
   "xiaomi-mimo",
   "inference-net",
   "nanogpt",
+  "apmix",
   "predibase",
   "bytez",
   "reka",
   "byteplus",
   "orcarouter",
+  "typhoon",
+  "inception",
+  "sarvam",
+  "writer",
+  "plamo",
+  "clova-studio",
+  "internlm",
+  "ant-ling",
 ];
 
 test("chat-openai-compat providers are registered across provider metadata, registry and local catalog", () => {

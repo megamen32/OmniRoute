@@ -6,11 +6,17 @@ const {
   getDefaultComboConfig,
   resolveComboTargetTimeoutMs,
   DEFAULT_COMBO_TARGET_TIMEOUT_MS,
+  COMBO_TARGET_TIMEOUT_WAIT_BUFFER_MS,
+  isComboCooldownWaitEligible,
+  resolveComboTargetTimeoutMsForCombo,
   resolveComboQueueDepth,
 } = await import("../../open-sse/services/comboConfig.ts");
 const { createComboSchema, updateComboDefaultsSchema } =
   await import("../../src/shared/validation/schemas.ts");
 const { MAX_TIMER_TIMEOUT_MS } = await import("../../src/shared/utils/runtimeTimeouts.ts");
+const { ROUTING_STRATEGY_VALUES, INTERNAL_ROUTING_STRATEGY_VALUES } =
+  await import("../../src/shared/constants/routingStrategies.ts");
+const ALL_COMBO_STRATEGIES = [...ROUTING_STRATEGY_VALUES, ...INTERNAL_ROUTING_STRATEGY_VALUES];
 
 test("getDefaultComboConfig returns a fresh copy of the defaults", () => {
   const first = getDefaultComboConfig();
@@ -38,6 +44,7 @@ test("getDefaultComboConfig returns a fresh copy of the defaults", () => {
   assert.equal(first.predictiveTtftMs, 0);
   assert.equal(first.evalRouting.enabled, false);
   assert.equal(first.evalRouting.maxAgeHours, 720);
+  assert.equal(first.quotaWeightedFloorPercent, 1);
 
   first.strategy = "weighted";
   assert.equal(second.strategy, "priority");
@@ -286,10 +293,10 @@ test("combo config schema allows zero-latency tuning fields when subfeatures sta
   assert.equal(parsed.config.predictiveTtftMs, 0);
 });
 
-test("resolveComboTargetTimeoutMs inherits the upstream timeout and only shortens it", () => {
+test("resolveComboTargetTimeoutMs honors explicit target timeouts", () => {
   assert.equal(resolveComboTargetTimeoutMs({}, 600000), 600000);
   assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 30000 }, 600000), 30000);
-  assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 900000 }, 600000), 600000);
+  assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 900000 }, 600000), 900000);
   assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 0 }, 600000), 600000);
   assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 30000 }, 0), 30000);
   assert.equal(resolveComboTargetTimeoutMs({}, 0), 0);
@@ -306,16 +313,63 @@ test("resolveComboTargetTimeoutMs falls back to the saner combo default when uns
   // Unset config → use the default (capped at the ceiling), NOT the full upstream ceiling.
   // This is what shortens a hung-target failover from 600s to 120s (escalated cmqlrhd7c).
   assert.equal(resolveComboTargetTimeoutMs({}, 600000, 120000), 120000);
-  // Operators can still extend beyond the default, up to the ceiling.
+  // Operators can extend beyond the default when explicitly configured.
   assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 300000 }, 600000, 120000), 300000);
-  // Explicit config above the ceiling is still capped at the ceiling.
-  assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 900000 }, 600000, 120000), 600000);
+  assert.equal(resolveComboTargetTimeoutMs({ targetTimeoutMs: 900000 }, 600000, 120000), 900000);
   // A default larger than the ceiling is clamped to the ceiling.
   assert.equal(resolveComboTargetTimeoutMs({}, 100000, 120000), 100000);
   // Backward-compat: omitting the default arg keeps the legacy inherit-the-ceiling behavior.
   assert.equal(resolveComboTargetTimeoutMs({}, 600000), 600000);
   // Disabled upstream timeout (0 = unbounded) stays unbounded even with a default present.
   assert.equal(resolveComboTargetTimeoutMs({}, 0, 120000), 0);
+});
+
+// #7360 / #7301: any strategy with comboCooldownWait enabled waits out cooldowns for up
+// to comboCooldownWait.budgetMs, so the per-target timeout floor must cover that budget
+// (DEFAULT_COMBO_TARGET_TIMEOUT_MS alone would cut a long wait short into a 504 combo_target_timeout).
+test("isComboCooldownWaitEligible engages for every strategy when the feature is enabled", () => {
+  for (const strategy of ALL_COMBO_STRATEGIES) {
+    assert.equal(isComboCooldownWaitEligible(strategy, { enabled: true }), true);
+    assert.equal(isComboCooldownWaitEligible(strategy, { enabled: false }), false);
+  }
+});
+
+test("resolveComboTargetTimeoutMsForCombo raises the floor to cover the cooldown-wait budget when enabled", () => {
+  const comboCooldownWait = { enabled: true, budgetMs: 130000 };
+  const floor = 130000 + COMBO_TARGET_TIMEOUT_WAIT_BUFFER_MS;
+  const disabled = { enabled: false, budgetMs: 130000 };
+
+  // Feature on: floor is budget + buffer for every strategy; off: 120s default.
+  for (const strategy of ALL_COMBO_STRATEGIES) {
+    assert.equal(
+      resolveComboTargetTimeoutMsForCombo({}, 600000, strategy, comboCooldownWait),
+      floor
+    );
+    assert.equal(
+      resolveComboTargetTimeoutMsForCombo({}, 600000, strategy, disabled),
+      DEFAULT_COMBO_TARGET_TIMEOUT_MS
+    );
+  }
+
+  // A small budget below the 120s default never lowers the floor.
+  assert.equal(
+    resolveComboTargetTimeoutMsForCombo({}, 600000, "auto", { enabled: true, budgetMs: 5000 }),
+    DEFAULT_COMBO_TARGET_TIMEOUT_MS
+  );
+
+  // Explicit per-combo targetTimeoutMs still wins over the derived floor.
+  assert.equal(
+    resolveComboTargetTimeoutMsForCombo(
+      { targetTimeoutMs: 45000 },
+      600000,
+      "auto",
+      comboCooldownWait
+    ),
+    45000
+  );
+
+  // The derived floor is still capped at the upstream ceiling.
+  assert.equal(resolveComboTargetTimeoutMsForCombo({}, 100000, "auto", comboCooldownWait), 100000);
 });
 
 test("combo timeout schema rejects values beyond the safe timer limit", () => {
@@ -328,6 +382,70 @@ test("combo timeout schema rejects values beyond the safe timer limit", () => {
   });
 
   assert.equal(result.success, false);
+});
+
+test("comboTimeoutMs is a first-class runtime config key", () => {
+  const parsed = createComboSchema.parse({
+    name: "combo-wall-clock",
+    models: ["openai/gpt-4"],
+    config: {
+      comboTimeoutMs: 1_200_000,
+      targetTimeoutMs: 600_000,
+    },
+  });
+
+  assert.equal(parsed.config.comboTimeoutMs, 1_200_000);
+  assert.equal(parsed.config.targetTimeoutMs, 600_000);
+
+  const unlimited = createComboSchema.parse({
+    name: "combo-unlimited-wall-clock",
+    models: ["openai/gpt-4"],
+    config: { comboTimeoutMs: 0 },
+  });
+  assert.equal(unlimited.config.comboTimeoutMs, 0);
+});
+
+test("comboTimeoutMs schema rejects values beyond the safe timer limit", () => {
+  const result = createComboSchema.safeParse({
+    name: "unsafe-combo-timeout",
+    models: ["openai/gpt-4"],
+    config: {
+      comboTimeoutMs: MAX_TIMER_TIMEOUT_MS + 1,
+    },
+  });
+
+  assert.equal(result.success, false);
+});
+
+test("updateComboDefaultsSchema accepts comboTimeoutMs", () => {
+  const parsed = updateComboDefaultsSchema.parse({
+    comboDefaults: {
+      comboTimeoutMs: 1_200_000,
+      targetTimeoutMs: 600_000,
+    },
+  });
+
+  assert.equal(parsed.comboDefaults.comboTimeoutMs, 1_200_000);
+  assert.equal(parsed.comboDefaults.targetTimeoutMs, 600_000);
+});
+
+test("combo editor and defaults pages expose comboTimeoutMs", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const editor = await readFile(
+    new URL("../../src/app/(dashboard)/dashboard/combos/page.tsx", import.meta.url),
+    "utf8"
+  );
+  const defaults = await readFile(
+    new URL(
+      "../../src/app/(dashboard)/dashboard/settings/components/ComboDefaultsTab.tsx",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  assert.match(editor, /import ComboTimeoutFields from "\.\/ComboTimeoutFields"/);
+  assert.match(editor, /<ComboTimeoutFields[\s\S]*showHelp=\{!isExpertMode\}/);
+  assert.match(defaults, /comboTimeoutMs: secondsInputToOptionalMs\(e\.target\.value\)/);
+  assert.match(defaults, /comboTimeoutHint/);
 });
 
 test("resolveComboConfig preserves explicit empty handoffProviders overrides", () => {
@@ -589,6 +707,24 @@ test("createComboSchema accepts nestedComboMode and rejects invalid values", () 
     name: "nested-invalid",
     models: ["openai/gpt-4o-mini"],
     config: { nestedComboMode: "redirect" },
+  });
+  assert.equal(invalid.success, false);
+});
+
+test("createComboSchema validates reasoning transport fallback modes", () => {
+  for (const mode of ["skip", "drop"] as const) {
+    const parsed = createComboSchema.parse({
+      name: `reasoning-transport-${mode}`,
+      models: ["openai/gpt-5.4"],
+      config: { reasoningTransportFallback: mode },
+    });
+    assert.equal(parsed.config.reasoningTransportFallback, mode);
+  }
+
+  const invalid = createComboSchema.safeParse({
+    name: "reasoning-transport-invalid",
+    models: ["openai/gpt-5.4"],
+    config: { reasoningTransportFallback: "retry" },
   });
   assert.equal(invalid.success, false);
 });

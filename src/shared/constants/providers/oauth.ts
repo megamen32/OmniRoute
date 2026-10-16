@@ -2,9 +2,56 @@
  * Provider catalog data — extracted from providers.ts (god-file decomposition).
  * Pure data literal; re-exported by the providers.ts barrel. No behavior change.
  */
+import { GITLAB_DUO_OAUTH_SETUP_MESSAGE } from "@/shared/constants/gitlabDuoSetupMessage";
+
 export const OAUTH_PROVIDERS = {
+  "ghe-copilot": {
+    id: "ghe-copilot",
+    serviceKinds: ["llm"],
+    alias: "ghe-copilot",
+    name: "GitHub Enterprise Copilot",
+    icon: "code",
+    color: "#10B981",
+    subscriptionRisk: true,
+    riskNoticeVariant: "oauth",
+    authHint:
+      "Enter your GHE instance URL (e.g., https://ghe.company.com) in provider settings, then authenticate via device flow.",
+  },
+  "xai-oauth": {
+    id: "xai-oauth",
+    serviceKinds: ["llm"],
+    alias: "xao",
+    name: "xAI OAuth (Grok)",
+    icon: "auto_awesome",
+    color: "#1DA1F2",
+    textIcon: "XA",
+    website: "https://x.ai",
+    subscriptionRisk: true,
+    riskNoticeVariant: "oauth",
+    // Render xAI OAuth through the unified xAI dashboard card. Keep this
+    // catalog entry addressable for existing routes and stored connections.
+    hiddenFromDashboard: true,
+    authHint:
+      "Sign in with xAI to use api.x.ai models such as Grok 4.5. This is separate from Grok Build JWT sessions, which use cli-chat-proxy.grok.com and grok-build model aliases.",
+  },
+  openference: {
+    id: "openference",
+    serviceKinds: ["llm"],
+    alias: "of",
+    name: "Openference",
+    icon: "openference",
+    color: "#6366F1",
+    textIcon: "OF",
+    website: "https://openference.com",
+    hasFree: true,
+    freeNote:
+      "Free tier: includes Qwen3.8 27b and Llama 3.2 3B — see openference.com/pricing for current terms",
+    authHint:
+      "Sign in with your Openference account to route requests through api.openference.com. Includes free-tier access to Qwen3.8 27b and Llama 3.2 3B — see openference.com/pricing for current plan terms.",
+  },
   "grok-cli": {
     id: "grok-cli",
+    serviceKinds: ["llm"],
     alias: "gc",
     name: "Grok Build",
     icon: "bolt",
@@ -12,32 +59,24 @@ export const OAUTH_PROVIDERS = {
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
     authHint:
-      "Paste your ~/.grok/auth.json (or the JWT access token) from the Grok Build CLI; refresh_token is rotated automatically.",
+      "Sign in with your browser, or paste your ~/.grok/auth.json (or the JWT access token) from the Grok Build CLI; refresh_token is rotated automatically either way.",
   },
   qoder: {
     id: "qoder",
+    serviceKinds: ["llm"],
     alias: "if",
     name: "Qoder",
+    authHint:
+      "PAT (pt-): requires local qodercli; plain chat only, no caller tools, buffered streaming and a 45-second chat limit. HTTP keys use DashScope; browser OAuth requires administrator configuration.",
     icon: "water_drop",
     color: "#6366F1",
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
     hasFree: true,
   },
-  qwen: {
-    id: "qwen",
-    alias: "qw",
-    name: "Qwen Code",
-    icon: "psychology",
-    color: "#10B981",
-    subscriptionRisk: true,
-    riskNoticeVariant: "deprecated",
-    deprecated: true,
-    deprecationReason:
-      "Qwen OAuth free tier was discontinued on 2026-04-15. Use 'bailian-coding-plan', 'alibaba', 'alibaba-cn', or 'openrouter' provider with API key instead.",
-  },
   agy: {
     id: "agy",
+    serviceKinds: ["llm"],
     alias: "agy",
     name: "Antigravity CLI",
     icon: "terminal",
@@ -52,6 +91,7 @@ export const OAUTH_PROVIDERS = {
   },
   kiro: {
     id: "kiro",
+    serviceKinds: ["llm"],
     alias: "kr",
     name: "Kiro AI",
     icon: "psychology_alt",
@@ -64,6 +104,7 @@ export const OAUTH_PROVIDERS = {
   },
   "amazon-q": {
     id: "amazon-q",
+    serviceKinds: ["llm"],
     alias: "aq",
     name: "Amazon Q",
     icon: "cloud",
@@ -76,6 +117,7 @@ export const OAUTH_PROVIDERS = {
   },
   claude: {
     id: "claude",
+    serviceKinds: ["llm"],
     alias: "cc",
     name: "Claude Code",
     icon: "smart_toy",
@@ -85,6 +127,7 @@ export const OAUTH_PROVIDERS = {
   },
   antigravity: {
     id: "antigravity",
+    serviceKinds: ["llm"],
     alias: undefined,
     name: "Antigravity",
     icon: "rocket_launch",
@@ -94,6 +137,7 @@ export const OAUTH_PROVIDERS = {
   },
   codex: {
     id: "codex",
+    serviceKinds: ["llm"],
     alias: "cx",
     name: "OpenAI Codex",
     icon: "code",
@@ -101,20 +145,29 @@ export const OAUTH_PROVIDERS = {
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
   },
-  github: { id: "github", alias: "gh", name: "GitHub Copilot", icon: "code", color: "#333333" },
+  github: {
+    id: "github",
+    serviceKinds: ["llm"],
+    alias: "gh",
+    name: "GitHub Copilot",
+    icon: "code",
+    color: "#333333",
+  },
   "gitlab-duo": {
     id: "gitlab-duo",
+    serviceKinds: ["llm"],
     alias: "gitlab-duo",
     name: "GitLab Duo",
     icon: "hub",
     color: "#FC6D26",
     textIcon: "GL",
     website: "https://docs.gitlab.com/user/duo_agent_platform/code_suggestions/",
-    authHint:
-      "OAuth application with ai_features + read_user scopes. Configure GITLAB_DUO_OAUTH_CLIENT_ID and optionally GITLAB_DUO_OAUTH_CLIENT_SECRET on this OmniRoute instance.",
+    // #8688: full actionable recipe (same string as authorize error + OAuthModal setup step)
+    authHint: GITLAB_DUO_OAUTH_SETUP_MESSAGE,
   },
   cursor: {
     id: "cursor",
+    serviceKinds: ["llm"],
     alias: "cu",
     name: "Cursor IDE",
     icon: "edit_note",
@@ -124,6 +177,7 @@ export const OAUTH_PROVIDERS = {
   },
   zed: {
     id: "zed",
+    serviceKinds: ["llm"],
     alias: "zd",
     name: "Zed IDE",
     icon: "code",
@@ -135,6 +189,7 @@ export const OAUTH_PROVIDERS = {
   },
   "zed-hosted": {
     id: "zed-hosted",
+    serviceKinds: ["llm"],
     alias: undefined,
     name: "Zed Hosted Models",
     icon: "code_blocks",
@@ -148,6 +203,7 @@ export const OAUTH_PROVIDERS = {
   },
   trae: {
     id: "trae",
+    serviceKinds: ["llm"],
     alias: "tr",
     name: "Trae",
     icon: "edit_square",
@@ -159,16 +215,23 @@ export const OAUTH_PROVIDERS = {
   },
   "kimi-coding": {
     id: "kimi-coding",
+    serviceKinds: ["llm"],
     alias: "kmc",
-    name: "Kimi Coding",
+    name: "Kimi Code CLI",
     icon: "psychology",
     color: "#1E40AF",
     textIcon: "KC",
+    // Kimi official-partnership aff link (2026-07) — the "Kimi Coding Plan"
+    // tracking link. Was previously unset (no header link rendered at all).
+    website: "https://www.kimi.ai/code?aff=omniroute",
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
+    authHint:
+      "Sign in with the same Kimi account used by Kimi Code CLI. OmniRoute uses the CLI OAuth flow and Kimi Coding Plan endpoints.",
   },
   kilocode: {
     id: "kilocode",
+    serviceKinds: ["llm"],
     alias: "kc",
     name: "Kilo Code",
     icon: "code",
@@ -180,9 +243,12 @@ export const OAUTH_PROVIDERS = {
     // getProviderCredentials synthesizes a noauth credential and the executor
     // sends `Bearer anonymous` (see the kilocode registry `anonymousApiKey`).
     anonymousFallback: true,
+    authHint:
+      "Sign in with your Kilo Code account (device-code OAuth), or paste a direct API key from app.kilo.ai → Settings → API Keys. Multiple API keys are supported and rotated automatically — add each as a separate connection. Without any connection, free anonymous models are available via the anonymousFallback.",
   },
   cline: {
     id: "cline",
+    serviceKinds: ["llm"],
     alias: "cl",
     name: "Cline",
     icon: "smart_toy",
@@ -190,37 +256,42 @@ export const OAUTH_PROVIDERS = {
     textIcon: "CL",
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
+    authHint:
+      "Sign in with your Cline account (OAuth), or paste a direct API key from app.cline.bot → Settings → API Keys. Multiple API keys are supported and rotated automatically — add each as a separate connection.",
   },
   clinepass: {
     id: "clinepass",
+    serviceKinds: ["llm"],
     alias: "cp",
     name: "ClinePass",
     icon: "smart_toy",
     color: "#9D4EDD",
     textIcon: "CP",
-    website: "https://cline.bot/clinepass",
+    website: "https://cline.bot/cline-pass",
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
     authHint:
       "ClinePass is Cline's $9.99/mo subscription bundling 10 open coding models. Sign in with your Cline account (same login as the Cline CLI/IDE), or paste a direct ClinePass API key (app.cline.bot → Settings → API Keys). A ClinePass subscription unlocks the cline-pass/* models. Reuses the Cline WorkOS OAuth flow.",
   },
-  windsurf: {
-    id: "windsurf",
-    alias: "ws",
-    name: "Windsurf (Devin CLI)",
-    icon: "air",
-    color: "#00C5A0",
-    textIcon: "WS",
+  "devin-desktop": {
+    id: "devin-desktop",
+    serviceKinds: ["llm"],
+    alias: undefined,
+    name: "Devin Desktop",
+    icon: "terminal",
+    color: "#6366F1",
+    textIcon: "DD",
     subscriptionRisk: true,
     riskNoticeVariant: "oauth",
     authHint:
-      'In the Windsurf / VS Code IDE, open the command palette and run `Windsurf: Provide Auth Token` (or click the Jupyter "Get Windsurf Authentication Token" button), then copy the shown token and paste it here. Note: opening windsurf.com/show-auth-token directly only renders a "Redirecting" page — the IDE must initiate the flow (it adds a `?state=...` param) for the token to appear.',
-    website: "https://windsurf.com",
+      "Paste an existing Devin API key from an authenticated Devin session. Key export availability and steps vary by Devin version and account.",
+    website: "https://devin.ai",
   },
   "devin-cli": {
     id: "devin-cli",
+    serviceKinds: ["llm"],
     alias: "dv",
-    name: "Devin CLI (Official)",
+    name: "Devin CLI",
     icon: "terminal",
     color: "#6366F1",
     textIcon: "DV",
@@ -230,6 +301,7 @@ export const OAUTH_PROVIDERS = {
   },
   "codebuddy-cn": {
     id: "codebuddy-cn",
+    serviceKinds: ["llm"],
     alias: "cbcn",
     name: "CodeBuddy CN",
     icon: "smart_toy",
@@ -240,5 +312,51 @@ export const OAUTH_PROVIDERS = {
     riskNoticeVariant: "oauth",
     authHint:
       "Tencent CodeBuddy CN (copilot.tencent.com). Sign in via the official CLI device-code flow, or paste a direct API key (sent as Authorization: Bearer). Catalog: GLM / Kimi / MiniMax / DeepSeek / Hunyuan.",
+  },
+  "codebuddy-intl": {
+    id: "codebuddy-intl",
+    serviceKinds: ["llm"],
+    alias: "cbai",
+    name: "CodeBuddy Intl",
+    icon: "smart_toy",
+    color: "#006EFF",
+    textIcon: "CB",
+    website: "https://www.codebuddy.ai",
+    subscriptionRisk: true,
+    riskNoticeVariant: "oauth",
+    authHint:
+      "CodeBuddy International (codebuddy.ai). Sign in via the device-code flow, or paste a direct API key (sent as Authorization: Bearer). Catalog: GLM / Kimi / MiniMax / DeepSeek / Hunyuan.",
+  },
+  workbuddy: {
+    id: "workbuddy",
+    serviceKinds: ["llm"],
+    alias: "wb",
+    name: "WorkBuddy",
+    icon: "smart_toy",
+    color: "#1A73E8",
+    textIcon: "WB",
+    website: "https://www.workbuddy.ai",
+    subscriptionRisk: true,
+    riskNoticeVariant: "oauth",
+    // Not to be confused with CodeBuddy CN above: WorkBuddy is a separate
+    // Tencent agent platform on its own host and account system, and a
+    // CodeBuddy account does not work here.
+    authHint:
+      "Tencent WorkBuddy (www.workbuddy.ai). Authorize the CLI device flow in the popup; OmniRoute then polls for the token and attaches the required X-Product: SaaS header. The model roster is served by the authenticated catalogue, so it is discovered live rather than listed here. WorkBuddy only accepts streaming requests, which OmniRoute accumulates back into a JSON response for non-streaming callers.",
+  },
+  "muse-code": {
+    id: "muse-code",
+    serviceKinds: ["llm"],
+    alias: "mc",
+    name: "Muse Code (Meta)",
+    icon: "auto_awesome",
+    color: "#0866FF",
+    textIcon: "MC",
+    website: "https://ai.developer.meta.com/docs/muse-code/auth",
+    subscriptionRisk: true,
+    riskNoticeVariant: "oauth",
+    passthroughModels: true,
+    authHint:
+      "Sign in with the Muse Code device flow (same as `muse login` / CLIProxyAPI `-meta-login`) to use a Muse subscription, or paste a META_API_KEY. Device login keeps the durable dca token and mints the inference key; a 401 remints that key. Wire format is OpenAI Responses (POST /responses).",
   },
 };

@@ -1,7 +1,9 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.ts";
+import { createGeminiToolCallIdPairing } from "../helpers/geminiToolCallIds.ts";
 import { fixToolPairs } from "../../services/contextManager.ts";
+import { normalizeEffort } from "@/shared/reasoning/effortStandardization";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -21,6 +23,16 @@ export function antigravityToOpenAIRequest(model, body, stream) {
     stream: stream,
   };
 
+  // Explicit per-alias reasoning-effort override (Antigravity MITM layer only —
+  // `src/mitm/aliasConfig.ts` / `src/mitm/_internal/aliasConfig.cjs`). Set at the same
+  // envelope level as `model` (top-level `body`, sibling of `.request`), so it survives
+  // regardless of which cloudcode envelope shape the caller used. When present it takes
+  // priority over the thinkingConfig-derived value below: an explicit "none" suppresses
+  // reasoning_effort entirely even if Antigravity's own thinkingConfig requested thinking;
+  // any other explicit tier is emitted verbatim instead of the coarse budget-based guess.
+  // Ported from upstream decolua/9router#2584 ("add Antigravity reasoning effort overrides").
+  const effortOverride = normalizeEffort((body as JsonRecord).reasoningEffortOverride);
+
   // Generation config
   if (req.generationConfig) {
     const config = req.generationConfig;
@@ -38,8 +50,8 @@ export function antigravityToOpenAIRequest(model, body, stream) {
       result.top_k = config.topK;
     }
 
-    // Thinking config → reasoning_effort
-    if (config.thinkingConfig) {
+    // Thinking config → reasoning_effort (skipped when an explicit override is present).
+    if (effortOverride === undefined && config.thinkingConfig) {
       const budget = config.thinkingConfig.thinkingBudget || 0;
       if (budget > 0) {
         if (budget <= 2048) {
@@ -53,6 +65,12 @@ export function antigravityToOpenAIRequest(model, body, stream) {
     }
   }
 
+  if (effortOverride !== undefined && effortOverride !== "none") {
+    result.reasoning_effort = effortOverride;
+  } else if (effortOverride === "none") {
+    delete result.reasoning_effort;
+  }
+
   // System instruction
   if (req.systemInstruction) {
     const systemText = extractText(req.systemInstruction);
@@ -63,8 +81,12 @@ export function antigravityToOpenAIRequest(model, body, stream) {
 
   // Convert contents to messages
   if (req.contents && Array.isArray(req.contents)) {
+    const toolCallIds = createGeminiToolCallIdPairing(
+      () => `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    );
     for (const content of req.contents) {
-      const converted = convertContent(content);
+      toolCallIds.beginContent(content);
+      const converted = convertContent(content, toolCallIds);
       if (converted) {
         if (Array.isArray(converted)) {
           result.messages.push(...converted);
@@ -203,12 +225,15 @@ function preserveRequired(obj: unknown): void {
     return;
   }
   const record = obj as JsonRecord;
-  if (Array.isArray(record.required) && record.properties && typeof record.properties === "object") {
+  if (
+    Array.isArray(record.required) &&
+    record.properties &&
+    typeof record.properties === "object"
+  ) {
     const properties = record.properties as JsonRecord;
     const valid = (record.required as unknown[]).filter(
       (field) =>
-        typeof field === "string" &&
-        Object.prototype.hasOwnProperty.call(properties, field)
+        typeof field === "string" && Object.prototype.hasOwnProperty.call(properties, field)
     );
     if (valid.length === 0) {
       delete record.required;
@@ -223,7 +248,7 @@ function preserveRequired(obj: unknown): void {
 
 // Convert Antigravity content to OpenAI message
 // Handles: text, thought, thoughtSignature, functionCall, functionResponse, inlineData
-function convertContent(content) {
+function convertContent(content, toolCallIds) {
   const role =
     content.role === "model" ? "assistant" : content.role === "user" ? "user" : content.role;
 
@@ -270,7 +295,7 @@ function convertContent(content) {
     // Function call
     if (part.functionCall) {
       toolCalls.push({
-        id: part.functionCall.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: toolCallIds.callId(part.functionCall),
         type: "function",
         function: {
           name: part.functionCall.name,
@@ -281,12 +306,13 @@ function convertContent(content) {
 
     // Function response → collect all, each becomes a separate tool message
     if (part.functionResponse) {
+      const resp = part.functionResponse.response;
+      const resultPayload =
+        resp && typeof resp === "object" && "result" in resp ? resp.result : (resp ?? {});
       toolResults.push({
         role: "tool",
-        tool_call_id: part.functionResponse.id || part.functionResponse.name,
-        content: JSON.stringify(
-          part.functionResponse.response?.result || part.functionResponse.response || {}
-        ),
+        tool_call_id: toolCallIds.responseId(part.functionResponse),
+        content: JSON.stringify(resultPayload),
       });
     }
   }
@@ -299,9 +325,7 @@ function convertContent(content) {
       const assistantMsg: JsonRecord = { role: "assistant" };
       if (textParts.length > 0) {
         assistantMsg.content =
-          textParts.length === 1 && textParts[0].type === "text"
-            ? textParts[0].text
-            : textParts;
+          textParts.length === 1 && textParts[0].type === "text" ? textParts[0].text : textParts;
       }
       if (reasoningContent) {
         assistantMsg.reasoning_content = reasoningContent;

@@ -1,6 +1,6 @@
 import { getComboById, getCombos } from "@/lib/db/combos";
 import { getDbInstance } from "@/lib/db/core";
-import { getQuotaSnapshots } from "@/lib/db/quotaSnapshots";
+import { getQuotaSnapshots, isUnreportedQuotaSnapshot } from "@/lib/db/quotaSnapshots";
 import { getComboMetrics } from "@omniroute/open-sse/services/comboMetrics.ts";
 import { resolveNestedComboTargets } from "@omniroute/open-sse/services/combo.ts";
 import type {
@@ -32,10 +32,17 @@ type QuotaSnapshotView = {
 
 type ProviderHealth = {
   provider: string;
-  remainingPct: number;
+  remainingPct: number | null;
   isExhausted: boolean;
   trend: "improving" | "stable" | "declining";
+  dropReason: "no-snapshot" | null;
 };
+
+export type HealthDropReason =
+  | import("../../../open-sse/services/autoCombo/strictZeroCostFilter").StrictZeroCostExclusionReason
+  | "hidePaidModels"
+  | "modelLockout"
+  | "no-snapshot";
 
 type ResolvedComboTargetView = {
   stepId: string;
@@ -55,8 +62,8 @@ type RuntimeTargetMetricView = {
 };
 
 type HistoricalTargetAggregateRow = {
-  executionKey: string | null;
-  stepId: string | null;
+  metricScope: "execution" | "step";
+  metricKey: string | null;
   requests: number | null;
   successCount: number | null;
   avgLatencyMs: number | null;
@@ -64,8 +71,12 @@ type HistoricalTargetAggregateRow = {
   lastUsedAt: string | null;
 };
 
+type HistoricalTargetMetrics = {
+  byExecutionKey: Map<string, HistoricalTargetMetricView>;
+  byStepId: Map<string, HistoricalTargetMetricView>;
+};
+
 type HistoricalTargetMetricView = {
-  stepId: string | null;
   requests: number;
   successRate: number;
   avgLatencyMs: number;
@@ -112,13 +123,20 @@ function calculateGini(values: number[]): number {
   return (2 * weightedSum) / (count * sum) - (count + 1) / count;
 }
 
-function buildProviderHealth(provider: string, snapshots: QuotaSnapshotRow[]): ProviderHealth {
+export function buildProviderHealth(
+  provider: string,
+  allSnapshots: QuotaSnapshotRow[]
+): ProviderHealth {
+  // #10095: a window the upstream did not report is a 0% placeholder, not a reading.
+  const snapshots = allSnapshots.filter((snapshot) => !isUnreportedQuotaSnapshot(snapshot));
   if (snapshots.length === 0) {
     return {
       provider,
-      remainingPct: 0,
+      remainingPct: null,
+      // stable: no data yet, not exhausted — null pct, not 0
       isExhausted: false,
       trend: "stable",
+      dropReason: "no-snapshot",
     };
   }
 
@@ -186,17 +204,19 @@ function buildProviderHealth(provider: string, snapshots: QuotaSnapshotRow[]): P
 
   return {
     provider,
-    remainingPct: roundNumber(lastAverage),
+    remainingPct: lastValues.length === 0 ? null : roundNumber(lastAverage),
     isExhausted,
     trend,
+    dropReason: null,
   };
 }
 
 function buildConnectionHealth(
   provider: string,
   connectionId: string,
-  snapshots: QuotaSnapshotRow[]
+  allSnapshots: QuotaSnapshotRow[]
 ): ProviderHealth | null {
+  const snapshots = allSnapshots.filter((snapshot) => !isUnreportedQuotaSnapshot(snapshot));
   if (snapshots.length === 0) return null;
 
   const ordered = [...snapshots].sort((left, right) => {
@@ -218,10 +238,10 @@ function buildConnectionHealth(
   });
 
   const firstRemaining =
-    (firstSnapshot as unknown as QuotaSnapshotView | undefined)?.remainingPercentage ?? 0;
+    (firstSnapshot as unknown as QuotaSnapshotView | undefined)?.remainingPercentage ?? null;
   const lastRemaining =
-    (lastSnapshot as unknown as QuotaSnapshotView | undefined)?.remainingPercentage ?? 0;
-  const delta = lastRemaining - firstRemaining;
+    (lastSnapshot as unknown as QuotaSnapshotView | undefined)?.remainingPercentage ?? null;
+  const delta = (lastRemaining ?? 0) - (firstRemaining ?? 0);
 
   let trend: ProviderHealth["trend"] = "stable";
   if (delta >= 5) trend = "improving";
@@ -229,10 +249,11 @@ function buildConnectionHealth(
 
   return {
     provider: `${provider}:${connectionId}`,
-    remainingPct: roundNumber(lastRemaining),
+    remainingPct: lastRemaining === null ? null : roundNumber(lastRemaining),
     isExhausted:
       (ordered[ordered.length - 1] as unknown as QuotaSnapshotView | undefined)?.isExhausted === 1,
     trend,
+    dropReason: null,
   };
 }
 
@@ -317,36 +338,33 @@ function buildPerformance(comboName: string, since: string): ComboHealthMetrics[
   };
 }
 
-function buildQuotaHealth(providers: string[], since: string): ComboHealthMetrics["quotaHealth"] {
+export function buildQuotaHealth(
+  providers: string[],
+  since: string
+): ComboHealthMetrics["quotaHealth"] {
   const providerHealth = providers.map((provider) =>
     buildProviderHealth(provider, getQuotaSnapshots({ provider, since }))
   );
 
-  const worstRemainingPct =
-    providerHealth.length > 0
-      ? providerHealth.reduce(
-          (lowest, entry) => Math.min(lowest, entry.remainingPct),
-          providerHealth[0].remainingPct
-        )
-      : 0;
+  const nonNull = providerHealth
+    .map((entry) => entry.remainingPct)
+    .filter((v): v is number => typeof v === "number");
+  const worst = nonNull.length > 0 ? Math.min(...nonNull) : null;
 
   return {
     providers: providerHealth,
-    worstRemainingPct: roundNumber(worstRemainingPct),
+    worstRemainingPct: worst === null ? null : roundNumber(worst),
   };
 }
 
-function getHistoricalTargetMetrics(
-  comboName: string,
-  since: string
-): Map<string, HistoricalTargetMetricView> {
+function getHistoricalTargetMetrics(comboName: string, since: string): HistoricalTargetMetrics {
   const db = getDbInstance();
   const rows = db
     .prepare(
       `WITH target_logs AS (
          SELECT
            id,
-           COALESCE(NULLIF(combo_execution_key, ''), NULLIF(combo_step_id, '')) AS executionKey,
+           NULLIF(combo_execution_key, '') AS executionKey,
            NULLIF(combo_step_id, '') AS stepId,
            status,
            duration,
@@ -354,64 +372,98 @@ function getHistoricalTargetMetrics(
          FROM call_logs
          WHERE combo_name = ?
            AND timestamp >= ?
-           AND COALESCE(NULLIF(combo_execution_key, ''), NULLIF(combo_step_id, '')) IS NOT NULL
+           AND (
+             NULLIF(combo_execution_key, '') IS NOT NULL
+             OR NULLIF(combo_step_id, '') IS NOT NULL
+           )
+       ),
+       scoped_logs AS (
+         SELECT
+           'execution' AS metricScope,
+           executionKey AS metricKey,
+           id,
+           status,
+           duration,
+           timestamp
+         FROM target_logs
+         WHERE executionKey IS NOT NULL
+         UNION ALL
+         SELECT
+           'step' AS metricScope,
+           stepId AS metricKey,
+           id,
+           status,
+           duration,
+           timestamp
+         FROM target_logs
+         WHERE stepId IS NOT NULL
        ),
        aggregate_metrics AS (
          SELECT
-           executionKey,
-           MAX(stepId) AS stepId,
+           metricScope,
+           metricKey,
            COUNT(*) AS requests,
            SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) AS successCount,
            AVG(duration) AS avgLatencyMs,
            MAX(timestamp) AS lastUsedAt
-         FROM target_logs
-         GROUP BY executionKey
+         FROM scoped_logs
+         GROUP BY metricScope, metricKey
        ),
        latest_metrics AS (
-         SELECT executionKey, stepId, status AS lastStatusCode
+         SELECT metricScope, metricKey, status AS lastStatusCode
          FROM (
            SELECT
-             executionKey,
-             stepId,
+             metricScope,
+             metricKey,
              status,
              ROW_NUMBER() OVER (
-               PARTITION BY executionKey
+               PARTITION BY metricScope, metricKey
                ORDER BY timestamp DESC, id DESC
              ) AS rowRank
-           FROM target_logs
+           FROM scoped_logs
          )
          WHERE rowRank = 1
        )
        SELECT
-         aggregate_metrics.executionKey,
-         COALESCE(latest_metrics.stepId, aggregate_metrics.stepId) AS stepId,
+         aggregate_metrics.metricScope,
+         aggregate_metrics.metricKey,
          aggregate_metrics.requests,
          aggregate_metrics.successCount,
          aggregate_metrics.avgLatencyMs,
          latest_metrics.lastStatusCode,
          aggregate_metrics.lastUsedAt
        FROM aggregate_metrics
-       LEFT JOIN latest_metrics ON latest_metrics.executionKey = aggregate_metrics.executionKey
-       ORDER BY aggregate_metrics.executionKey ASC`
+       LEFT JOIN latest_metrics
+         ON latest_metrics.metricScope = aggregate_metrics.metricScope
+        AND latest_metrics.metricKey = aggregate_metrics.metricKey
+       ORDER BY aggregate_metrics.metricScope ASC, aggregate_metrics.metricKey ASC`
     )
     .all(comboName, since) as HistoricalTargetAggregateRow[];
 
-  const metrics = new Map<string, HistoricalTargetMetricView>();
+  const metrics: HistoricalTargetMetrics = {
+    byExecutionKey: new Map(),
+    byStepId: new Map(),
+  };
   for (const row of rows) {
-    const executionKey = toNonEmptyString(row.executionKey);
-    if (!executionKey) continue;
+    const metricKey = toNonEmptyString(row.metricKey);
+    if (!metricKey) continue;
 
     const requests = toSafeNumber(row.requests);
     const successCount = toSafeNumber(row.successCount);
     const statusCode = toSafeNumber(row.lastStatusCode);
-    metrics.set(executionKey, {
-      stepId: toNonEmptyString(row.stepId),
+    const metric = {
       requests,
       successRate: requests > 0 ? Math.round((successCount / requests) * 100) : 0,
       avgLatencyMs: Math.round(toSafeNumber(row.avgLatencyMs)),
       lastStatus: statusCode > 0 ? (statusCode < 400 ? "ok" : "error") : null,
       lastUsedAt: toNonEmptyString(row.lastUsedAt),
-    });
+    } satisfies HistoricalTargetMetricView;
+
+    if (row.metricScope === "execution") {
+      metrics.byExecutionKey.set(metricKey, metric);
+    } else {
+      metrics.byStepId.set(metricKey, metric);
+    }
   }
 
   return metrics;
@@ -426,8 +478,16 @@ function buildTargetHealth(
   const historicalMetrics = getHistoricalTargetMetrics(comboName, since);
 
   return targets.map((target) => {
-    const historicalMetric =
-      historicalMetrics.get(target.executionKey) || historicalMetrics.get(target.stepId) || null;
+    const concreteExecutionKey = target.connectionId
+      ? `${target.stepId}@${target.connectionId}`
+      : target.executionKey;
+    const historicalMetric = target.connectionId
+      ? (historicalMetrics.byExecutionKey.get(concreteExecutionKey) ??
+        historicalMetrics.byExecutionKey.get(target.executionKey) ??
+        null)
+      : (historicalMetrics.byStepId.get(target.stepId) ??
+        historicalMetrics.byExecutionKey.get(target.executionKey) ??
+        null);
     const runtimeMetric =
       historicalMetric === null
         ? ((comboMetrics?.byTarget?.[target.executionKey] ||

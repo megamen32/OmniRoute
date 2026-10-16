@@ -1,30 +1,63 @@
+import type { AntigravityClientProfile } from "@/shared/constants/antigravityClientProfile";
 import {
-  ANTIGRAVITY_FALLBACK_VERSION,
-  getCachedAntigravityVersion,
-  resolveAntigravityVersion,
+  getCachedAntigravityCliVersion,
+  getCachedAntigravityIdeVersion,
 } from "./antigravityVersion.ts";
 
-/**
- * Antigravity header utilities.
- *
- * Generates User-Agent strings and API client headers that match
- * the real Antigravity client flows.
- *
- * Based on CLIProxyAPI's misc/header_utils.go.
- */
+// loadCodeAssist/onboardUser's `metadata` body is a protobuf-JSON-shaped
+// object — ideType/pluginType are int32 enums on the wire, not strings, and
+// platform is required. Values mirror the sibling 9router project's
+// LOAD_CODE_ASSIST_METADATA (open-sse/config/appConstants.js).
+//
+// Live comparison (same Google account, same host, 2026-08-25): 9Router
+// (this exact metadata shape, including a Linux platform enum) succeeded
+// against loadCodeAssist/onboardUser; OmniRoute (ideType as the bare string
+// "ANTIGRAVITY", no platform/pluginType) got 403 on both from the identical
+// account. Sending an incomplete client identity reads to Google's backend
+// as untrusted and gets rejected.
+//
+// NOTE: a prior version of this function carried the comment "Matches
+// Antigravity-Manager quota.rs: only ideType (no platform — LINUX is
+// rejected)" — the opposite conclusion, presumably true when it was
+// written. Trusting the fresh live comparison over that stale claim here;
+// if this regresses Linux specifically, that old note is why.
+const ANTIGRAVITY_IDE_TYPE_ENUM = 9;
+const ANTIGRAVITY_PLUGIN_TYPE_GEMINI_ENUM = 2;
+const ANTIGRAVITY_PLATFORM_ENUM = {
+  UNSPECIFIED: 0,
+  DARWIN_AMD64: 1,
+  DARWIN_ARM64: 2,
+  LINUX_AMD64: 3,
+  LINUX_ARM64: 4,
+  WINDOWS_AMD64: 5,
+} as const;
 
-type AntigravityHeaderProfile = "loadCodeAssist" | "fetchAvailableModels" | "models";
+function resolveAntigravityPlatformEnum(): number {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "darwin") {
+    return arch === "arm64"
+      ? ANTIGRAVITY_PLATFORM_ENUM.DARWIN_ARM64
+      : ANTIGRAVITY_PLATFORM_ENUM.DARWIN_AMD64;
+  }
+  if (platform === "linux") {
+    return arch === "arm64"
+      ? ANTIGRAVITY_PLATFORM_ENUM.LINUX_ARM64
+      : ANTIGRAVITY_PLATFORM_ENUM.LINUX_AMD64;
+  }
+  if (platform === "win32") return ANTIGRAVITY_PLATFORM_ENUM.WINDOWS_AMD64;
+  return ANTIGRAVITY_PLATFORM_ENUM.UNSPECIFIED;
+}
 
-const ANTIGRAVITY_VERSION = ANTIGRAVITY_FALLBACK_VERSION;
-// IDE desktop fingerprint synced with Antigravity-Manager v4.2.0 constants.rs.
-export const ANTIGRAVITY_CHROME_VERSION = "142.0.7444.175";
-export const ANTIGRAVITY_ELECTRON_VERSION = "39.2.3";
-export const ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT = `vscode/1.X.X (Antigravity/${ANTIGRAVITY_FALLBACK_VERSION})`;
-export const ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT = "";
-export const ANTIGRAVITY_NODE_API_CLIENT = "google-api-nodejs-client/10.3.0";
-// Harness/bootstrap X-Goog-Api-Client synced with CLIProxyAPI misc.AntigravityGoogAPIClientUA.
-export const ANTIGRAVITY_CREDIT_PROBE_API_CLIENT = "gl-node/22.21.1";
-export const ANTIGRAVITY_API_CLIENT = ANTIGRAVITY_CREDIT_PROBE_API_CLIENT;
+export const ANTIGRAVITY_IDE_NODE_API_CLIENT = "google-api-nodejs-client/10.3.0";
+export const ANTIGRAVITY_IDE_NODE_X_GOOG_API_CLIENT = "gl-node/22.21.1";
+
+// Antigravity presents the native macOS desktop client fingerprint: the upstream
+// backend expects the Mac build, so the OS/arch token is pinned to darwin/arm64
+// regardless of the host OmniRoute happens to run on (#8098). The IDE / CLI /
+// IDE-Node User-Agent split (#8013) is preserved — only the platform token is fixed.
+const ANTIGRAVITY_OS_TYPE = "darwin";
+const ANTIGRAVITY_ARCH = "arm64";
 
 function withOptionalBearerAuth(
   headers: Record<string, string>,
@@ -36,86 +69,54 @@ function withOptionalBearerAuth(
   return headers;
 }
 
-function getAntigravityPlatformInfo(platform: NodeJS.Platform = process.platform): string {
-  switch (platform) {
-    case "darwin":
-      return "Macintosh; Intel Mac OS X 10_15_7";
-    case "win32":
-      return "Windows NT 10.0; Win64; x64";
-    case "linux":
-    default:
-      return "X11; Linux x86_64";
-  }
+export function antigravityIdeUserAgent(version = getCachedAntigravityIdeVersion()): string {
+  return `antigravity/ide/${version} ${ANTIGRAVITY_OS_TYPE}/${ANTIGRAVITY_ARCH}`;
 }
 
-/**
- * Antigravity desktop User-Agent:
- * "Antigravity/VERSION (PLATFORM) Chrome/142... Electron/39..."
- */
-export function antigravityUserAgent(
-  version = getCachedAntigravityVersion(),
-  platform: NodeJS.Platform = process.platform
+export function antigravityCliUserAgent(
+  version = getCachedAntigravityCliVersion(),
+  authMethod = "consumer"
 ): string {
-  return `Antigravity/${version} (${getAntigravityPlatformInfo(platform)}) Chrome/${ANTIGRAVITY_CHROME_VERSION} Electron/${ANTIGRAVITY_ELECTRON_VERSION}`;
+  return `antigravity/cli/${version} (aidev_client; os_type=${ANTIGRAVITY_OS_TYPE}; arch=${ANTIGRAVITY_ARCH}; auth_method=${authMethod})`;
 }
 
-export async function resolveAntigravityUserAgent(
-  platform: NodeJS.Platform = process.platform
-): Promise<string> {
-  const version = await resolveAntigravityVersion();
-  return antigravityUserAgent(version, platform);
+export function antigravityIdeNodeUserAgent(version = getCachedAntigravityIdeVersion()): string {
+  return `antigravity/${version} ${ANTIGRAVITY_OS_TYPE}/${ANTIGRAVITY_ARCH} ${ANTIGRAVITY_IDE_NODE_API_CLIENT}`;
 }
 
-export function antigravityNativeOAuthUserAgent(): string {
-  return `vscode/1.X.X (Antigravity/${getCachedAntigravityVersion()})`;
+export function getAntigravityOAuthUserAgent(profile: AntigravityClientProfile): string {
+  return profile === "cli" ? antigravityCliUserAgent() : antigravityIdeNodeUserAgent();
 }
 
-/** Matches Antigravity-Manager quota.rs: only ideType (no platform — LINUX is rejected). */
-export function getAntigravityLoadCodeAssistMetadata(): Record<string, string> {
-  return {
-    ideType: "ANTIGRAVITY",
-  };
-}
-
-export function getAntigravityLoadCodeAssistClientMetadata(): string {
-  return JSON.stringify(getAntigravityLoadCodeAssistMetadata());
-}
-
-export function getAntigravityHeaders(
-  profile: AntigravityHeaderProfile,
+export function getAntigravityContentHeaders(
+  profile: AntigravityClientProfile,
   accessToken?: string | null
 ): Record<string, string> {
-  switch (profile) {
-    case "loadCodeAssist":
-      return withOptionalBearerAuth(
-        {
-          "Content-Type": "application/json",
-          "User-Agent": antigravityNativeOAuthUserAgent(),
-        },
-        accessToken
-      );
-    case "fetchAvailableModels":
-    case "models":
-      return withOptionalBearerAuth(
-        {
-          "Content-Type": "application/json",
-          "User-Agent": antigravityUserAgent(),
-        },
-        accessToken
-      );
-    default:
-      return withOptionalBearerAuth({ "Content-Type": "application/json" }, accessToken);
-  }
+  return withOptionalBearerAuth(
+    {
+      "Content-Type": "application/json",
+      "User-Agent": profile === "cli" ? antigravityCliUserAgent() : antigravityIdeUserAgent(),
+    },
+    accessToken
+  );
 }
 
-/** X-Goog-Api-Client used by Antigravity's credit probe path. */
-export function getAntigravityCreditProbeApiClientHeader(): string {
-  return ANTIGRAVITY_CREDIT_PROBE_API_CLIENT;
+export function getAntigravityIdeNodeHeaders(accessToken?: string | null): Record<string, string> {
+  return withOptionalBearerAuth(
+    {
+      "Content-Type": "application/json",
+      "User-Agent": antigravityIdeNodeUserAgent(),
+      "X-Goog-Api-Client": ANTIGRAVITY_IDE_NODE_X_GOOG_API_CLIENT,
+    },
+    accessToken
+  );
 }
 
-/** X-Goog-Api-Client used by harness/native Node Antigravity paths. */
-export function getAntigravityApiClientHeader(): string {
-  return ANTIGRAVITY_API_CLIENT;
+/** Native loadCodeAssist body metadata captured from both official clients. */
+export function getAntigravityLoadCodeAssistMetadata(): Record<string, number> {
+  return {
+    ideType: ANTIGRAVITY_IDE_TYPE_ENUM,
+    platform: resolveAntigravityPlatformEnum(),
+    pluginType: ANTIGRAVITY_PLUGIN_TYPE_GEMINI_ENUM,
+  };
 }
-
-export { ANTIGRAVITY_VERSION };

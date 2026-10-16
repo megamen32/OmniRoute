@@ -1,6 +1,10 @@
 import { getProviderAlias } from "@/shared/constants/providers";
 import { OMNIROUTE_RESPONSE_HEADERS } from "@/shared/constants/headers";
 import { APP_CONFIG } from "@/shared/constants/appConfig";
+import {
+  generationDurationMs,
+  tokensPerSecond,
+} from "@omniroute/open-sse/utils/generationThroughput";
 
 type UsageLike = Record<string, unknown> | null | undefined;
 
@@ -79,6 +83,39 @@ export function formatOmniRouteCost(costUsd: unknown): string {
   return normalized > 0 ? normalized.toFixed(10) : "0.0000000000";
 }
 
+/**
+ * Build the `X-OmniRoute-Decision` composite header value: `strategy=<name>;
+ * provider=<alias>; latency_ms=<n>`. Returns `null` when both `strategy` and
+ * `provider` are absent/blank (mirrors the per-field guard pattern used for the
+ * other optional headers). Reuses `getProviderAlias()` for the provider segment
+ * (same alias normalization the `X-OmniRoute-Provider` header already applies)
+ * and `toNonNegativeInteger()` for latency. The whole formatted string is passed
+ * through `toHeaderValue()` before returning, so a strategy/provider id
+ * containing control chars cannot corrupt the header line (Hard Rule #12 — this
+ * header only ever carries a routing strategy name, the already-public provider
+ * alias, and a latency integer; never an error message, stack trace, or secret).
+ */
+export function buildOmniRouteDecisionHeaderValue({
+  strategy = null,
+  provider = null,
+  latencyMs = 0,
+}: {
+  strategy?: string | null;
+  provider?: string | null;
+  latencyMs?: unknown;
+}): string | null {
+  const hasStrategy = typeof strategy === "string" && strategy.trim().length > 0;
+  const hasProvider = typeof provider === "string" && provider.trim().length > 0;
+  if (!hasStrategy && !hasProvider) return null;
+
+  const parts: string[] = [];
+  if (hasStrategy) parts.push(`strategy=${strategy}`);
+  if (hasProvider) parts.push(`provider=${getProviderAlias(provider as string)}`);
+  parts.push(`latency_ms=${toNonNegativeInteger(latencyMs)}`);
+
+  return toHeaderValue(parts.join("; "));
+}
+
 export function buildOmniRouteResponseMetaHeaders({
   cacheHit = false,
   costUsd = 0,
@@ -88,7 +125,9 @@ export function buildOmniRouteResponseMetaHeaders({
   model = null,
   provider = null,
   requestId = null,
+  strategy = null,
   usage = null,
+  ttftMs = null,
 }: {
   cacheHit?: boolean;
   costUsd?: unknown;
@@ -105,7 +144,18 @@ export function buildOmniRouteResponseMetaHeaders({
   model?: string | null;
   provider?: string | null;
   requestId?: string | null;
+  /**
+   * Routing decision (combo strategy name, or `"single"` for a non-combo
+   * request) surfaced via `X-OmniRoute-Decision`. See #6022.
+   */
+  strategy?: string | null;
   usage?: UsageLike;
+  /**
+   * First-token latency in ms. Required to emit tok/s: generation speed is
+   * `output_tokens / (latencyMs - ttftMs)` and MUST omit the field when TTFT
+   * is unknown so plugins do not treat `tokens / total_latency` as speed.
+   */
+  ttftMs?: number | null;
 }): Record<string, string> {
   const tokens = getOmniRouteTokenCounts(usage);
   const headers: Record<string, string> = {
@@ -140,6 +190,20 @@ export function buildOmniRouteResponseMetaHeaders({
   const attempts = toNonNegativeInteger(fallbackAttempts);
   if (attempts > 0) {
     headers[OMNIROUTE_RESPONSE_HEADERS.fallbackAttempts] = toHeaderValue(String(attempts));
+  }
+
+  const decisionValue = buildOmniRouteDecisionHeaderValue({ strategy, provider, latencyMs });
+  if (decisionValue !== null) {
+    headers[OMNIROUTE_RESPONSE_HEADERS.decision] = decisionValue;
+  }
+
+  let tps = tokensPerSecond(tokens.output, generationDurationMs(toFiniteNumber(latencyMs), ttftMs));
+  if (tps == null && usage && typeof usage === "object") {
+    const fromUsage = toFiniteNumber((usage as Record<string, unknown>).tokens_per_second);
+    if (fromUsage > 0) tps = fromUsage;
+  }
+  if (tps != null) {
+    headers[OMNIROUTE_RESPONSE_HEADERS.tokensPerSecond] = toHeaderValue(tps.toFixed(3));
   }
 
   return headers;

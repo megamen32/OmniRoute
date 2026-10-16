@@ -170,6 +170,39 @@ vi.mock("next-intl", () => ({
 }));
 
 describe("EndpointPageClient", () => {
+  it("requires credential-upload consent before enabling cloud sync", async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      if (getRequestPath(input) === "/api/settings")
+        return Promise.resolve(
+          jsonResponse({
+            cloudEnabled: false,
+            cloudConfigured: true,
+            cloudUrl: "https://cloud.example",
+            hideEndpointCloudflaredTunnel: true,
+            hideEndpointTailscaleFunnel: true,
+            hideEndpointNgrokTunnel: true,
+          })
+        );
+      return Promise.resolve(jsonResponse({ data: [], providers: [], keys: [] }));
+    });
+    renderEndpointPage();
+    await waitForText("https://cloud.example");
+    const enable = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("enableCloud")
+    );
+    expect(enable).toBeDefined();
+    act(() => enable!.click());
+    expect(document.body.textContent).toContain("OAuth access/refresh tokens");
+    const consent = document.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    expect(consent.checked).toBe(false);
+    const submit = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.getAttribute("class")?.includes("w-full") && b.textContent?.includes("enable")
+    );
+    expect(submit).toBeDefined();
+    expect(submit!.disabled).toBe(true);
+    act(() => consent.click());
+    expect(submit!.disabled).toBe(false);
+  });
   const fetchMock = vi.fn();
 
   beforeEach(() => {
@@ -186,7 +219,59 @@ describe("EndpointPageClient", () => {
       cleanupCallbacks.pop()?.();
     }
     document.body.innerHTML = "";
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("shows the public browser endpoint before the runtime local endpoint", async () => {
+    vi.stubEnv("NEXT_PUBLIC_BASE_URL", "http://localhost:20128");
+    vi.stubGlobal("location", { origin: "https://api.example.com" });
+
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const path = getRequestPath(input);
+      if (path === "/api/settings") {
+        return Promise.resolve(
+          jsonResponse({
+            cloudEnabled: false,
+            cloudConfigured: false,
+            hideEndpointCloudflaredTunnel: true,
+            hideEndpointTailscaleFunnel: true,
+            hideEndpointNgrokTunnel: true,
+          })
+        );
+      }
+      if (path === "/api/network/info") {
+        return Promise.resolve(
+          jsonResponse({
+            localUrl: "http://localhost:20131/v1",
+            lanUrls: [],
+            tailscaleIpUrl: null,
+          })
+        );
+      }
+      if (path === "/v1/models") return Promise.resolve(jsonResponse({ data: [] }));
+      if (path === "/api/mcp/status") return Promise.resolve(jsonResponse({ online: false }));
+      if (path === "/api/a2a/status") {
+        return Promise.resolve(jsonResponse({ status: "ok", tasks: { activeStreams: 0 } }));
+      }
+      if (path === "/api/search/providers") {
+        return Promise.resolve(jsonResponse({ providers: [] }));
+      }
+      if (path === "/api/cli-tools/keys") return Promise.resolve(jsonResponse({ keys: [] }));
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderEndpointPage();
+
+    await waitForText("https://api.example.com/v1");
+    await waitForText("http://localhost:20131/v1");
+
+    const displayedUrls = Array.from(document.body.querySelectorAll("code")).map(
+      (element) => element.textContent
+    );
+    expect(displayedUrls.indexOf("https://api.example.com/v1")).toBeLessThan(
+      displayedUrls.indexOf("http://localhost:20131/v1")
+    );
   });
 
   it("renders the endpoint shell before models finish and skips hidden tunnel probes", async () => {

@@ -23,7 +23,7 @@
  *   5. ~/.auggie/bin/auggie                  (alternate installer layout)
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type StdioOptions } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -38,15 +38,132 @@ const AUGGIE_URL = "auggie://cli/stdio";
 // untrusted-input sink. We only ever pass a model that is declared in the
 // registry entry — this closes flag-smuggling (a `model` starting with "-" would
 // otherwise be parsed by auggie as an option) and unknown-model passthrough.
+//
+// The static registry (shipped with the code) is checked first.  On first use
+// the executor also spawns `auggie model list` at runtime and merges any IDs it
+// finds — this lets the allowlist stay current when auggie adds or renames
+// models without a code update.
 const AUGGIE_MODEL_ALLOWLIST: ReadonlySet<string> = new Set(auggieProvider.models.map((m) => m.id));
 const DEFAULT_AUGGIE_MODEL = auggieProvider.models[0]?.id ?? "claude-sonnet-4.6";
+// ─── Model alias map (backward compat for saved combos) ─────────────────────
+// Old model IDs from before the v0.32.0 registry update; each maps to the
+// equivalent v0.32.0 ID so existing combos continue to work after the rename.
+const AUGGIE_MODEL_ALIASES: ReadonlyMap<string, string> = new Map([
+  // Claude
+  ["claude-sonnet-4.6", "sonnet4.6"],
+  ["claude-sonnet-4.6-thinking", "sonnet4.6"],
+  ["claude-opus-4.6", "opus4.6"],
+  ["claude-haiku-4.5", "haiku4.5"],
+  // Gemini
+  ["gemini-3.1-pro", "gemini-3.1-pro-preview"],
+  ["gemini-3.0-flash", "gemini-3.1-pro-preview"],
+  // GPT-5.x (high/medium split was synthetic — v0.32.0 has a single ID per version)
+  ["gpt-5.5-high", "gpt5.5"],
+  ["gpt-5.5-medium", "gpt5.5"],
+  ["gpt-5.4-high", "gpt5.4"],
+  ["gpt-5.4-medium", "gpt5.4"],
+]);
+
+/**
+ * Live model cache populated by `initAuggieModels()`.
+ * - `null`  = not yet attempted
+ * - `Set`   = successfully fetched IDs (possibly empty)
+ */
+let liveModelSet: Set<string> | null = null;
+
+/**
+ * Spawn `auggie model list`, parse `[model-id]` entries, and merge them into
+ * the live allowlist so the executor accepts models auggie recognises even
+ * when the static registry has not been updated yet.
+ *
+ * Safe to call repeatedly: only the first call spawns the process; subsequent
+ * calls are a no-op (including after a failed fetch — `liveModelSet` is set to
+ * an empty set so we don't retry every request).
+ */
+export async function initAuggieModels(
+  signal?: AbortSignal | null,
+  timeoutMs = 8000
+): Promise<void> {
+  if (liveModelSet !== null) return;
+  let bin: string;
+  try {
+    bin = resolveAuggieBin();
+  } catch {
+    liveModelSet = new Set();
+    return;
+  }
+  const child = spawn(bin, ["model", "list"], buildAuggieSpawnOptions(["ignore", "pipe", "pipe"]));
+  const fragments: string[] = [];
+  child.stdout.on("data", (d: Buffer) => fragments.push(d.toString("utf8")));
+  let settled = false;
+  const settle = (result: Set<string>) => {
+    if (settled) return;
+    settled = true;
+    liveModelSet = result;
+  };
+  const timer = setTimeout(() => {
+    if (!child.killed) child.kill("SIGKILL");
+    settle(new Set());
+  }, timeoutMs);
+  const onAbort = () => {
+    if (!child.killed) child.kill("SIGKILL");
+    clearTimeout(timer);
+    settle(new Set());
+  };
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer);
+      settle(new Set());
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.on("close", resolve);
+      child.on("error", (e: Error) => reject(e));
+    });
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    if (code !== 0) {
+      settle(new Set());
+      return;
+    }
+    const ids = new Set<string>();
+    for (const line of fragments.join("").split("\n")) {
+      const m = line.match(/\[([^\]]+)\]/);
+      if (m) ids.add(m[1]);
+    }
+    settle(ids.size > 0 ? ids : new Set());
+  } catch {
+    clearTimeout(timer);
+    settle(new Set());
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
 
 type AuggieModelResolution = { ok: true; model: string } | { ok: false; error: string };
+
+/**
+ * This workspace compiles with `strictNullChecks: false`, where a boolean-literal
+ * discriminant narrows the positive branch but not the negative one — so `!r.ok` alone
+ * leaves `r` as the full union and reading `.error` fails. An explicit type predicate
+ * narrows under those settings without retagging the union (which is public API here:
+ * `resolveAuggieModel` is exported and its tests deep-equal the `{ ok: true, ... }` shape).
+ */
+function isAuggieModelFailure(
+  resolution: AuggieModelResolution
+): resolution is Extract<AuggieModelResolution, { ok: false }> {
+  return !resolution.ok;
+}
 
 /**
  * Validate + resolve the requested model against the registry allowlist.
  * Rejects flag-smuggling (leading "-") and any id not declared in the registry.
  * An empty/absent model resolves to the registry's first (default) model.
+ *
+ * Note: `initAuggieModels()` must be called at least once before this function
+ * sees live-discovered models (the executor's `execute()` does this).
  */
 export function resolveAuggieModel(model: unknown): AuggieModelResolution {
   const requested = typeof model === "string" ? model.trim() : "";
@@ -57,15 +174,20 @@ export function resolveAuggieModel(model: unknown): AuggieModelResolution {
       error: `Invalid Auggie model "${requested}": model must not start with "-".`,
     };
   }
-  if (!AUGGIE_MODEL_ALLOWLIST.has(requested)) {
-    return {
-      ok: false,
-      error: `Unknown Auggie model "${requested}". Supported models: ${[
-        ...AUGGIE_MODEL_ALLOWLIST,
-      ].join(", ")}.`,
-    };
-  }
-  return { ok: true, model: requested };
+  // Backward-compat alias: resolve old model IDs → v0.32.0 equivalents.
+  // This lets saved combos referencing the old names keep working.
+  const requestedAlias = AUGGIE_MODEL_ALIASES.get(requested);
+  if (requestedAlias) return { ok: true, model: requestedAlias };
+  // Static registry — always authoritative for the shipped set.
+  if (AUGGIE_MODEL_ALLOWLIST.has(requested)) return { ok: true, model: requested };
+  // Live-discovered models (if loaded) extend the static list.
+  if (liveModelSet?.has(requested)) return { ok: true, model: requested };
+  const known = [...AUGGIE_MODEL_ALLOWLIST];
+  if (liveModelSet) known.push(...liveModelSet);
+  return {
+    ok: false,
+    error: `Unknown Auggie model "${requested}". Supported models: ${known.join(", ")}.`,
+  };
 }
 
 /**
@@ -91,15 +213,23 @@ function buildAuggieArgs(model: string): string[] {
  * elements to the shell, it does not concatenate them into a single
  * command line.
  */
-export function buildAuggieSpawnOptions(stdio: ["pipe", "pipe", "pipe"]): {
+// #14496: `S extends readonly string[]` does not satisfy any `spawn()` overload
+// (TS2769), and once the overload fails the returned ChildProcess is inferred
+// without its stdio streams, which is where the TS18047 "possibly null" pile came
+// from. Constraining to StdioOptions keeps the literal tuple AND matches spawn().
+export function buildAuggieSpawnOptions<S extends StdioOptions>(
+  stdio: S
+): {
   env: NodeJS.ProcessEnv;
-  stdio: ["pipe", "pipe", "pipe"];
+  stdio: S;
   shell: boolean;
+  windowsHide: true;
 } {
   return {
     env: process.env,
     stdio,
     shell: process.platform === "win32",
+    windowsHide: true,
   };
 }
 
@@ -151,6 +281,7 @@ export function buildAuggiePrompt(messages: OpenAIMsg[]): string {
       }
     }
     if (!text.trim()) continue;
+
     if (role === "system") {
       lines.push(`[System]\n${text}`);
     } else if (role === "assistant") {
@@ -164,6 +295,70 @@ export function buildAuggiePrompt(messages: OpenAIMsg[]): string {
 
 function isEnoentLike(message: string): boolean {
   return message.includes("ENOENT") || message.includes("not found");
+}
+
+// ─── In-band quota-exhausted detection (#12949) ───────────────────────────────
+// When a user's Augment/Auggie quota is exhausted, the real `auggie` CLI does NOT
+// exit non-zero — it prints a human-readable warning to stdout and exits 0 (a
+// clean exit). Left unchecked, that text is wrapped verbatim as a normal, 200
+// assistant reply, so combo/fallback routing (which only fails over on a non-2xx
+// status, or a top-level `error` SSE envelope for streaming) never sees a failure
+// and keeps sending requests to the same exhausted connection. Anchored tightly to
+// Auggie's actual fixed wording (not generic words like "quota"/"usage" alone) so
+// a legitimate reply that merely discusses usage/quota in passing is not
+// misclassified — see the "no false positive" case in
+// tests/unit/issue-12949-auggie-quota-exhausted-200.test.ts.
+const AUGGIE_QUOTA_EXHAUSTED_PATTERNS = [
+  /you have run out of usage/i,
+  /run out of usage for/i,
+  /usage limit exceeded/i,
+];
+
+export function isAuggieQuotaExhaustedText(text: string): boolean {
+  return AUGGIE_QUOTA_EXHAUSTED_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+const AUGGIE_QUOTA_EXHAUSTED_CODE = "AUGGIE_QUOTA_EXHAUSTED";
+
+/**
+ * Build the 429 error Response for a detected in-band quota-exhausted message
+ * (non-streaming path). Mirrors the shape `blackbox-web.ts` uses for its own
+ * in-band, HTTP-200 error text (upgrade/login-required/rate-limit) — see
+ * open-sse/executors/blackbox-web.ts:590-647 — a direct JSON error body rather
+ * than buildErrorBody(), whose `code`/`type` fields are projected onto a bounded
+ * public-identifier vocabulary that does not (yet) include this provider-specific
+ * code.
+ */
+function buildAuggieQuotaErrorResponse(message: string): Response {
+  const body = {
+    error: {
+      message: sanitizeErrorMessage(message),
+      type: "upstream_error",
+      code: AUGGIE_QUOTA_EXHAUSTED_CODE,
+    },
+  };
+  return new Response(JSON.stringify(body), {
+    status: 429,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// Windows cmd.exe and POSIX shells never raise a Node `spawn` 'error' event for a
+// missing binary when `shell: true` is used (see buildAuggieSpawnOptions) — they
+// report it as a normal non-zero exit with the "not found" text on stderr instead.
+// Recognize that shape too so the `close` handlers give the same actionable
+// cliNotFoundMessage() as the `error` handlers already do. See #12645.
+const CLI_NOT_FOUND_STDERR_PATTERNS = [
+  /is not recognized as an internal or external command/i,
+  /command not found/i,
+  // dash/POSIX `sh` shells report a missing executable as `<name>: not found`
+  // (no literal "command"), e.g. "sh: 1: auggie: not found".
+  /:\s*not found\s*$/im,
+  /No such file or directory/i,
+];
+
+function isCliNotFoundText(stderrTail: string): boolean {
+  return CLI_NOT_FOUND_STDERR_PATTERNS.some((pattern) => pattern.test(stderrTail));
 }
 
 export type AuggieCliVersionCheck = { ok: boolean; version?: string; error?: string };
@@ -185,11 +380,7 @@ export function checkAuggieCliVersion(timeoutMs = 5000): Promise<AuggieCliVersio
 
     let child: ReturnType<typeof spawn>;
     try {
-      // No `shell` option — fixed argv, no cmd.exe interpretation.
-      child = spawn(bin, ["--version"], {
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      child = spawn(bin, ["--version"], buildAuggieSpawnOptions(["ignore", "pipe", "pipe"]));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       settle({ ok: false, error: isEnoentLike(message) ? cliNotFoundMessage(bin) : message });
@@ -252,7 +443,6 @@ export class AuggieExecutor extends BaseExecutor {
   ): Promise<Partial<ProviderCredentials> | null> {
     return null;
   }
-
   async execute({ model, body, stream, signal, log }: ExecuteInput): Promise<{
     response: Response;
     url: string;
@@ -265,9 +455,12 @@ export class AuggieExecutor extends BaseExecutor {
     const auggieBin = resolveAuggieBin();
     const wantsStream = stream !== false;
 
+    // On first execution, try to discover model IDs the local auggie recognises.
+    // Best-effort: missing/inactive CLI falls through to the static list.
+    await initAuggieModels(signal);
     // Argument-injection defense: never forward an unvalidated model into the argv.
     const modelResolution = resolveAuggieModel(model);
-    if (!modelResolution.ok) {
+    if (isAuggieModelFailure(modelResolution)) {
       const response = wantsStream
         ? buildAuggieSseError(modelResolution.error)
         : errorResponse(400, modelResolution.error);
@@ -374,8 +567,8 @@ export class AuggieExecutor extends BaseExecutor {
           );
         };
 
-        const emitError = (message: string) => {
-          emit(`data: ${JSON.stringify(buildErrorBody(502, message))}\n\n`);
+        const emitError = (message: string, statusCode = 502) => {
+          emit(`data: ${JSON.stringify(buildErrorBody(statusCode, message))}\n\n`);
           emit("data: [DONE]\n\n");
           finish();
         };
@@ -437,8 +630,41 @@ export class AuggieExecutor extends BaseExecutor {
         });
 
         let stderrTail = "";
+
+        // #12949: a quota-exhausted response is always short and delivered on the
+        // very first stdout chunk(s), so we buffer only the START of the stream
+        // (bounded — well over the quota message's length) and run the detector
+        // against it before forwarding anything as a normal delta. Once the buffer
+        // window is flushed (budget hit, or the process closes first) every later
+        // chunk is relayed live as before — no added latency for the overwhelming
+        // majority of successful, longer responses.
+        const QUOTA_DETECTION_BUFFER_BYTES = 2048;
+        let pendingBuffer = "";
+        let bufferFlushed = false;
+        let quotaDetected = false;
+
+        const flushPendingBuffer = () => {
+          if (bufferFlushed) return;
+          bufferFlushed = true;
+          if (isAuggieQuotaExhaustedText(pendingBuffer)) {
+            quotaDetected = true;
+            emitError(sanitizeErrorMessage(pendingBuffer.trim()), 429);
+            return;
+          }
+          if (pendingBuffer) emitDelta(pendingBuffer);
+          pendingBuffer = "";
+        };
+
         child.stdout?.on("data", (chunk: Buffer) => {
-          emitDelta(chunk.toString("utf8"));
+          if (quotaDetected || finished) return;
+          if (bufferFlushed) {
+            emitDelta(chunk.toString("utf8"));
+            return;
+          }
+          pendingBuffer += chunk.toString("utf8");
+          if (pendingBuffer.length >= QUOTA_DETECTION_BUFFER_BYTES) {
+            flushPendingBuffer();
+          }
         });
 
         child.stderr?.on("data", (chunk: Buffer) => {
@@ -450,12 +676,16 @@ export class AuggieExecutor extends BaseExecutor {
           if (finished) return;
           if (code !== 0) {
             emitError(
-              sanitizeErrorMessage(
-                `Auggie CLI exited with code ${code}${stderrTail ? `: ${stderrTail}` : ""}`
-              )
+              isCliNotFoundText(stderrTail)
+                ? cliNotFoundMessage(auggieBin)
+                : sanitizeErrorMessage(
+                    `Auggie CLI exited with code ${code}${stderrTail ? `: ${stderrTail}` : ""}`
+                  )
             );
             return;
           }
+          flushPendingBuffer();
+          if (quotaDetected || finished) return;
           emitStop();
         });
       },
@@ -534,11 +764,19 @@ export class AuggieExecutor extends BaseExecutor {
         if (code !== 0) {
           settle(
             buildAuggieErrorResponse(
-              sanitizeErrorMessage(
-                `Auggie CLI exited with code ${code}${stderrTail ? `: ${stderrTail}` : ""}`
-              )
+              isCliNotFoundText(stderrTail)
+                ? cliNotFoundMessage(auggieBin)
+                : sanitizeErrorMessage(
+                    `Auggie CLI exited with code ${code}${stderrTail ? `: ${stderrTail}` : ""}`
+                  )
             )
           );
+          return;
+        }
+        // #12949: a clean exit (code 0) can still carry an in-band quota-exhausted
+        // warning on stdout — detect it before wrapping the text as a completion.
+        if (isAuggieQuotaExhaustedText(stdout)) {
+          settle(buildAuggieQuotaErrorResponse(stdout.trim()));
           return;
         }
         settle(buildChatCompletionResponse(model, promptText, stdout));
@@ -600,4 +838,14 @@ function buildAuggieSseError(message: string): Response {
       Connection: "keep-alive",
     },
   });
+}
+
+// ─── Test helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Reset the live model cache for testing.
+ * Not exported from the package index.
+ */
+export function __resetAuggieModels(): void {
+  liveModelSet = null;
 }

@@ -6,14 +6,30 @@
  * — logic unchanged, re-exported from combo.ts for backward compatibility.
  */
 
+import type { CompressionExclusions } from "../compression/exclusions.ts";
 import type { ProviderCandidate } from "../autoCombo/scoring.ts";
+import type { PerTargetAdmissionHook } from "../admission/types.ts";
 
 export const RESET_WINDOW_NAMES = ["weekly", "session", "monthly"] as const;
 
 export type ComboRetryAfter = string | number | Date;
 
 export type ComboErrorBody = {
-  error?: { code?: string | null; message?: string | null } | string;
+  error?:
+    | {
+        code?: string | null;
+        message?: string | null;
+        // buildModelCooldownBody (open-sse/utils/error.ts) nests its retry hint
+        // here instead of at the top level — see the retryAfter fallback in
+        // executeTargetAttempt.ts's error extraction. Two producers, two shapes:
+        // buildModelCooldownBody writes an ISO string; buildErrorBody writes
+        // integer SECONDS (quota-reset-timing) — callers must coerce a number.
+        retry_after?: string | number | null;
+        // buildErrorBody's ISO instant (quota-reset-timing) — unambiguous, prefer this.
+        reset_at?: string | null;
+        reset_seconds?: number | null;
+      }
+    | string;
   message?: string | null;
   retryAfter?: ComboRetryAfter | null;
 } | null;
@@ -48,8 +64,10 @@ export type SingleModelTarget =
       modelAbortSignal?: AbortSignal | null;
       /** True when this target was selected via context-cache session pinning. */
       modelPinned?: boolean;
+      /** Prior combo legs already attempted before this dispatch (#12339). */
+      fallbackAttempts?: number;
     })
-  | { modelAbortSignal: AbortSignal };
+  | { modelAbortSignal: AbortSignal; fallbackAttempts?: number };
 
 export type HandleSingleModel = (
   body: Record<string, unknown>,
@@ -57,10 +75,28 @@ export type HandleSingleModel = (
   target?: SingleModelTarget
 ) => Promise<Response>;
 
+/**
+ * `true` means the target may be dispatched.
+ * `false` is the generic availability bucket (credentials, key policy, hidden).
+ * `"model_not_in_catalog"` is the live-catalog miss, recorded separately.
+ */
+export type ModelAvailabilityResult =
+  | boolean
+  | "model_not_in_catalog"
+  | { available: false; reason: "connection_cooldown"; retryAfterMs: number };
+
 export type IsModelAvailable = (
   modelStr: string,
   target?: ResolvedComboTarget & { allowRateLimitedConnection?: boolean }
-) => Promise<boolean> | boolean;
+) => Promise<ModelAvailabilityResult> | ModelAvailabilityResult;
+
+/** `null` when the target may be dispatched. */
+export function modelAvailabilitySkipReason(
+  result: ModelAvailabilityResult
+): "availability" | "model_not_in_catalog" | null {
+  if (result === true) return null;
+  return result === "model_not_in_catalog" ? "model_not_in_catalog" : "availability";
+}
 
 export type ComboRelayOptions = {
   sessionId?: string | null;
@@ -85,7 +121,11 @@ export type ComboNestingContext = {
   attemptBudget: { count: number; limit: number };
 };
 
+export type HiddenModelsByProvider = ReadonlyMap<string, ReadonlySet<string>>;
+
 export type HandleComboChatOptions = {
+  /** #10681: optional opaque parent invocation id for the decision trace. */
+  invocationId?: string;
   body: Record<string, unknown>;
   combo: ComboLike;
   handleSingleModel: HandleSingleModel;
@@ -97,18 +137,49 @@ export type HandleComboChatOptions = {
   signal?: AbortSignal | null;
   apiKeyAllowedConnections?: string[] | null;
   nesting?: ComboNestingContext | null;
+  hiddenModelsByProvider?: HiddenModelsByProvider;
+  /** Native Responses clients (for example Codex CLI/Desktop) manage compaction themselves. */
+  clientManagedResponsesContext?: boolean;
+  /**
+   * #9654 Wave 2: per-target lane-aware admission probe for fan-out dispatch.
+   * Strictly non-blocking (maxWaitMs 0), no-op when virtual lanes are off,
+   * keyed to the parent's tenantKey. Skipped targets are not dispatched.
+   */
+  perTargetAdmission?: PerTargetAdmissionHook | null;
+  /**
+   * #10225: request-scoped flag — prompt compression is enabled for this request
+   * (global compression switch ON and not opted-out by the API key). When set, the
+   * combo preflight defers its hard context-overflow rejection so chatCore's
+   * compression runs before the final context gate.
+   */
+  deferContextOverflowWhenCompressible?: boolean;
+  /** Server-side compression exclusions (#8034) — used to check which targets can run compression. */
+  compressionExclusions?: CompressionExclusions;
+  /**
+   * #10503: request-shape facts (mirroring chatCore.ts's own resolution) threaded
+   * down to getKnownContextOverflow so the deferral decision can be target-aware —
+   * a native-Codex-Responses-passthrough target must never count as "compressible"
+   * (chatCore disables compression for it unconditionally). See
+   * knownContextOverflow.ts::KnownContextOverflowOptions for the full rationale.
+   */
+  sourceFormat?: string | null;
+  endpointPath?: string | null;
+  requestHeaders?: Headers | Record<string, unknown> | null;
 };
 
-export type HandleRoundRobinOptions = Omit<
-  HandleComboChatOptions,
-  "relayOptions" | "apiKeyAllowedConnections"
->;
+export type HandleRoundRobinOptions = HandleComboChatOptions;
 
 export type HistoricalLatencyStatsEntry = {
   totalRequests?: number;
   p95LatencyMs?: number;
   latencyStdDev?: number;
   successRate?: number;
+  /** Mean time-to-first-token (ms) from getModelLatencyStats() (#6875). */
+  avgTtftMs?: number;
+  /** Mean end-to-end request latency (ms) from getModelLatencyStats() (#6875). */
+  avgE2ELatencyMs?: number;
+  /** Mean output tokens/sec from getModelLatencyStats() (#6875). */
+  avgTokensPerSecond?: number;
 };
 
 export type AutoProviderCandidate = ProviderCandidate & {
@@ -138,6 +209,13 @@ export type AutoProviderCandidate = ProviderCandidate & {
   statusPenalty?: boolean;
   /** Diagnostic reason for statusPenalty (the connection testStatus that triggered it). */
   statusPenaltyReason?: string;
+  /**
+   * #15347: true when this provider has a quota fetcher but it returned nothing readable
+   * (failed fetch, missing credentials, message-only or malformed payload). The candidate
+   * is NOT blocked or evicted: scoring multiplies it by
+   * UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR so it ranks strictly below any real reading.
+   */
+  quotaUnreadable?: boolean;
 };
 
 export type ResolvedComboTarget = {
@@ -146,12 +224,15 @@ export type ResolvedComboTarget = {
   executionKey: string;
   modelStr: string;
   provider: string;
+  authType?: string | null;
   providerId: string | null;
   connectionId: string | null;
   allowedConnectionIds?: string[] | null;
   weight: number;
   label: string | null;
+  prompt?: string | null;
   failoverBeforeRetry?: unknown;
+  fallbackOnlyOnQuotaExhaustion?: boolean;
   trafficType?: "production" | "shadow";
   /**
    * Fingerprint-based account pin resolved from a combo builder composite
@@ -178,6 +259,7 @@ export type ResolvedComboRefTarget = {
   comboName: string;
   weight: number;
   label: string | null;
+  fallbackOnlyOnQuotaExhaustion?: boolean;
 };
 
 export type ResolvedComboUnit = ResolvedComboTarget | ResolvedComboRefTarget;

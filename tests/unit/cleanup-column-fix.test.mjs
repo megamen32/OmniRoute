@@ -7,7 +7,11 @@ import path from "node:path";
 // These verify the critical column name fixes that were causing silent cleanup failures.
 
 const CLEANUP_PATH = path.resolve(import.meta.dirname, "../../src/lib/db/cleanup.ts");
+const RECLAIM_PATH = path.resolve(import.meta.dirname, "../../src/lib/db/reclaimFreedPages.ts");
 const source = fs.readFileSync(CLEANUP_PATH, "utf-8");
+// Post-cleanup space reclamation (#12821) lives in its own module, kept out of
+// cleanup.ts to stay under the file-size cap — scan both for the invariants below.
+const reclaimSource = fs.readFileSync(RECLAIM_PATH, "utf-8");
 
 test("cleanup: compression_analytics uses 'timestamp' column (not 'created_at')", () => {
   // The bug: cleanup used WHERE created_at < ? but the table has 'timestamp' column.
@@ -57,58 +61,95 @@ test("cleanup: has background scheduler (startCleanupScheduler)", () => {
     source.includes("startCleanupScheduler"),
     "must export startCleanupScheduler for periodic background cleanup"
   );
+  assert.ok(source.includes("CLEANUP_INTERVAL_MS"), "must have a cleanup interval constant");
+  // #12821: reclaim freed pages without a blocking full VACUUM on the serving thread.
   assert.ok(
-    source.includes("CLEANUP_INTERVAL_MS"),
-    "must have a cleanup interval constant"
+    reclaimSource.includes("incremental_vacuum("),
+    "reclaimFreedPages() must reclaim freed pages via PRAGMA incremental_vacuum after deletes"
   );
   assert.ok(
-    source.includes("VACUUM"),
-    "scheduler must run VACUUM after deletes to reclaim disk space"
+    !/\b(exec|run|prepare)\s*\(\s*[`'"]\s*VACUUM\b/i.test(source) &&
+      !/\b(exec|run|prepare)\s*\(\s*[`'"]\s*VACUUM\b/i.test(reclaimSource),
+    "scheduler must never run a blocking full VACUUM — defer to vacuumScheduler (#12821)"
   );
 });
 
-test("cleanup: scheduler is wired into server-init.ts", () => {
-  const serverInitPath = path.resolve(import.meta.dirname, "../../src/server-init.ts");
-  const serverInit = fs.readFileSync(serverInitPath, "utf-8");
+test("cleanup: scheduler is wired into instrumentation-node.ts", () => {
+  const instrumentationPath = path.resolve(
+    import.meta.dirname,
+    "../../src/instrumentation-node.ts"
+  );
+  const instrumentation = fs.readFileSync(instrumentationPath, "utf-8");
   assert.ok(
-    serverInit.includes('import { startCleanupScheduler } from "./lib/db/cleanup"'),
-    "server-init.ts must import startCleanupScheduler"
+    instrumentation.includes("startCleanupScheduler"),
+    "instrumentation-node.ts must import startCleanupScheduler"
   );
   assert.ok(
-    serverInit.includes("startCleanupScheduler()"),
-    "server-init.ts must call startCleanupScheduler() at startup"
+    instrumentation.includes("startCleanupScheduler()"),
+    "instrumentation-node.ts must call startCleanupScheduler() at startup"
   );
 });
 
 test("cleanup: mcp_tool_audit uses correct table name (not 'mcp_audit_log')", () => {
   assert.ok(
-    source.includes("DELETE FROM mcp_tool_audit WHERE"),
-    "must use correct table name mcp_tool_audit"
+    source.includes("DELETE FROM mcp_tool_audit WHERE created_at < ?"),
+    "mcp_tool_audit cleanup must use its created_at column"
   );
   assert.ok(
     !source.includes("DELETE FROM mcp_audit_log WHERE"),
     "must NOT use non-existent table name mcp_audit_log"
   );
+  assert.ok(
+    !source.includes("DELETE FROM mcp_tool_audit WHERE timestamp"),
+    "must NOT use timestamp for mcp_tool_audit"
+  );
 });
 
 test("cleanup: a2a_task_events uses correct table name (not 'a2a_events')", () => {
   assert.ok(
-    source.includes("DELETE FROM a2a_task_events WHERE"),
-    "must use correct table name a2a_task_events"
+    source.includes("DELETE FROM a2a_task_events WHERE created_at < ?"),
+    "a2a_task_events cleanup must use its created_at column"
   );
   assert.ok(
     !source.includes("DELETE FROM a2a_events WHERE"),
     "must NOT use non-existent table name a2a_events"
   );
+  assert.ok(
+    !source.includes("DELETE FROM a2a_task_events WHERE timestamp"),
+    "must NOT use timestamp for a2a_task_events"
+  );
 });
 
 test("cleanup: memories uses correct table name (not 'memory_entries')", () => {
-  assert.ok(
-    source.includes("DELETE FROM memories WHERE"),
-    "must use correct table name memories"
-  );
+  assert.ok(source.includes("DELETE FROM memories WHERE"), "must use correct table name memories");
   assert.ok(
     !source.includes("DELETE FROM memory_entries WHERE"),
     "must NOT use non-existent table name memory_entries"
+  );
+});
+
+test("cleanup: mcp_tool_audit prunes by created_at (existing column), not timestamp", () => {
+  // mcp_tool_audit has created_at (see 002_mcp_a2a_tables.sql); timestamp does
+  // not exist, so WHERE timestamp < ? raised SqliteError "no such column" at
+  // every boot-time cleanup and the retention pruning never ran.
+  assert.ok(
+    source.includes("DELETE FROM mcp_tool_audit WHERE created_at < ?"),
+    "mcp_tool_audit cleanup must use created_at column"
+  );
+  assert.ok(
+    !source.includes("DELETE FROM mcp_tool_audit WHERE timestamp"),
+    "must NOT use timestamp for mcp_tool_audit (column doesn't exist)"
+  );
+});
+
+test("cleanup: a2a_task_events prunes by created_at (existing column), not timestamp", () => {
+  // Same schema fact for a2a_task_events (created_at, no timestamp column).
+  assert.ok(
+    source.includes("DELETE FROM a2a_task_events WHERE created_at < ?"),
+    "a2a_task_events cleanup must use created_at column"
+  );
+  assert.ok(
+    !source.includes("DELETE FROM a2a_task_events WHERE timestamp"),
+    "must NOT use timestamp for a2a_task_events (column doesn't exist)"
   );
 });

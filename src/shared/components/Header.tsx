@@ -98,6 +98,7 @@ const HEADER_DESCRIPTIONS: Partial<Record<HideableSidebarItemId | "omni-skills",
   "settings-security": "settingsSecurityDescription",
   "settings-routing": "settingsRoutingDescription",
   "settings-resilience": "settingsResilienceDescription",
+  "settings-cache": "settingsCacheDescription",
   "settings-advanced": "settingsAdvancedDescription",
   // Proxy sub-pages
   "mitm-proxy": "mitmProxyDescription",
@@ -206,7 +207,9 @@ export default function Header({
     <header
       className="sticky top-0 z-10 flex items-center justify-between border-b border-black/5 bg-bg px-8 py-4 dark:border-white/5"
       style={{
-        paddingTop: isMacElectron ? "calc(1rem + var(--desktop-safe-top))" : undefined,
+        paddingTop: isMacElectron
+          ? "calc(1rem + var(--desktop-safe-top))"
+          : "calc(1rem + var(--ios-safe-top, 0px))",
       }}
     >
       {/* Mobile menu button */}
@@ -248,11 +251,11 @@ export default function Header({
               type="button"
               onClick={onOpenCommandPalette}
               className="hidden md:inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-bg-subtle text-text-muted hover:text-text-main hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
-              title="Quick navigation (⌘K / Ctrl+K)"
-              aria-label="Open quick navigation"
+              title={t("quickNavigationTitle")}
+              aria-label={t("openQuickNavigation")}
             >
               <span className="material-symbols-outlined text-[16px]">search</span>
-              <span className="text-xs">Quick nav</span>
+              <span className="text-xs">{t("quickNavigation")}</span>
               <kbd className="hidden lg:inline-flex font-mono text-[10px] px-1 py-0.5 rounded bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10">
                 {isMac ? "⌘K" : "Ctrl+K"}
               </kbd>
@@ -261,7 +264,7 @@ export default function Header({
               type="button"
               onClick={onOpenCommandPalette}
               className="md:hidden p-2 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
-              aria-label="Open quick navigation"
+              aria-label={t("openQuickNavigation")}
             >
               <span className="material-symbols-outlined">search</span>
             </button>
@@ -275,6 +278,7 @@ export default function Header({
           onClick={handleLogout}
           className="flex items-center justify-center p-2 rounded-lg text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-all"
           title={t("logout")}
+          aria-label={t("logout")}
         >
           <span className="material-symbols-outlined">logout</span>
         </button>

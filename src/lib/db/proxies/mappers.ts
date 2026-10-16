@@ -1,4 +1,5 @@
 import { decrypt, looksEncrypted } from "../encryption";
+import { decodeUserinfo } from "@/shared/utils/decodeUserinfo";
 import type {
   JsonRecord,
   ProxyScope,
@@ -26,6 +27,7 @@ export function mapProxyRow(row: unknown): ProxyRegistryRecord {
     status: typeof r.status === "string" ? r.status : "active",
     source: typeof r.source === "string" ? r.source : "manual",
     family: typeof r.family === "string" ? r.family : "auto",
+    subscriptionId: typeof r.subscription_id === "string" ? r.subscription_id : null,
     createdAt: typeof r.created_at === "string" ? r.created_at : "",
     updatedAt: typeof r.updated_at === "string" ? r.updated_at : "",
   };
@@ -142,6 +144,7 @@ export function toRegistryProxyResolution(row: unknown, level: ProxyScope, level
       username: record.username,
       password: record.password,
       family: typeof record.family === "string" ? record.family : "auto",
+      ...(typeof record.name === "string" && record.name ? { name: record.name } : {}),
       ...(relayAuth !== undefined ? { relayAuth } : {}),
     },
     level,
@@ -163,6 +166,13 @@ export function normalizeAssignmentScopeId(scope: ProxyScope, scopeId?: string |
   return scope === "global" ? "__global__" : scopeId || null;
 }
 
+// Shared guard: a non-global scope requires a non-blank scopeId. Takes the
+// scope RAW (no normalizeScope inside): unknown scopes are never "global".
+// DB call-sites pass an already-normalized scope — see their 1-line contract.
+export function isScopeIdMissing(scope: string, scopeId: string | null | undefined): boolean {
+  return scope !== "global" && !scopeId?.trim();
+}
+
 export function toLegacyProxyLevel(scope: ProxyScope) {
   return scope === "account" ? "key" : scope;
 }
@@ -178,8 +188,8 @@ export function coerceProxyPayload(value: unknown, fallbackName: string): ProxyP
         type: parsed.protocol.replace(":", "") || "http",
         host: parsed.hostname,
         port: Number(parsed.port || (parsed.protocol === "https:" ? "443" : "8080")),
-        username: parsed.username ? decodeURIComponent(parsed.username) : "",
-        password: parsed.password ? decodeURIComponent(parsed.password) : "",
+        username: parsed.username ? decodeUserinfo(parsed.username) : "",
+        password: parsed.password ? decodeUserinfo(parsed.password) : "",
         status: "active",
       };
     } catch {

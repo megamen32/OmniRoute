@@ -17,11 +17,14 @@ import {
   buildQoderCompletionPayload,
   buildQoderPrompt,
   createQoderErrorResponse,
+  isQoderUpstreamBusy,
   parseQoderCliFailure,
+  parseQoderRetryAfterSeconds,
   parseQoderCliResult,
   runQoderCli,
 } from "../services/qoderCli.ts";
 import { sanitizeErrorMessage } from "../utils/error.ts";
+import { hasQoderCallerTools, resolveQoderAuthToken } from "../services/qoderCapabilities.ts";
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -70,9 +73,29 @@ async function unwrapQoderEnvelope(response: Response): Promise<Response> {
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const peekedChunks: Uint8Array[] = [];
+  let peekedText = "";
+  let peekedBytes = 0;
+  let reachedEnd = false;
 
-  const { done, value } = await reader.read();
-  if (done) {
+  while (peekedBytes < 64 * 1024) {
+    const { done, value } = await reader.read();
+    if (done) {
+      reachedEnd = true;
+      peekedText += decoder.decode();
+      break;
+    }
+
+    peekedChunks.push(value);
+    peekedBytes += value.byteLength;
+    peekedText += decoder.decode(value, { stream: true });
+
+    if (peekedText.includes("\n\n") || peekedText.includes("\r\n\r\n")) {
+      break;
+    }
+  }
+
+  if (peekedChunks.length === 0 && reachedEnd) {
     reader.cancel();
     return new Response(
       JSON.stringify({ error: { message: "[qoder] empty response", type: "provider_error" } }),
@@ -80,11 +103,9 @@ async function unwrapQoderEnvelope(response: Response): Promise<Response> {
     );
   }
 
-  const text = decoder.decode(value, { stream: true });
-
   let errorStatus: number | null = null;
   let errorMsg = "";
-  for (const line of text.split("\n")) {
+  for (const line of peekedText.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
     const jsonStr = trimmed.slice(5).trim();
@@ -106,6 +127,18 @@ async function unwrapQoderEnvelope(response: Response): Promise<Response> {
 
   if (errorStatus) {
     reader.cancel();
+    // #3510: a 403 envelope carrying the nested code 10605 is Qoder's temporary
+    // queue throttle, not an auth failure. Surface it as 503 upstream_busy (same
+    // classification as the CLI path) so healthy accounts are not parked on the
+    // auth cooldown.
+    if (isQoderUpstreamBusy(errorMsg)) {
+      return createQoderErrorResponse({
+        status: 503,
+        message: `[qoder error ${errorStatus}: ${sanitizeErrorMessage(truncate(errorMsg, 200))}]`,
+        code: "upstream_busy",
+        retryAfterSeconds: parseQoderRetryAfterSeconds(errorMsg),
+      });
+    }
     const errType =
       errorStatus === 401 || errorStatus === 403 ? "authentication_error" : "provider_error";
     return new Response(
@@ -119,11 +152,13 @@ async function unwrapQoderEnvelope(response: Response): Promise<Response> {
     );
   }
 
-  // Re-create the stream with the first chunk prepended so the success body
-  // passes through unchanged.
+  // Re-create the stream with every peeked chunk prepended so the success body
+  // passes through byte-for-byte unchanged.
   const restStream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(value);
+      for (const chunk of peekedChunks) {
+        controller.enqueue(chunk);
+      }
     },
     pull(controller) {
       return reader.read().then(({ done, value }) => {
@@ -144,22 +179,6 @@ async function unwrapQoderEnvelope(response: Response): Promise<Response> {
     statusText: response.statusText,
     headers: new Headers(response.headers),
   });
-}
-
-function getAuthToken(credentials: ProviderCredentials): string {
-  if (typeof credentials.apiKey === "string" && credentials.apiKey.trim()) {
-    return credentials.apiKey.trim();
-  }
-  if (typeof credentials.accessToken === "string" && credentials.accessToken.trim()) {
-    return credentials.accessToken.trim();
-  }
-  if (typeof credentials.refreshToken === "string" && credentials.refreshToken.trim()) {
-    return credentials.refreshToken.trim();
-  }
-  // Fallback: QODER_PERSONAL_ACCESS_TOKEN env var (#966)
-  const envToken = String(process.env.QODER_PERSONAL_ACCESS_TOKEN || "").trim();
-  if (envToken) return envToken;
-  return "";
 }
 
 export class QoderExecutor extends BaseExecutor {
@@ -188,7 +207,7 @@ export class QoderExecutor extends BaseExecutor {
   }
 
   async execute({ model, body, stream, credentials, signal, upstreamExtraHeaders }: ExecuteInput) {
-    const token = getAuthToken(credentials);
+    const token = resolveQoderAuthToken(credentials);
 
     if (!token) {
       return {
@@ -208,7 +227,7 @@ export class QoderExecutor extends BaseExecutor {
       };
     }
 
-    const resolvedModel = model || "qwen3-coder-plus";
+    const resolvedModel = model || "qwen3.8-max-preview";
 
     // Detect token type: PAT (Personal Access Token) starts with "pt-".
     // PATs are driven through the local qodercli binary (see executeViaQoderCli);
@@ -216,6 +235,19 @@ export class QoderExecutor extends BaseExecutor {
     // HTTP path can no longer replicate.
     const isPatToken = token.startsWith("pt-");
     if (isPatToken) {
+      if (hasQoderCallerTools(body)) {
+        return {
+          response: createQoderErrorResponse({
+            status: 400,
+            message:
+              "Qoder PAT/CLI connections do not support caller tool calling. Use a compatible HTTP connection or another provider for agent requests.",
+            code: "tool_calling_unsupported",
+          }),
+          url: "qodercli://stdio",
+          headers: {},
+          transformedBody: body,
+        };
+      }
       return this.executeViaQoderCli({ model: resolvedModel, body, stream, token, signal });
     }
 
@@ -372,8 +404,16 @@ export class QoderExecutor extends BaseExecutor {
 
     const { text, isError, errorMessage } = parseQoderCliResult(run.stdout);
     if (isError) {
+      // When qodercli exits 0 but returns is_error=true with an empty result,
+      // the real upstream error is almost always on stderr. Surface it instead
+      // of the generic "qodercli returned an error" fallback (#9319).
+      let effectiveError = errorMessage;
+      if (errorMessage === "qodercli returned an error" && run.stderr.trim()) {
+        const stderrTrimmed = run.stderr.trim().slice(0, 300);
+        effectiveError = `qodercli returned an error: ${stderrTrimmed}`;
+      }
       return {
-        response: createQoderErrorResponse(parseQoderCliFailure(errorMessage)),
+        response: createQoderErrorResponse(parseQoderCliFailure(effectiveError)),
         url,
         headers: {},
         transformedBody: body,

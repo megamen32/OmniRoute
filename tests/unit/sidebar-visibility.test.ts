@@ -23,11 +23,15 @@ test("system sidebar items: monitoring has activity at top then logs/audit/syste
       "logs",
       "logs-proxy",
       "logs-console",
+      "logs-timeline",
+      "conversations",
       "audit",
       "audit-mcp",
       "audit-a2a",
       "health",
       "runtime",
+      "resilience-connections",
+      "resilience-cooldowns",
     ]
   );
 });
@@ -40,6 +44,7 @@ test("primary sidebar items place limits after cache", () => {
       "endpoints",
       "api-manager",
       "providers",
+      "model-catalog",
       "embedded-services",
       "combos",
       "combos-live",
@@ -58,15 +63,19 @@ test("primary sidebar items place limits after cache", () => {
       "context-ultra",
       "context-omniglyph",
       "compression-studio",
+      "compression-exclusions",
       "cli-code",
       "cli-agents",
       "acp-agents",
       "cloud-agents",
+      "conductor",
+      "orchestration", // +1: orchestration (PR-2 of the orchestration canvas)
       "agent-bridge",
       "traffic-inspector",
       "discovery",
       "api-endpoints",
       "webhooks",
+      "log-export",
       "proxy",
     ]
   );
@@ -139,20 +148,28 @@ test("help sidebar exposes changelog after docs and issues", () => {
   assert.equal(sidebarVisibility.HIDEABLE_SIDEBAR_ITEM_IDS.includes("changelog"), true);
 });
 
-test("plugins (marketplace) has a discoverable sidebar entry (#3656 follow-up)", async () => {
+test("plugins has a discoverable sidebar entry (#3656 follow-up)", async () => {
   const items = sectionItems("agentic-features");
   const plugins = items.find((item) => item.id === "plugins");
   assert.ok(plugins, "expected a plugins item in the agentic-features section");
   assert.equal(plugins.href, "/dashboard/plugins");
   assert.equal(sidebarVisibility.HIDEABLE_SIDEBAR_ITEM_IDS.includes("plugins"), true);
 
-  // It must be a real page (plugin manager + marketplace tab), not a legacy redirect stub.
+  // It must be a real page (plugin manager), not a legacy redirect stub.
   const pluginsPage = await readFile(
     join(repoRoot, "src/app/(dashboard)/dashboard/plugins/page.tsx"),
     "utf8"
   );
   assert.doesNotMatch(pluginsPage, /^\s*redirect\(/m);
-  assert.match(pluginsPage, /marketplace/i);
+  // R0.2: marketplace tab removed (dead code) — verify the page still has plugin management UI.
+  assert.match(pluginsPage, /scanForPlugins|installedTab|fetchPlugins/i);
+});
+
+test("model catalog is available from the OmniProxy sidebar and can be hidden", () => {
+  const item = sectionItems("omni-proxy").find((candidate) => candidate.id === "model-catalog");
+  assert.ok(item, "expected the model catalog sidebar item to exist");
+  assert.equal(item.href, "/dashboard/models");
+  assert.equal(sidebarVisibility.HIDEABLE_SIDEBAR_ITEM_IDS.includes("model-catalog"), true);
 });
 
 test("legacy dashboard routes redirect to their consolidated surfaces", async () => {

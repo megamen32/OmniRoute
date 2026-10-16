@@ -12,7 +12,9 @@ import { getApiKeys } from "../db/apiKeys";
 import { getPendingRequests } from "./usageHistory";
 import { getAccountDisplayName } from "@/lib/display/names";
 import { calculateCost } from "./costCalculator";
+import { isFlatRateProvider } from "./flatRateProviders";
 import { getRawDataCutoffDate, isAggregationEnabled } from "./aggregateHistory";
+import { toNumber } from "@/shared/utils/numeric";
 
 type JsonRecord = Record<string, unknown>;
 type UsageBucket = {
@@ -40,17 +42,50 @@ type ActiveRequest = {
   count: number;
 };
 
-function asRecord(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+type PendingSnapshot = {
+  byModel: Record<string, number>;
+  byAccount: Record<string, Record<string, number>>;
+};
+
+export function buildActiveRequests(
+  pendingByAccount: PendingSnapshot["byAccount"],
+  connectionMap: Record<string, string>,
+  resolveDisplayName: (connectionId: string) => string
+): ActiveRequest[] {
+  const activeRequests: ActiveRequest[] = [];
+  for (const [connectionId, models] of Object.entries(pendingByAccount)) {
+    for (const [modelKey, count] of Object.entries(models)) {
+      if (count > 0) {
+        const accountName = connectionMap[connectionId] || resolveDisplayName(connectionId);
+        const match = modelKey.match(/^(.*) \((.*)\)$/);
+        activeRequests.push({
+          model: match ? match[1] : modelKey,
+          provider: match ? match[2] : "unknown",
+          account: accountName,
+          count,
+        });
+      }
+    }
+  }
+  return activeRequests;
 }
 
-function toNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
+function buildConnectionDisplayMap(
+  connections: Array<Record<string, unknown>>
+): Record<string, string> {
+  const connectionMap: Record<string, string> = {};
+  for (const connRaw of connections) {
+    const conn = asRecord(connRaw);
+    const connectionId = toStringOrEmpty(conn.id);
+    if (!connectionId) continue;
+    connectionMap[connectionId] =
+      toStringOrEmpty(conn.name) || toStringOrEmpty(conn.email) || connectionId;
   }
-  return 0;
+  return connectionMap;
+}
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
 function toStringOrEmpty(value: unknown): string {
@@ -168,7 +203,10 @@ async function calculateAggregateCost(row: JsonRecord): Promise<number> {
     },
     { provider, serviceTier, flatRateAsZero: true }
   );
-  return storedCost + calculatedCost;
+  // daily_usage_summary stores API-equivalent value so the dedicated costs
+  // view can preserve history. This legacy stats surface keeps billed-cost
+  // semantics for flat-rate subscriptions.
+  return (isFlatRateProvider(provider) ? 0 : storedCost) + calculatedCost;
 }
 
 function addUsage(
@@ -293,21 +331,14 @@ export async function getUsageStats() {
   const sourceSql = buildUsageSourceSql(aggregationEnabled);
   const sourceParams = aggregationEnabled && cutoffDate ? [cutoffDate, cutoffDate] : [];
 
-  const { getProviderConnections } = await import("@/lib/localDb");
+  const { getProviderConnections } = await import("@/lib/db/providers");
   let allConnections: unknown[] = [];
   try {
     const loadedConnections = await getProviderConnections();
     allConnections = Array.isArray(loadedConnections) ? loadedConnections : [];
   } catch {}
 
-  const connectionMap: Record<string, string> = {};
-  for (const connRaw of allConnections) {
-    const conn = asRecord(connRaw);
-    const connectionId = toStringOrEmpty(conn.id);
-    if (!connectionId) continue;
-    connectionMap[connectionId] =
-      toStringOrEmpty(conn.name) || toStringOrEmpty(conn.email) || connectionId;
-  }
+  const connectionMap = buildConnectionDisplayMap(allConnections as Array<Record<string, unknown>>);
 
   const currentApiKeyNames = new Map<string, string>();
   try {
@@ -322,6 +353,10 @@ export async function getUsageStats() {
   }
 
   const pendingRequests = getPendingRequests();
+  const publicPendingRequests = {
+    byModel: pendingRequests.byModel,
+    byAccount: pendingRequests.byAccount,
+  };
 
   const stats: {
     totalRequests: number;
@@ -333,7 +368,7 @@ export async function getUsageStats() {
     byAccount: Record<string, UsageBreakdown>;
     byApiKey: Record<string, UsageBreakdown>;
     last10Minutes: UsageBucket[];
-    pending: ReturnType<typeof getPendingRequests>;
+    pending: Pick<ReturnType<typeof getPendingRequests>, "byModel" | "byAccount">;
     activeRequests: ActiveRequest[];
   } = {
     totalRequests: 0,
@@ -345,26 +380,14 @@ export async function getUsageStats() {
     byAccount: {},
     byApiKey: {},
     last10Minutes: [],
-    pending: pendingRequests,
+    pending: publicPendingRequests,
     activeRequests: [],
   };
 
   // Build active requests
-  for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
-    for (const [modelKey, count] of Object.entries(models)) {
-      if (count > 0) {
-        const accountName =
-          connectionMap[connectionId] || getAccountDisplayName({ id: connectionId });
-        const match = modelKey.match(/^(.*) \((.*)\)$/);
-        stats.activeRequests.push({
-          model: match ? match[1] : modelKey,
-          provider: match ? match[2] : "unknown",
-          account: accountName,
-          count,
-        });
-      }
-    }
-  }
+  stats.activeRequests = buildActiveRequests(pendingRequests.byAccount, connectionMap, (id) =>
+    getAccountDisplayName({ id })
+  );
 
   // 10-minute buckets
   const now = new Date();

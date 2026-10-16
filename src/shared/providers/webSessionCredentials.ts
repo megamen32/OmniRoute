@@ -15,6 +15,9 @@ export type WebSessionCredentialRequirement =
        */
       hintKey?: string;
       hintFallback?: string;
+      /** Provider-specific replacement for the generic four-step DevTools guide. */
+      guideSteps?: readonly string[];
+      guideNote?: string;
     }
   | {
       kind: "none";
@@ -25,6 +28,28 @@ export type WebSessionCredentialRequirement =
     };
 
 export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
+  "chatgpt-web": {
+    kind: "cookie",
+    credentialName: "Playwright storage-state JSON",
+    placeholder: '{"cookies":[...],"origins":[...]}',
+    acceptsFullCookieHeader: false,
+    storageKeys: ["storageState", "cookies", "origins"],
+    hintFallback:
+      "Export storageState from a browser context that is already signed in to chatgpt.com, then paste the complete JSON object. Raw Cookie headers are intentionally rejected.",
+    guideSteps: [
+      "Sign in to chatgpt.com in a dedicated browser profile.",
+      "Export that profile's Playwright-compatible storageState object.",
+      "Paste the complete JSON object here and validate it before saving.",
+    ],
+    guideNote: "The credential is encrypted at rest and is used only by the local browser context.",
+  },
+  "chatgpt-web-codex": {
+    kind: "cookie",
+    credentialName: "ChatGPT Cookie header (full)",
+    placeholder: "__Secure-next-auth.session-token=...; cf_clearance=...",
+    acceptsFullCookieHeader: true,
+    storageKeys: ["cookie", "sessionToken", "session-token", "__Secure-next-auth.session-token"],
+  },
   "zenmux-free": {
     kind: "cookie",
     credentialName: "Cookie header (full)",
@@ -32,12 +57,19 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie"],
   },
-  "chatgpt-web": {
+  "tencent-aistudio-web": {
     kind: "cookie",
-    credentialName: "__Secure-next-auth.session-token",
-    placeholder: "__Secure-next-auth.session-token=...",
+    credentialName: "Cookie header (full)",
+    placeholder: "paste the full Cookie header from aistudio.tencent.ai",
     acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "sessionToken", "session-token", "__Secure-next-auth.session-token"],
+    storageKeys: ["cookie"],
+  },
+  "tinycms-web": {
+    kind: "token",
+    credentialName: "app-config-uuid",
+    placeholder: "R...",
+    acceptsFullCookieHeader: false,
+    storageKeys: ["apiKey", "token", "uuid", "app-config-uuid"],
   },
   "grok-web": {
     kind: "cookie",
@@ -45,20 +77,31 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     placeholder: "sso=...; sso-rw=...",
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie", "sso", "sso-rw"],
+    // #7567 — grok.com's cf_clearance cookie is pinned to IP + User-Agent + TLS
+    // fingerprint of the browser that earned it, so pasting it from a different
+    // machine/IP causes a 403 that is actually correct Cloudflare behavior. Point
+    // users at the Custom User-Agent field under Advanced Settings + same IP/proxy,
+    // instead of the generic (and here misleading) single-cookie hint.
+    hintKey: "grokWebCookieHint",
+    hintFallback:
+      "grok.com's cf_clearance cookie is pinned to the IP, User-Agent, and TLS fingerprint of the browser where you copied it — pasting it from a different machine/IP causes a 403. Paste sso and sso-rw here, then open Advanced Settings and fill Custom User-Agent with the EXACT User-Agent string of that same browser, and use the same IP/proxy for this connection.",
   },
   "gemini-web": {
     kind: "cookie",
     credentialName: "__Secure-1PSID (optional: __Secure-1PSIDTS)",
     placeholder: "__Secure-1PSID=...; __Secure-1PSIDTS=...",
+    hintKey: "geminiWebCookieHint",
+    hintFallback:
+      'Accepted formats: full Cookie header without the "Cookie:" prefix, a single __Secure-1PSID value, or browser-export JSON such as {"cookies":{"__Secure-1PSID":"...","__Secure-1PSIDTS":"...","__Secure-1PSIDCC":"..."}}.',
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie", "__Secure-1PSID", "__Secure-1PSIDTS"],
   },
-  "gemini-business": {
+  "notion-web": {
     kind: "cookie",
-    credentialName: "__Secure-1PSID (optional: __Secure-1PSIDTS)",
-    placeholder: "__Secure-1PSID=...; __Secure-1PSIDTS=... (from business.gemini.google)",
+    credentialName: "token_v2 (optional: space_id, notion_browser_id)",
+    placeholder: "token_v2=...; space_id=...; notion_browser_id=...",
     acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "__Secure-1PSID", "__Secure-1PSIDTS"],
+    storageKeys: ["cookie", "token_v2", "space_id", "notion_browser_id"],
   },
   "perplexity-web": {
     kind: "cookie",
@@ -66,6 +109,20 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     placeholder: "__Secure-next-auth.session-token=...",
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie", "sessionToken", "session-token", "__Secure-next-auth.session-token"],
+  },
+  hyperagent: {
+    kind: "cookie",
+    credentialName: "Session Cookie",
+    placeholder: "Paste full Cookie header from hyperagent.com",
+    acceptsFullCookieHeader: true,
+    storageKeys: ["cookie", "sessionCookie", "authCookie"],
+  },
+  chatplayground: {
+    kind: "cookie",
+    credentialName: "Clerk Session / __client Cookie or JWT",
+    placeholder: "__client=...; __session=... or Clerk Bearer JWT",
+    acceptsFullCookieHeader: true,
+    storageKeys: ["cookie", "__client", "__session", "sessionToken", "jwt", "apiKey"],
   },
   "blackbox-web": {
     kind: "cookie",
@@ -76,10 +133,15 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
   },
   "muse-spark-web": {
     kind: "cookie",
-    credentialName: "abra_sess",
-    placeholder: "abra_sess=...; other=value",
+    // #9502: the WS protocol (#7528) needs both the ecto_1_sess cookie (GraphQL
+    // warmup/mode-switch) and a separate ecto1:... WS auth token (Authorization
+    // query param on wss://gateway.meta.ai/ws/clippy). The executor extracts the
+    // ecto1: token from the apiKey field via /ecto1:[^\s;]+/i.
+    credentialName: "ecto_1_sess + ecto1: WS auth token",
+    placeholder:
+      "ecto_1_sess=...; ecto1:... (WS auth token from meta.ai DevTools → Network → WS → clippy)",
     acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "abra_sess"],
+    storageKeys: ["cookie", "ecto_1_sess", "abra_sess"],
   },
   "claude-web": {
     kind: "cookie",
@@ -149,6 +211,13 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie", "hy_user", "hy_token"],
   },
+  "notrack-web": {
+    kind: "cookie",
+    credentialName: "full Cookie header (uid + si_usr_id + si_ses_id)",
+    placeholder: "uid=...; si_usr_id=...; si_ses_id=... (full Cookie header from notrack.ai)",
+    acceptsFullCookieHeader: true,
+    storageKeys: ["cookie", "uid", "si_usr_id", "si_ses_id", "nt_session"],
+  },
   "poe-web": {
     kind: "cookie",
     credentialName: "p-b",
@@ -158,10 +227,10 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
   },
   "venice-web": {
     kind: "cookie",
-    credentialName: "session",
-    placeholder: "session=... or full Cookie header from venice.ai",
+    credentialName: "__client",
+    placeholder: "__client=... or full Cookie header from clerk.venice.ai",
     acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "session"],
+    storageKeys: ["cookie", "__client"],
   },
   "v0-vercel-web": {
     kind: "cookie",
@@ -171,11 +240,11 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     storageKeys: ["cookie", "__vercel_session"],
   },
   "kimi-web": {
-    kind: "cookie",
-    credentialName: "kimi-auth",
-    placeholder: "kimi-auth=eyJ... (full Cookie header from www.kimi.com)",
+    kind: "token",
+    credentialName: "access_token",
+    placeholder: "access_token from www.kimi.com localStorage",
     acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "kimi-auth", "session"],
+    storageKeys: ["token", "access_token", "accessToken", "cookie", "kimi-auth"],
   },
   "doubao-web": {
     kind: "cookie",
@@ -184,14 +253,6 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
       "sessionid=...; ttwid=...; s_v_web_id=... (or fp=verify_... fallback from www.dola.com)",
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie", "sessionid", "ttwid", "s_v_web_id", "fp"],
-  },
-  "qwen-web": {
-    kind: "cookie",
-    credentialName: "full Cookie header (must include cna, ssxmod_itna, token)",
-    placeholder:
-      "cna=...; token=...; ssxmod_itna=...; ssxmod_itna2=... (full Cookie header from chat.qwen.ai)",
-    acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "token", "ssxmod_itna", "ssxmod_itna2", "cna", "tongyi_sso_ticket"],
   },
   "duckduckgo-web": {
     kind: "cookie",
@@ -229,11 +290,22 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     storageKeys: ["cookie", "manus_session"],
   },
   "zai-web": {
-    kind: "cookie",
-    credentialName: "token",
-    placeholder: "token=... or full Cookie header from chat.z.ai",
-    acceptsFullCookieHeader: true,
-    storageKeys: ["cookie", "token"],
+    kind: "token",
+    credentialName: 'Local Storage value named "token"',
+    placeholder: "eyJ... (chat.z.ai → DevTools → Application → Local Storage → token)",
+    acceptsFullCookieHeader: false,
+    storageKeys: ["token"],
+    hintKey: "zaiWebCredentialHint",
+    hintFallback:
+      'Copy only the "token" value from chat.z.ai Local Storage. Do not copy a Cookie header. OmniRoute uses its browser transport to obtain the per-request CAPTCHA proof.',
+    guideSteps: [
+      "Open chat.z.ai and sign in.",
+      "Open DevTools → Application → Local Storage → https://chat.z.ai.",
+      'Find the row named "token" and copy only its value. Do not copy any Cookie header.',
+      "Paste the token below and check the connection. OmniRoute handles the per-request CAPTCHA through its browser transport.",
+    ],
+    guideNote:
+      "Treat the token like a password. Browser transport is enabled by default; do not set OMNIROUTE_BROWSER_POOL=off for this connection. If Z.ai signs you out or the token expires, repeat these steps with the new value.",
   },
   lmarena: {
     kind: "cookie",
@@ -259,7 +331,87 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     hintFallback:
       "Open arena.ai, sign in, then copy the full Cookie header from a Network request. Include arena-auth-prod-v1.0 and arena-auth-prod-v1.1 (and further chunks if present), preferably with cf_clearance. Do not paste only the empty arena-auth-prod-v1 cookie. Optional: providerSpecificData.recaptchaV3Token if create-evaluation still returns 403.",
   },
-} satisfies Record<keyof typeof WEB_COOKIE_PROVIDERS, WebSessionCredentialRequirement>;
+  promptql: {
+    kind: "token",
+    credentialName: "Bearer JWT (optional: projectId, session Cookie)",
+    placeholder: "eyJ...  (Authorization Bearer from prompt.ql.app)",
+    acceptsFullCookieHeader: false,
+    storageKeys: ["token", "jwt", "apiKey", "projectId", "project_id", "cookie"],
+  },
+  "adobe-firefly": {
+    // Prefer IMS access_token JWT (Bearer). Cookie from firefly.adobe.com alone
+    // only mints a guest IMS token. Kind stays "cookie" for multi-account UX;
+    // resolveAdobeAccessToken auto-detects JWT vs cookie and rejects guests.
+    kind: "cookie",
+    credentialName: "IMS access_token JWT (recommended) or multi-domain Cookie",
+    placeholder:
+      "Paste eyJ… JWT from Authorization: Bearer on firefly-3p generate request (not page Cookie alone)",
+    acceptsFullCookieHeader: true,
+    storageKeys: ["cookie", "token", "access_token", "accessToken"],
+  },
+  "conol-web": {
+    kind: "cookie",
+    credentialName: "__Secure-better-auth.session_token",
+    placeholder: "__Secure-better-auth.session_token=... or full Cookie header from conol.ai",
+    acceptsFullCookieHeader: true,
+    storageKeys: ["cookie", "__Secure-better-auth.session_token"],
+  },
+  twinmind: {
+    kind: "token",
+    credentialName: "Firebase stsTokenManager JSON (accessToken + refreshToken)",
+    placeholder: "Paste stsTokenManager JSON, or accessToken JWT + refreshToken",
+    acceptsFullCookieHeader: false,
+    storageKeys: ["token", "refreshToken", "refresh_token", "apiKey", "accessToken"],
+  },
+  syntx: {
+    kind: "token",
+    credentialName: "SYNTX.ai Bearer JWT",
+    placeholder: "Paste eyJ… JWT from Authorization: Bearer on api.syntx.ai",
+    acceptsFullCookieHeader: false,
+    storageKeys: ["token", "apiKey", "accessToken"],
+  },
+  maxai: {
+    kind: "token",
+    credentialName: "MaxAI access token (Bearer) + device id",
+    placeholder:
+      "Use browser sign-in — OmniRoute mints the MaxAI access token, device id, and user id for you",
+    acceptsFullCookieHeader: false,
+    storageKeys: [
+      "accessToken",
+      "access_token",
+      "maxaiAccessToken",
+      "deviceId",
+      "maxaiDeviceId",
+      "userId",
+      "maxaiUserId",
+    ],
+  },
+  uc: {
+    // UC (uncensored.com) persona: auth is the durable Clerk `__client` cookie
+    // (a JWT with no exp) plus the session id + user id, all stored in
+    // providerSpecificData. The executor mints a short-lived `__session` JWT per
+    // connect from `__client`; it never reads `apiKey`. Storage keys mirror the
+    // aliases resolveUcCredential() accepts (ucClientCookie/clientCookie/__client,
+    // ucSid/sid, ucUid/uid, ucCookies/cookies).
+    kind: "cookie",
+    credentialName: "Clerk __client cookie + session id + user id",
+    placeholder: "__client=...; then set session id (sid) and user id (uid)",
+    acceptsFullCookieHeader: true,
+    storageKeys: [
+      "cookie",
+      "cookies",
+      "ucCookies",
+      "ucClientCookie",
+      "clientCookie",
+      "__client",
+      "ucSid",
+      "sid",
+      "ucUid",
+      "uid",
+    ],
+  },
+} satisfies Record<string, WebSessionCredentialRequirement> &
+  Record<keyof typeof WEB_COOKIE_PROVIDERS, WebSessionCredentialRequirement>;
 
 export function getWebSessionCredentialRequirement(
   providerId: unknown
@@ -270,6 +422,12 @@ export function getWebSessionCredentialRequirement(
       providerId as keyof typeof WEB_SESSION_CREDENTIAL_REQUIREMENTS
     ] ?? null
   );
+}
+
+export function canUpdateProviderApiKey(authType: unknown, providerId: unknown): boolean {
+  if (authType === "apikey") return true;
+  if (authType !== "cookie") return false;
+  return getWebSessionCredentialRequirement(providerId)?.kind === "token";
 }
 
 export function requiresWebSessionCredential(providerId: unknown): boolean {

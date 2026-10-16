@@ -13,6 +13,8 @@ type TopologyProvider = {
   id: string;
   provider: string;
   name?: string;
+  /** Connection-health base state, so the topology can colour a node at rest. */
+  status?: "active" | "error" | "idle";
 };
 
 export function HomeProviderTopologySection({
@@ -30,6 +32,8 @@ export function HomeProviderTopologySection({
   // #4596: gate the live-WS connection so it only opens while the topology
   // section is actually shown on the home page.
   const { activeRequests: liveActiveRequests } = useLiveRequests({ enabled });
+  const activeRequests = selectActiveRequests(liveActiveRequests);
+  const activeProviderCount = new Set(activeRequests.map(({ provider }) => provider)).size;
 
   return (
     <Card>
@@ -37,24 +41,27 @@ export function HomeProviderTopologySection({
         <div>
           <h2 className="text-base font-semibold">{t("providerTopology")}</h2>
           <p className="text-xs text-text-muted">
-            Connected providers routing through OmniRoute in real time
+            {t("activeError", { active: activeProviderCount, errors: errorProvider ? 1 : 0 })}
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-text-muted">
           <span className="flex items-center gap-1.5">
-            <span className="size-2 rounded-full bg-green-500" /> Active
+            <span className="size-2 rounded-full bg-green-500" />
+            {t("topologyLegendActive")}
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="size-2 rounded-full bg-amber-500" /> Recent
+            <span className="size-2 rounded-full bg-amber-500" />
+            {t("topologyLegendRecent")}
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="size-2 rounded-full bg-red-500" /> Error
+            <span className="size-2 rounded-full bg-red-500" />
+            {t("topologyLegendError")}
           </span>
         </div>
       </div>
       <ProviderTopology
         providers={providers}
-        activeRequests={selectActiveRequests(liveActiveRequests)}
+        activeRequests={activeRequests}
         lastProvider={lastProvider}
         errorProvider={errorProvider}
       />

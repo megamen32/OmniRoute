@@ -12,8 +12,22 @@ import { useTranslations } from "next-intl";
 import { cn } from "@/shared/utils/cn";
 import { useApiKey } from "../../providers/hooks/useApiKey";
 import { useProviderModels } from "../../providers/hooks/useProviderModels";
+import { getProviderAlias } from "@/shared/constants/providers";
+import {
+  buildNativeCodexPlaygroundRequest,
+  isNativeCodexPlaygroundModel,
+} from "../../playground/components/tabs/chatTabEndpointRequest";
+import { playgroundMessagesStorageKey } from "./llmChatStorage";
+import { usePersistedPlaygroundMessages } from "./usePersistedPlaygroundMessages";
 
-const ENDPOINT = "/api/v1/chat/completions";
+const CHAT_COMPLETIONS_ENDPOINT = "/api/v1/chat/completions";
+const RESPONSES_ENDPOINT = "/api/v1/responses";
+
+export function resolveLlmPlaygroundEndpoint(qualifiedModel: string): string {
+  return isNativeCodexPlaygroundModel(qualifiedModel)
+    ? RESPONSES_ENDPOINT
+    : CHAT_COMPLETIONS_ENDPOINT;
+}
 
 /** Header used to test a specific API key's policy from the dashboard playground
  *  without exposing the key secret to the browser — the gateway resolves the key
@@ -34,23 +48,36 @@ function resolvePlaygroundKeyId(
   return keys.find((k) => k.key === selectedMaskedKey)?.id ?? null;
 }
 
+// Mirrors NO_THINKING_PREFIX in open-sse/utils/noThinkingAlias.ts — kept as a local literal
+// (not imported) to avoid pulling server-side catalog modules into the client bundle.
+const NO_THINKING_PREFIX = "no-think/";
+
 /**
- * Qualify a provider-scoped playground model with its `providerId/` prefix so
+ * Qualify a provider-scoped playground model with its routing prefix so
  * OmniRoute can resolve it unambiguously. The previous heuristic only prefixed
  * models without a `/`, which skipped vendor-namespaced ids like
  * `moonshotai/kimi-k2.6` or `nvidia/zyphra/zamba2-7b-instruct` — those already
  * contain a slash, so they were sent bare and rejected with
  * "Ambiguous model ... Use provider/model prefix" when the same id exists under
- * several providers (#3050). Always prefix unless the id is already qualified
- * with this provider.
+ * several providers (#3050). The routing prefix is normally the provider alias,
+ * which can intentionally differ from the provider id (for example `oc` routes
+ * OpenCode Free while `opencode` is reserved by the Zen executor).
  */
 export function qualifyPlaygroundModel(
   model: string | null | undefined,
-  providerId: string | null | undefined
+  routingPrefix: string | null | undefined
 ): string {
   const m = (model ?? "").trim();
-  if (!m || !providerId) return m;
-  return m === providerId || m.startsWith(`${providerId}/`) ? m : `${providerId}/${m}`;
+  if (!m || !routingPrefix) return m;
+  // A no-think id's real wire form is `no-think/<provider>/<model>` — the provider segment
+  // sits AFTER the prefix, not at the front, so it needs its own qualification branch instead
+  // of the generic leading-prefix check below.
+  if (m.startsWith(NO_THINKING_PREFIX)) {
+    const inner = m.slice(NO_THINKING_PREFIX.length);
+    const alreadyQualified = inner === routingPrefix || inner.startsWith(`${routingPrefix}/`);
+    return alreadyQualified ? m : `${NO_THINKING_PREFIX}${routingPrefix}/${inner}`;
+  }
+  return m === routingPrefix || m.startsWith(`${routingPrefix}/`) ? m : `${routingPrefix}/${m}`;
 }
 
 interface Message {
@@ -84,12 +111,17 @@ interface Props {
   onControlsChange?: (controls: LlmChatControls) => void;
 }
 
-function extractDeltaContent(line: string): string {
+function extractDeltaContent(line: string, nativeCodex = false): string {
   if (!line.startsWith("data: ")) return "";
   const payload = line.slice(6).trim();
   if (payload === "[DONE]") return "";
   try {
     const json = JSON.parse(payload) as Record<string, unknown>;
+    if (nativeCodex) {
+      return json.type === "response.output_text.delta" && typeof json.delta === "string"
+        ? json.delta
+        : "";
+    }
     const choices = Array.isArray(json.choices) ? json.choices : [];
     const first = choices[0] as Record<string, unknown> | undefined;
     const delta = first?.delta as Record<string, unknown> | undefined;
@@ -100,18 +132,28 @@ function extractDeltaContent(line: string): string {
   }
 }
 
-function extractUsage(line: string): { prompt_tokens?: number; completion_tokens?: number } | null {
+function extractUsage(
+  line: string,
+  nativeCodex = false
+): { prompt_tokens?: number; completion_tokens?: number } | null {
   if (!line.startsWith("data: ")) return null;
   const payload = line.slice(6).trim();
   if (payload === "[DONE]") return null;
   try {
     const json = JSON.parse(payload) as Record<string, unknown>;
-    const usage = json.usage as Record<string, unknown> | undefined;
+    const response = json.response as Record<string, unknown> | undefined;
+    const usage = (nativeCodex ? response?.usage : json.usage) as
+      Record<string, unknown> | undefined;
     if (!usage) return null;
     return {
-      prompt_tokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined,
+      prompt_tokens:
+        typeof (nativeCodex ? usage.input_tokens : usage.prompt_tokens) === "number"
+          ? Number(nativeCodex ? usage.input_tokens : usage.prompt_tokens)
+          : undefined,
       completion_tokens:
-        typeof usage.completion_tokens === "number" ? usage.completion_tokens : undefined,
+        typeof (nativeCodex ? usage.output_tokens : usage.completion_tokens) === "number"
+          ? Number(nativeCodex ? usage.output_tokens : usage.completion_tokens)
+          : undefined,
     };
   } catch {
     return null;
@@ -132,7 +174,7 @@ export function LlmChatCard({
 }: Props) {
   const t = useTranslations("miniPlayground");
   const { keys } = useApiKey();
-  const { models } = useProviderModels(providerId);
+  const { models, loading, error, retry } = useProviderModels(providerId);
 
   const [internalSelectedKey, setInternalSelectedKey] = useState<string>("");
   const [internalModel, setInternalModel] = useState<string>(initialModel ?? "");
@@ -153,21 +195,35 @@ export function LlmChatCard({
     [onModelChange]
   );
 
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState<string>("");
+  const storageKey = playgroundMessagesStorageKey(providerId, selectedKey);
+
   const [streaming, setStreaming] = useState<boolean>(false);
-  const [stats, setStats] = useState<Stats | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const abortInFlight = useCallback(() => {
+    const controller = abortRef.current;
+    controller?.abort();
+    return controller !== null;
+  }, []);
+  const [messages, setMessages] = usePersistedPlaygroundMessages(
+    storageKey,
+    streaming,
+    abortInFlight
+  );
+
+  const [input, setInput] = useState<string>("");
+  const [stats, setStats] = useState<Stats | null>(null);
+  const nativeCodexThreadRef = useRef<string>(crypto.randomUUID());
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const firstModel = models[0]?.id ?? "";
   const effectiveModel = model || firstModel || initialModel || "";
-  // Auto-prefix model with providerId to avoid OmniRoute "Ambiguous model"
+  const routingPrefix = getProviderAlias(providerId);
+  // Auto-prefix model with the provider's routing alias to avoid OmniRoute "Ambiguous model"
   // rejection when the same id is registered under multiple providers. This
   // also covers vendor-namespaced ids (e.g. `moonshotai/kimi-k2.6`) that already
   // contain a slash but still need the provider prefix (#3050).
-  const qualifiedModel = qualifyPlaygroundModel(effectiveModel, providerId);
+  const qualifiedModel = qualifyPlaygroundModel(effectiveModel, routingPrefix);
 
   // Autofocus textarea in embedded mode
   useEffect(() => {
@@ -216,21 +272,29 @@ export function LlmChatCard({
       };
       const playgroundKeyId = resolvePlaygroundKeyId(selectedKey, keys);
       if (playgroundKeyId) headers[PLAYGROUND_KEY_ID_HEADER] = playgroundKeyId;
-      const res = await fetch(ENDPOINT, {
+      const nativeCodex = isNativeCodexPlaygroundModel(qualifiedModel);
+      const turnId = nativeCodex ? crypto.randomUUID() : "";
+      if (nativeCodex) headers.Originator = "codex_omniroute_provider_playground";
+      const requestMessages = [...messages, userMsg];
+      const requestBody = nativeCodex
+        ? buildNativeCodexPlaygroundRequest({
+            model: qualifiedModel,
+            messages: requestMessages,
+            threadId: nativeCodexThreadRef.current,
+            turnId,
+          })
+        : {
+            model: qualifiedModel,
+            messages: requestMessages,
+            stream: true,
+            stream_options: { include_usage: true },
+          };
+      const res = await fetch(resolveLlmPlaygroundEndpoint(qualifiedModel), {
         method: "POST",
         signal: controller.signal,
         credentials: "same-origin",
         headers,
-        body: JSON.stringify({
-          model: qualifiedModel,
-          messages: [
-            // Include history (all except the last assistant placeholder)
-            ...messages,
-            userMsg,
-          ],
-          stream: true,
-          stream_options: { include_usage: true },
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!res.ok || !res.body) {
@@ -245,7 +309,11 @@ export function LlmChatCard({
         setMessages((prev) => {
           const next = [...prev];
           const last = next[next.length - 1];
-          next[next.length - 1] = { ...last, role: "assistant", content: `[Error: ${errMsg}]` };
+          next[next.length - 1] = {
+            ...last,
+            role: "assistant",
+            content: `[${t("errorLabel")}: ${errMsg}]`,
+          };
           return next;
         });
         return;
@@ -268,7 +336,7 @@ export function LlmChatCard({
         for (const line of lines) {
           const trimmedLine = line.trim();
           if (!trimmedLine) continue;
-          const delta = extractDeltaContent(trimmedLine);
+          const delta = extractDeltaContent(trimmedLine, nativeCodex);
           if (delta) {
             acc += delta;
             setMessages((prev) => {
@@ -278,7 +346,7 @@ export function LlmChatCard({
               return next;
             });
           }
-          const usage = extractUsage(trimmedLine);
+          const usage = extractUsage(trimmedLine, nativeCodex);
           if (usage) {
             tokenUsage = {
               tokensIn: usage.prompt_tokens ?? tokenUsage.tokensIn,
@@ -290,7 +358,7 @@ export function LlmChatCard({
 
       // Flush remaining buffer
       if (buffer.trim()) {
-        const delta = extractDeltaContent(buffer.trim());
+        const delta = extractDeltaContent(buffer.trim(), nativeCodex);
         if (delta) {
           acc += delta;
           setMessages((prev) => {
@@ -312,11 +380,15 @@ export function LlmChatCard({
         // Cancelled by user — leave partial message
         return;
       }
-      const msg = err instanceof Error ? err.message : "Request failed";
+      const msg = err instanceof Error ? err.message : t("requestFailed");
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
-        next[next.length - 1] = { ...last, role: "assistant", content: `[Error: ${msg}]` };
+        next[next.length - 1] = {
+          ...last,
+          role: "assistant",
+          content: `[${t("errorLabel")}: ${msg}]`,
+        };
         return next;
       });
     } finally {
@@ -325,7 +397,7 @@ export function LlmChatCard({
       // Refocus textarea so user can keep typing
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
-  }, [input, streaming, selectedKey, keys, providerId, qualifiedModel, messages]);
+  }, [input, streaming, selectedKey, keys, providerId, qualifiedModel, messages, setMessages, t]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -340,9 +412,10 @@ export function LlmChatCard({
 
   const handleClear = useCallback(() => {
     if (streaming) abortRef.current?.abort();
+    nativeCodexThreadRef.current = crypto.randomUUID();
     setMessages([]);
     setStats(null);
-  }, [streaming]);
+  }, [streaming, setMessages]);
 
   useImperativeHandle(
     controlsRef,
@@ -381,15 +454,33 @@ export function LlmChatCard({
             <select
               value={model || firstModel}
               onChange={(e) => setModel(e.target.value)}
-              className="min-w-0 flex-1 rounded-md border border-border bg-bg-subtle text-xs px-2 py-1 text-text-main focus:outline-none focus:ring-1 focus:ring-primary"
+              disabled={loading}
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg-subtle text-xs px-2 py-1 text-text-main focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
             >
-              {modelOptions.length === 0 && <option value="">{initialModel || "—"}</option>}
+              {modelOptions.length === 0 && !loading && (
+                <option value="">{initialModel || "—"}</option>
+              )}
+              {loading && <option value="">{t("loading") ?? "Loading…"}</option>}
               {modelOptions.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.id}
                 </option>
               ))}
             </select>
+            {error && (
+              <span className="text-xs text-red-500 flex items-center gap-1" role="alert">
+                <span className="truncate max-w-[180px]" title={String(error)}>
+                  {String(error)}
+                </span>
+                <button
+                  type="button"
+                  onClick={retry}
+                  className="shrink-0 text-xs text-primary hover:text-primary-strong underline"
+                >
+                  {t("retry") ?? "Retry"}
+                </button>
+              </span>
+            )}
           </div>
           {/* Key select */}
           {keys.length > 0 && (
@@ -400,7 +491,7 @@ export function LlmChatCard({
                 onChange={(e) => setSelectedKey(e.target.value)}
                 className="rounded-md border border-border bg-bg-subtle text-xs px-2 py-1 text-text-main focus:outline-none focus:ring-1 focus:ring-primary"
               >
-                <option value="">(default)</option>
+                <option value="">{t("defaultKey")}</option>
                 {keys.map((k) => (
                   <option key={k.id} value={k.key}>
                     {k.name ?? k.id}
@@ -416,7 +507,7 @@ export function LlmChatCard({
               onClick={handleClear}
               className="text-xs text-text-muted hover:text-text-primary transition-colors"
             >
-              Clear
+              {t("clear")}
             </button>
           )}
         </div>
@@ -439,17 +530,17 @@ export function LlmChatCard({
             <div className="size-10 rounded-full bg-accent/10 flex items-center justify-center">
               <span className="material-symbols-outlined text-accent text-[22px]">forum</span>
             </div>
-            <p className="text-sm text-text-muted">Send a message to start the conversation</p>
-            <p className="text-[11px] text-text-muted/70">
-              Shift+Enter for newline · Enter to send
-            </p>
+            <p className="text-sm text-text-muted">{t("emptyConversation")}</p>
+            <p className="text-[11px] text-text-muted/70">{t("sendHint")}</p>
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col divide-y divide-border/60">
             {messages.map((msg, i) => {
               const isUser = msg.role === "user";
               const isError =
-                !isUser && typeof msg.content === "string" && msg.content.startsWith("[Error");
+                !isUser &&
+                typeof msg.content === "string" &&
+                msg.content.startsWith(`[${t("errorLabel")}`);
               return (
                 <div
                   key={i}
@@ -480,7 +571,7 @@ export function LlmChatCard({
                   <div className="flex flex-col gap-1 min-w-0 flex-1">
                     <div className="flex items-baseline gap-2 min-w-0">
                       <span className="text-[10px] uppercase tracking-wider text-text-muted font-medium shrink-0">
-                        {isUser ? "You" : isError ? "Error" : "Assistant"}
+                        {isUser ? t("you") : isError ? t("errorLabel") : t("assistant")}
                       </span>
                       {!isUser && !isError && msg.model && (
                         <span
@@ -525,7 +616,7 @@ export function LlmChatCard({
           <button
             type="button"
             onClick={handleStop}
-            title="Stop"
+            title={t("stop")}
             className="size-8 flex items-center justify-center rounded-md border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors shrink-0"
           >
             <span className="material-symbols-outlined text-[18px]">stop</span>

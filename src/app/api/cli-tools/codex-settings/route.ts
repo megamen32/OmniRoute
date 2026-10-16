@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
+import { parse as parseStrictToml } from "smol-toml";
 import { requireCliToolsAuth } from "@/lib/api/requireCliToolsAuth";
 import {
   ensureCliConfigWriteAllowed,
@@ -13,9 +14,14 @@ import { createMultiBackup } from "@/shared/services/backupService";
 import { saveCliToolLastConfigured, deleteCliToolLastConfigured } from "@/lib/db/cliToolState";
 import { cliModelConfigSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
-import { getApiKeyById } from "@/lib/localDb";
+import { resolveApiKey } from "@/shared/services/apiKeyResolver";
 import { normalizeCodexBaseUrl } from "@/shared/utils/codexBaseUrl";
 import { migrateCodexFeatureFlags } from "@/shared/utils/codexConfig";
+import {
+  configClobberRefusalResponse,
+  parseJsonObject,
+  readExistingConfig,
+} from "../_lib/readExistingConfig";
 
 const getCodexConfigPath = () => getCliConfigPaths("codex").config;
 const getCodexAuthPath = () => getCliConfigPaths("codex").auth;
@@ -79,6 +85,15 @@ const parseToml = (content: string) => {
   });
 
   return result;
+};
+
+// The merge below works on the lightweight line parser above, which silently
+// drops lines it does not understand. Validate with a real TOML parser first so
+// a config.toml that Codex itself could not load is refused instead of being
+// rewritten from whatever fragments the line parser recovered.
+const parseValidatedToml = (content: string) => {
+  parseStrictToml(content);
+  return parseToml(content);
 };
 
 // Format a TOML value: arrays and booleans stay unquoted, strings get quoted
@@ -214,25 +229,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
     const { baseUrl, model, reasoningEffort, wireApi, modelMappings } = validation.data;
-    let { apiKey } = validation.data;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "baseUrl, apiKey and model are required" },
-        { status: 400 }
-      );
-    }
-
-    // Resolve real key from DB by ID
-    if (keyId) {
-      try {
-        const keyRecord = await getApiKeyById(keyId);
-        if (keyRecord?.key) {
-          apiKey = keyRecord.key as string;
-        }
-      } catch {
-        // Non-critical: fall back to whatever value was in apiKey
-      }
-    }
+    // Canonical key resolution (#13563): by keyId -> submitted apiKey -> sk_omniroute.
+    // Matches cline/forge/openclaw/grok-build/jcode-settings.
+    const apiKey = await resolveApiKey(keyId, validation.data.apiKey);
 
     const codexDir = getCodexDir();
     const configPath = getCodexConfigPath();
@@ -244,14 +243,19 @@ export async function POST(request: Request) {
     // Backup current configs before modifying
     await createMultiBackup("codex", [configPath, authPath]);
 
-    // Read and parse existing config
-    let parsed: Record<string, any> = { _root: {}, _sections: {} };
-    try {
-      const existingConfig = await fs.readFile(configPath, "utf-8");
-      parsed = parseToml(existingConfig);
-    } catch {
-      /* No existing config */
-    }
+    // Read BOTH files before writing either one. A file that exists but cannot
+    // be read or parsed is not an empty config: the merge below writes the result
+    // back, which would replace every provider/MCP server in config.toml and the
+    // ChatGPT OAuth tokens in auth.json. Only ENOENT means "start fresh".
+    const parsed: Record<string, any> = (await readExistingConfig(
+      configPath,
+      parseValidatedToml
+    )) ?? {
+      _root: {},
+      _sections: {},
+    };
+    const authData: Record<string, any> =
+      (await readExistingConfig(authPath, parseJsonObject)) ?? {};
 
     // Carry the user's intent forward off the deprecated Codex feature flag (#1327).
     migrateCodexFeatureFlags(parsed);
@@ -266,14 +270,15 @@ export async function POST(request: Request) {
       delete parsed._root.model_reasoning_effort;
     }
 
-    const normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl, wireApi || "chat");
+    const effectiveWireApi = wireApi ?? "responses";
+    const normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl, effectiveWireApi);
 
     // Always create a custom provider to reliably pass wire_api and use OMNIROUTE_API_KEY
     parsed._root.model_provider = "omniroute";
     parsed._sections["model_providers.omniroute"] = {
       name: "OmniRoute",
       base_url: normalizedBaseUrl,
-      wire_api: wireApi || "chat",
+      wire_api: effectiveWireApi,
       env_key: "OPENAI_API_KEY",
     };
     delete parsed._root.openai_base_url;
@@ -295,14 +300,6 @@ export async function POST(request: Request) {
     await fs.writeFile(configPath, configContent);
 
     // Update auth.json with OPENAI_API_KEY (Codex reads this first)
-    let authData: Record<string, any> = {};
-    try {
-      const existingAuth = await fs.readFile(authPath, "utf-8");
-      authData = JSON.parse(existingAuth);
-    } catch {
-      /* No existing auth */
-    }
-
     authData.OPENAI_API_KEY = apiKey;
     await fs.writeFile(authPath, JSON.stringify(authData, null, 2));
 
@@ -319,6 +316,8 @@ export async function POST(request: Request) {
       configPath,
     });
   } catch (error) {
+    const refusal = configClobberRefusalResponse(error);
+    if (refusal) return refusal;
     console.log("Error updating codex settings:", error);
     return NextResponse.json({ error: "Failed to update codex settings" }, { status: 500 });
   }

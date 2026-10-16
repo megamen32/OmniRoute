@@ -2,11 +2,20 @@ import {
   copyOpenAICompatibleReasoningFields,
   getReadableReasoningValue,
 } from "../utils/reasoningFields.ts";
+import { stripInternalReasoningPlaceholder } from "../utils/reasoningPlaceholder.ts";
 import { normalizeOpenAICompatibleFinishReason } from "../utils/finishReason.ts";
 import {
   collapseExcessiveNewlines,
   extractThinkingFromContent,
 } from "./responseSanitizer/reasoning.ts";
+import {
+  applyCacheHitTokensToUsage,
+  applyCacheHitTokensToResponsesUsage,
+} from "./responseSanitizer/cacheHitTokens.ts";
+import { stripObfuscationZeroWidth } from "../utils/zeroWidth.ts";
+import { normalizeArrayContentChunk } from "../utils/arrayContentDelta.ts";
+import { assignAliasCacheWrite } from "../utils/pickCacheCreationTokens.ts";
+import { findBalancedJsonEnd } from "./responseSanitizer/balancedJson.ts";
 export {
   extractThinkingFromContent,
   shouldParseTextualReasoningTags,
@@ -27,8 +36,14 @@ const ALLOWED_USAGE_FIELDS = new Set([
   "prompt_tokens",
   "completion_tokens",
   "total_tokens",
+  "cached_tokens",
   "prompt_tokens_details",
   "completion_tokens_details",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  // Keep through sanitize → applyClientUsageBuffer so heuristic web usage is
+  // not inflated by the default USAGE_TOKEN_BUFFER (2000).
+  "estimated",
 ]);
 const ALLOWED_RESPONSES_USAGE_FIELDS = new Set([
   "input_tokens",
@@ -37,7 +52,20 @@ const ALLOWED_RESPONSES_USAGE_FIELDS = new Set([
   "input_tokens_details",
   "output_tokens_details",
   "estimated",
+  "cost_in_usd_ticks",
+  "server_side_tool_usage_details",
+  "server_side_tool_usage",
 ]);
+
+const RESPONSES_EXTRA_TOP_LEVEL_FIELDS = [
+  "server_side_tool_usage_details",
+  "server_side_tool_usage",
+  "cost_in_usd_ticks",
+  // Why the response stopped early. Dropping it leaves status:"incomplete"
+  // with no reason, so a client (and rememberResponseState) cannot tell a
+  // max_output_tokens truncation from a content_filter stop.
+  "incomplete_details",
+] as const;
 
 type JsonRecord = Record<string, unknown>;
 type ParseOptions = { parseTextualReasoningTags?: boolean };
@@ -48,7 +76,6 @@ function toRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as JsonRecord;
 }
-
 function toString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -65,7 +92,7 @@ function deleteOpenAICompatibleReasoningFields(record: JsonRecord): void {
 }
 
 function stripZeroWidthText(value: string): string {
-  return value.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  return stripObfuscationZeroWidth(value);
 }
 
 function stripZeroWidthToolArgumentJson(value: unknown): string {
@@ -74,12 +101,18 @@ function stripZeroWidthToolArgumentJson(value: unknown): string {
 
 function stripZeroWidthFunctionArguments(functionCall: unknown): unknown {
   const fn = toRecord(functionCall);
-  if (!fn || typeof fn.arguments !== "string") return functionCall;
-  const stripped = stripZeroWidthText(fn.arguments);
-  // Fast path: return the original reference when there is nothing to strip, so
-  // hot streaming paths avoid a per-chunk shallow clone of every tool call.
-  if (stripped === fn.arguments) return functionCall;
-  return { ...fn, arguments: stripped };
+  if (!fn) return functionCall;
+  if (typeof fn.arguments === "string") {
+    const stripped = stripZeroWidthText(fn.arguments);
+    // Fast path: return the original reference when there is nothing to strip, so
+    // hot streaming paths avoid a per-chunk shallow clone of every tool call.
+    if (stripped === fn.arguments) return functionCall;
+    return { ...fn, arguments: stripped };
+  }
+  if (fn.arguments === null || typeof fn.arguments !== "object") return functionCall;
+  const serialized = JSON.stringify(fn.arguments);
+  if (typeof serialized !== "string") return functionCall;
+  return { ...fn, arguments: stripZeroWidthText(serialized) };
 }
 
 function stripZeroWidthToolCallArguments(toolCall: unknown): unknown {
@@ -99,50 +132,6 @@ function stripZeroWidthValue(value: unknown): unknown {
     );
   }
   return value;
-}
-
-function findBalancedJsonEnd(text: string, startIndex: number): number {
-  if (startIndex < 0 || startIndex >= text.length || text[startIndex] !== "{") return -1;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = startIndex; index < text.length; index += 1) {
-    const char = text[index];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === "{") {
-      depth += 1;
-      continue;
-    }
-
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-
-  return -1;
 }
 
 function stripInternalToolEnvelopeText(content: string): string {
@@ -243,6 +232,14 @@ export interface SanitizeOpenAIResponseOptions {
 }
 
 export function sanitizeOpenAIResponse(
+  body: JsonRecord,
+  options?: SanitizeOpenAIResponseOptions
+): JsonRecord;
+export function sanitizeOpenAIResponse(
+  body: unknown,
+  options?: SanitizeOpenAIResponseOptions
+): unknown;
+export function sanitizeOpenAIResponse(
   body: unknown,
   options: SanitizeOpenAIResponseOptions = {}
 ): unknown {
@@ -295,6 +292,8 @@ export function sanitizeOpenAIResponse(
   return sanitized;
 }
 
+export function sanitizeResponsesApiResponse(body: JsonRecord): JsonRecord;
+export function sanitizeResponsesApiResponse(body: unknown): unknown;
 export function sanitizeResponsesApiResponse(body: unknown): unknown {
   const bodyRecord = toRecord(body);
   if (!bodyRecord) return body;
@@ -350,6 +349,10 @@ export function sanitizeResponsesApiResponse(body: unknown): unknown {
     sanitized.usage = sanitizeResponsesUsage(responseRoot.usage);
   }
 
+  for (const key of RESPONSES_EXTRA_TOP_LEVEL_FIELDS) {
+    if (responseRoot[key] !== undefined) sanitized[key] = responseRoot[key];
+  }
+
   return sanitized;
 }
 
@@ -391,7 +394,9 @@ function sanitizeChoice(
 
 function sanitizeMessageContent(msgRecord: JsonRecord, options: ParseOptions = {}): JsonRecord {
   if (typeof msgRecord.content === "string") {
-    const strippedContent = stripInternalToolEnvelopeText(msgRecord.content);
+    const strippedContent = stripInternalReasoningPlaceholder(
+      stripInternalToolEnvelopeText(msgRecord.content)
+    );
     const nativeReasoning = getReadableReasoningValue(msgRecord);
     const { content, thinking } =
       options.parseTextualReasoningTags === true && !nativeReasoning
@@ -475,7 +480,12 @@ function sanitizeUsage(usage: unknown): unknown {
       sanitized[key] = usageRecord[key];
     }
   }
-
+  applyCacheHitTokensToUsage(usageRecord, sanitized); // DeepSeek/MiniMax/Bedrock cache-hit passthrough (#8171)
+  // OpenRouter's provider-billed USD cost: keep it only as a finite bare number.
+  const reportedCost = usageRecord.cost;
+  if (typeof reportedCost === "number" && Number.isFinite(reportedCost) && reportedCost >= 0) {
+    sanitized.cost = reportedCost;
+  }
   // Ensure required fields
   const promptTokens = toNumber(sanitized.prompt_tokens) ?? 0;
   const completionTokens = toNumber(sanitized.completion_tokens) ?? 0;
@@ -513,12 +523,33 @@ function sanitizeResponsesUsage(usage: unknown): unknown {
     normalized.output_tokens_details = normalized.completion_tokens_details;
   }
 
-  const inputDetails = toRecord(normalized.input_tokens_details) || {};
+  // DeepSeek native API: map flat prompt_cache_hit_tokens into input_tokens_details
+  if (
+    normalized.prompt_cache_hit_tokens !== undefined &&
+    !(toRecord(normalized.input_tokens_details) ?? {}).cached_tokens
+  ) {
+    normalized.input_tokens_details = {
+      ...((normalized.input_tokens_details as Record<string, unknown>) || {}),
+      cached_tokens: normalized.prompt_cache_hit_tokens,
+    };
+  }
+
+  // MiniMax / Bedrock: flat cache_read_input_tokens → input_tokens_details.cached_tokens
   if (
     normalized.cache_read_input_tokens !== undefined &&
-    inputDetails.cached_tokens === undefined
+    normalized.cache_read_input_tokens !== 0 &&
+    !(toRecord(normalized.input_tokens_details) ?? {}).cached_tokens
   ) {
-    inputDetails.cached_tokens = normalized.cache_read_input_tokens;
+    normalized.input_tokens_details = {
+      ...((normalized.input_tokens_details as Record<string, unknown>) || {}),
+      cached_tokens: normalized.cache_read_input_tokens,
+    };
+  }
+
+  const inputDetails = toRecord(normalized.input_tokens_details) || {};
+  const cachedTokens = normalized.cached_tokens ?? normalized.cache_read_input_tokens;
+  if (cachedTokens !== undefined && inputDetails.cached_tokens === undefined) {
+    inputDetails.cached_tokens = cachedTokens;
   }
   if (
     normalized.cache_creation_input_tokens !== undefined &&
@@ -526,9 +557,7 @@ function sanitizeResponsesUsage(usage: unknown): unknown {
   ) {
     inputDetails.cache_creation_tokens = normalized.cache_creation_input_tokens;
   }
-  if (Object.keys(inputDetails).length > 0) {
-    normalized.input_tokens_details = inputDetails;
-  }
+  assignAliasCacheWrite(normalized, inputDetails);
 
   const outputDetails = toRecord(normalized.output_tokens_details) || {};
   if (normalized.reasoning_tokens !== undefined && outputDetails.reasoning_tokens === undefined) {
@@ -558,15 +587,21 @@ function sanitizeResponsesUsage(usage: unknown): unknown {
 
 /**
  * Normalize response ID to use chatcmpl- prefix.
+ * Preserves numeric/short custom ids as their string form rather than
+ * regenerating them — a passthrough numeric id (e.g. `123`) must stay `"123"`
+ * so streaming clients can correlate chunks (#3427/#5776). Only a genuinely
+ * missing/empty id gets a fresh `chatcmpl-` token.
  */
 function normalizeResponseId(id: unknown): string {
-  if (!id || typeof id !== "string") {
+  if (!id || (typeof id !== "string" && typeof id !== "number")) {
     return `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 29)}`;
   }
-  // Already correct format
-  if (id.startsWith("chatcmpl-")) return id;
-  // Keep custom IDs but don't break them
-  return id;
+  const str = String(id);
+  if (str === "") {
+    return `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 29)}`;
+  }
+  // Already correct format, or a custom/numeric id — keep it.
+  return str;
 }
 
 function normalizeResponsesId(id: unknown): string {
@@ -772,7 +807,6 @@ function sanitizeResponsesOutput(output: unknown): JsonRecord[] {
     .map((item, index) => sanitizeResponsesOutputItem(item, index))
     .filter((item): item is JsonRecord => item !== null);
 }
-
 function sanitizeResponsesOutputItem(item: unknown, index: number): JsonRecord | null {
   const itemRecord = toRecord(item);
   if (!itemRecord) return null;
@@ -781,11 +815,12 @@ function sanitizeResponsesOutputItem(item: unknown, index: number): JsonRecord |
 
   if (type === "message") {
     const content = sanitizeResponsesMessageContent(itemRecord.content);
+    // prettier-ignore
     const sanitized: JsonRecord = {
       id: toString(itemRecord.id) || `msg_${index}`,
       type: "message",
       role: toString(itemRecord.role) || "assistant",
-      content,
+      content, ...(itemRecord.phase ? { phase: toString(itemRecord.phase) } : {}),
     };
     return sanitized;
   }
@@ -805,6 +840,7 @@ function sanitizeResponsesOutputItem(item: unknown, index: number): JsonRecord |
       : [];
 
     return {
+      ...itemRecord,
       id: toString(itemRecord.id) || `rs_${index}`,
       type: "reasoning",
       summary,
@@ -813,12 +849,18 @@ function sanitizeResponsesOutputItem(item: unknown, index: number): JsonRecord |
 
   if (type === "function_call") {
     const callId = toString(itemRecord.call_id) || toString(itemRecord.id) || `call_${index}`;
+    const namespace = toString(itemRecord.namespace);
     return {
       id: toString(itemRecord.id) || `fc_${callId}`,
       type: "function_call",
       call_id: callId,
       name: toString(itemRecord.name) || "",
       arguments: stripZeroWidthToolArgumentJson(itemRecord.arguments),
+      ...(namespace ? { namespace } : {}),
+      ...(itemRecord.status !== undefined ? { status: itemRecord.status } : {}),
+      ...(itemRecord.encrypted_function_args !== undefined
+        ? { encrypted_function_args: itemRecord.encrypted_function_args }
+        : {}),
     };
   }
 
@@ -840,7 +882,9 @@ function sanitizeResponsesMessageContent(content: unknown): JsonRecord[] {
     return [
       {
         type: "output_text",
-        text: collapseExcessiveNewlines(stripInternalToolEnvelopeText(content)),
+        text: collapseExcessiveNewlines(
+          stripInternalReasoningPlaceholder(stripInternalToolEnvelopeText(content))
+        ),
         annotations: [],
       },
     ];
@@ -855,7 +899,9 @@ function sanitizeResponsesMessageContent(content: unknown): JsonRecord[] {
         if (typeof part === "string") {
           return {
             type: "output_text",
-            text: collapseExcessiveNewlines(stripInternalToolEnvelopeText(part)),
+            text: collapseExcessiveNewlines(
+              stripInternalReasoningPlaceholder(stripInternalToolEnvelopeText(part))
+            ),
             annotations: [],
           };
         }
@@ -872,7 +918,9 @@ function sanitizeResponsesMessageContent(content: unknown): JsonRecord[] {
           ...partRecord,
           type: "output_text",
           text: collapseExcessiveNewlines(
-            stripInternalToolEnvelopeText(toString(partRecord.text) || "")
+            stripInternalReasoningPlaceholder(
+              stripInternalToolEnvelopeText(toString(partRecord.text) || "")
+            )
           ),
           annotations: Array.isArray(partRecord.annotations) ? partRecord.annotations : [],
         };
@@ -990,6 +1038,7 @@ function convertOpenAIResponseToResponses(openaiResponse: JsonRecord): JsonRecor
 /**
  * Sanitize a streaming SSE chunk for passthrough mode.
  * Lighter than full sanitization — only strips problematic extra fields.
+ * Fast-path: returns original when no mutations are needed.
  */
 export function sanitizeStreamingChunk(parsed: unknown): unknown {
   const parsedRecord = toRecord(parsed);
@@ -998,6 +1047,45 @@ export function sanitizeStreamingChunk(parsed: unknown): unknown {
   const eventType = toString(parsedRecord.type) || "";
   if (eventType.startsWith("response.") || parsedRecord.object === "response") {
     return sanitizeResponsesStreamingEvent(parsedRecord);
+  }
+
+  // #8271: Anthropic-native streaming events (content_block_delta with
+  // text_delta / thinking_delta) bypass the OpenAI choices[].delta.content
+  // path below. Strip zero-width characters from their text payloads so
+  // U+200D and friends don't leak to the client on the Messages API.
+  if (eventType === "content_block_delta") {
+    const deltaRecord = toRecord(parsedRecord.delta);
+    if (deltaRecord) {
+      let mutated = false;
+      if (typeof deltaRecord.text === "string") {
+        deltaRecord.text = stripZeroWidthText(deltaRecord.text);
+        mutated = true;
+      }
+      if (typeof deltaRecord.thinking === "string") {
+        deltaRecord.thinking = stripZeroWidthText(deltaRecord.thinking);
+        mutated = true;
+      }
+      return mutated ? parsedRecord : parsed;
+    }
+    return parsed;
+  }
+
+  // Fold typed content-part arrays (Mistral thinking chunks) into the string
+  // `content` / `reasoning_content` the chat-chunk contract requires.
+  normalizeArrayContentChunk(parsedRecord);
+
+  // Fast-path: check if any mutations would actually be needed
+  // Most passthrough chunks (content deltas) need no sanitization
+  const needsIdNormalization =
+    parsedRecord.id !== undefined &&
+    parsedRecord.id !== null &&
+    typeof parsedRecord.id !== "string";
+  const hasChoices = Array.isArray(parsedRecord.choices) && parsedRecord.choices.length > 0;
+  const hasUsage = parsedRecord.usage !== undefined;
+  const hasSystemFingerprint = parsedRecord.system_fingerprint !== undefined;
+  if (!needsIdNormalization && !hasChoices && !hasUsage && !hasSystemFingerprint) {
+    // Nothing to sanitize — forward original
+    return parsed;
   }
 
   // Build sanitized chunk
@@ -1026,7 +1114,8 @@ export function sanitizeStreamingChunk(parsed: unknown): unknown {
         const deltaRecord = toRecord(choiceRecord.delta);
         if (deltaRecord) {
           const delta: JsonRecord = {};
-          if (deltaRecord.role !== undefined) delta.role = deltaRecord.role;
+          // prettier-ignore
+          { if (deltaRecord.role !== undefined) delta.role = deltaRecord.role; if (typeof deltaRecord.refusal === "string") delta.refusal = deltaRecord.refusal; }
           if (deltaRecord.content !== undefined) {
             delta.content =
               typeof deltaRecord.content === "string"
@@ -1058,6 +1147,8 @@ export function sanitizeStreamingChunk(parsed: unknown): unknown {
           }
           if (deltaRecord.function_call !== undefined)
             delta.function_call = stripZeroWidthFunctionArguments(deltaRecord.function_call);
+          // Generated-image deltas (gemini-to-openai inlineData) must survive the allow-list.
+          if (Array.isArray(deltaRecord.images)) delta.images = deltaRecord.images;
           c.delta = delta;
         } else {
           c.delta = choiceRecord.delta;

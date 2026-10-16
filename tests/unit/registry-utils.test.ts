@@ -180,6 +180,18 @@ test("buildAuthHeaders: returns x-api-key header", () => {
   assert.deepEqual(headers, { "x-api-key": "custom-key" });
 });
 
+test("buildAuthHeaders: returns x-gladia-key header for Gladia", () => {
+  const provider = { ...MOCK_REGISTRY.nvidia, authHeader: "x-gladia-key", authType: "apikey" };
+  const headers = buildAuthHeaders(provider, "gladia-key-123");
+  assert.deepEqual(headers, { "x-gladia-key": "gladia-key-123" });
+});
+
+test("buildAuthHeaders: returns the raw key (no scheme) for authorization authHeader", () => {
+  const provider = { ...MOCK_REGISTRY.nvidia, authHeader: "authorization", authType: "apikey" };
+  const headers = buildAuthHeaders(provider, "assembly-key-123");
+  assert.deepEqual(headers, { Authorization: "assembly-key-123" });
+});
+
 test("buildAuthHeaders: returns empty object for authHeader none", () => {
   const provider = { ...MOCK_REGISTRY.nvidia, authHeader: "none", authType: "apikey" };
   const headers = buildAuthHeaders(provider, "some-token");

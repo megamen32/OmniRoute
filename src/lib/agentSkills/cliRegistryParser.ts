@@ -42,56 +42,60 @@ export interface ParsedCliRegistry {
  * Files that don't map to a known family are ignored.
  */
 const FILE_FAMILY_MAP: Record<string, SkillArea> = {
-  "serve": "cli-serve",
-  "dashboard": "cli-serve",
-  "stop": "cli-serve",
-  "restart": "cli-serve",
-  "health": "cli-health",
-  "status": "cli-health",
-  "doctor": "cli-health",
-  "providers": "cli-providers",
+  serve: "cli-serve",
+  dashboard: "cli-serve",
+  stop: "cli-serve",
+  restart: "cli-serve",
+  health: "cli-health",
+  status: "cli-health",
+  doctor: "cli-health",
+  providers: "cli-providers",
   "provider-cmd": "cli-providers",
   "test-provider": "cli-providers",
-  "keys": "cli-keys",
-  "oauth": "cli-keys",
-  "models": "cli-models",
-  "chat": "cli-chat",
-  "stream": "cli-chat",
-  "repl": "cli-chat",
-  "combo": "cli-routing",
-  "routing": "cli-routing",
-  "resilience": "cli-resilience",
-  "quota": "cli-resilience",
-  "compression": "cli-compression",
+  keys: "cli-keys",
+  oauth: "cli-keys",
+  models: "cli-models",
+  "model-validation": "cli-models",
+  chat: "cli-chat",
+  stream: "cli-chat",
+  repl: "cli-chat",
+  combo: "cli-routing",
+  routing: "cli-routing",
+  resilience: "cli-resilience",
+  quota: "cli-resilience",
+  compression: "cli-compression",
   "context-eng": "cli-contexts",
-  "contexts": "cli-contexts",
-  "sessions": "cli-contexts",
-  "cost": "cli-cost-usage",
-  "usage": "cli-cost-usage",
-  "pricing": "cli-cost-usage",
-  "mcp": "cli-mcp",
-  "a2a": "cli-a2a",
-  "tunnel": "cli-tunnel",
-  "backup": "cli-backup-sync",
-  "sync": "cli-backup-sync",
-  "cloud": "cli-backup-sync",
-  "audit": "cli-policy-audit",
-  "policy": "cli-policy-audit",
-  "logs": "cli-policy-audit",
-  "telemetry": "cli-policy-audit",
-  "batches": "cli-batches",
-  "files": "cli-batches",
-  "eval": "cli-eval",
-  "simulate": "cli-eval",
-  "skills": "cli-plugins-skills",
-  "plugin": "cli-plugins-skills",
-  "memory": "cli-plugins-skills",
-  "setup": "cli-setup",
-  "config": "cli-setup",
-  "env": "cli-setup",
-  "update": "cli-setup",
-  "autostart": "cli-setup",
+  contexts: "cli-contexts",
+  sessions: "cli-contexts",
+  cost: "cli-cost-usage",
+  usage: "cli-cost-usage",
+  pricing: "cli-cost-usage",
+  mcp: "cli-mcp",
+  a2a: "cli-a2a",
+  tunnel: "cli-tunnel",
+  backup: "cli-backup-sync",
+  sync: "cli-backup-sync",
+  cloud: "cli-backup-sync",
+  audit: "cli-policy-audit",
+  policy: "cli-policy-audit",
+  logs: "cli-policy-audit",
+  telemetry: "cli-policy-audit",
+  batches: "cli-batches",
+  files: "cli-batches",
+  eval: "cli-eval",
+  simulate: "cli-eval",
+  skills: "cli-plugins-skills",
+  plugin: "cli-plugins-skills",
+  memory: "cli-plugins-skills",
+  setup: "cli-setup",
+  config: "cli-setup",
+  env: "cli-setup",
+  update: "cli-setup",
+  autostart: "cli-setup",
 };
+
+// Modules that extend an existing command instead of declaring a root command.
+const COMMAND_PARENT_MAP: Record<string, string> = { "model-validation": "models" };
 
 // ── Regex patterns ───────────────────────────────────────────────────────────
 
@@ -102,7 +106,12 @@ const COMMAND_RE = /\.command\(\s*["']([^"']+)["']/g;
 const DESCRIPTION_RE = /\.description\(\s*["']([^"']+)["']/g;
 
 // Matches: .option("--flag ...", "desc") — capture group 1 = flag string
-const OPTION_RE = /\.option\(\s*["']([^"']+)["']/g;
+const OPTION_RE = /\.(?:option|requiredOption)\(\s*["']([^"']+)["']/g;
+
+// Matches: .addArgument(new Argument("<name>")) or ("[name]") — group 1 = the
+// token including its brackets, so it reads the same as an inline positional
+// written straight into .command("stop <type>").
+const ARGUMENT_RE = /new\s+Argument\(\s*["'](<[^"']+>|\[[^"']+\])["']/g;
 
 // ── Parser helpers ───────────────────────────────────────────────────────────
 
@@ -110,6 +119,11 @@ interface RawCommand {
   name: string;
   description: string;
   flags: string[];
+}
+
+function qualifyCommand(rawName: string, parent: string, isFirst: boolean, extendsParent: boolean) {
+  const isRoot = rawName === parent || rawName.startsWith(parent + " ") || !rawName.includes(" ");
+  return !extendsParent && isRoot && isFirst ? rawName : `${parent} ${rawName}`;
 }
 
 /**
@@ -120,7 +134,11 @@ interface RawCommand {
  * constructed commands may be missed. This is acceptable for the catalog use-case
  * where we want a list of known subcommand names, not runtime-validated metadata.
  */
-function extractCommandsFromContent(content: string, topLevelName: string): RawCommand[] {
+function extractCommandsFromContent(
+  content: string,
+  topLevelName: string,
+  extendsParent = false
+): RawCommand[] {
   const commands: RawCommand[] = [];
 
   // Find all .command() call positions
@@ -139,29 +157,41 @@ function extractCommandsFromContent(content: string, topLevelName: string): RawC
     // Slice between this command call and the next to scope description/options
     const slice = content.slice(cmdIndex, nextIndex);
 
+    // If the slice itself contains a nested subcommand definition (e.g., `const auto = backup.command("auto")`),
+    // restrict slice to end before the child `.command()` call so child options aren't attributed to parent.
+    // Find the boundary directly. A lazy catch-all before a lookahead repeatedly
+    // rescans long command bodies when no nested command exists.
+    const subCmdIndex = slice.search(/\b[a-zA-Z0-9_$]+\.command\(/);
+    const effectiveSlice = subCmdIndex > 0 ? slice.slice(0, subCmdIndex) : slice;
+
     // Extract description (first match in slice)
     DESCRIPTION_RE.lastIndex = 0;
-    const descMatch = DESCRIPTION_RE.exec(slice);
+    const descMatch = DESCRIPTION_RE.exec(effectiveSlice);
     const description = descMatch ? descMatch[1] : "";
 
     // Extract flags in slice
     const flags: string[] = [];
     OPTION_RE.lastIndex = 0;
     let optMatch: RegExpExecArray | null;
-    while ((optMatch = OPTION_RE.exec(slice)) !== null) {
+    while ((optMatch = OPTION_RE.exec(effectiveSlice)) !== null) {
       flags.push(optMatch[1]);
+    }
+
+    // Positionals declared with .addArgument() rather than inline in the
+    // .command() string. Commander accepts both, and the generated page has
+    // no way to tell them apart, so they are appended to the name here.
+    const args: string[] = [];
+    ARGUMENT_RE.lastIndex = 0;
+    let argMatch: RegExpExecArray | null;
+    while ((argMatch = ARGUMENT_RE.exec(effectiveSlice)) !== null) {
+      args.push(argMatch[1]);
     }
 
     // Compose full command name:
     // - If rawName equals the top-level name (or is the isDefault pattern), use as-is
     // - Otherwise, qualify as "topLevel subname"
-    const isTopLevel =
-      rawName === topLevelName ||
-      rawName.startsWith(topLevelName + " ") ||
-      // Some files declare standalone root commands (e.g. serve, health)
-      !rawName.includes(" ");
-
-    const fullName = isTopLevel && i === 0 ? rawName : `${topLevelName} ${rawName}`;
+    const base = qualifyCommand(rawName, topLevelName, i === 0, extendsParent);
+    const fullName = args.length > 0 ? `${base} ${args.join(" ")}` : base;
 
     commands.push({ name: fullName.trim(), description, flags });
   }
@@ -187,7 +217,7 @@ export function parseCliRegistry(): ParsedCliRegistry {
   } catch (err) {
     throw new Error(
       `cliRegistryParser: could not read ${commandsDir}. ` +
-        `Run from project root. Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+        `Run from project root. Underlying error: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 
@@ -207,7 +237,8 @@ export function parseCliRegistry(): ParsedCliRegistry {
       continue; // skip unreadable files
     }
 
-    const rawCmds = extractCommandsFromContent(content, basename);
+    const parent = COMMAND_PARENT_MAP[basename];
+    const rawCmds = extractCommandsFromContent(content, parent ?? basename, Boolean(parent));
     if (rawCmds.length === 0) continue;
 
     for (let i = 0; i < rawCmds.length; i++) {
@@ -216,7 +247,7 @@ export function parseCliRegistry(): ParsedCliRegistry {
         name: rc.name,
         description: rc.description,
         flags: rc.flags,
-        isSubcommand: i > 0,
+        isSubcommand: Boolean(parent) || i > 0,
       };
 
       commands.set(rc.name, cliCmd);

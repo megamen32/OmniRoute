@@ -7,7 +7,25 @@
  * @module inputSanitizer
  */
 
+import { parseEnvBoolean } from "@/shared/utils/envBoolean";
+import { resolveBlockThreshold, shouldBlockDetections } from "@/shared/utils/injectionSeverity";
+
 // ─── Prompt Injection Patterns ───────────────────────────────────────
+
+// #14483 building blocks for the authority/educational-framing co-occurrence rule.
+// Kept as plain alternations of fixed phrases (single-word gaps only via \s+).
+const AUTHORITY_FRAMING =
+  "(?:safe\\s+(?:educational|research)\\s+context|as\\s+an?\\s+(?:researcher|red[-\\s]?teamer)" +
+  "|for\\s+(?:testing|research|educational)\\s+purposes\\s+only|controlled\\s+test\\s+scenario)";
+const BYPASS_REQUEST =
+  "(?:(?:ignore|bypass|disable|disregard|override|drop|turn\\s+off)\\s+(?:all\\s+)?(?:of\\s+)?" +
+  "(?:your|the|any)\\s+(?:safety\\s+|ethical\\s+|content\\s+)?" +
+  "(?:guidelines|restrictions|rules|filters|guardrails|safeguards|policies|limitations)" +
+  "|uncensored\\s+(?:outputs?|responses?|answers?|replies|content|mode)" +
+  "|update\\s+your\\s+behaviou?r" +
+  "|(?:respond|answer|reply|proceed|continue|operate|act)\\s+without\\s+(?:any\\s+)?" +
+  "(?:restrictions|limits|limitations|filters|censorship|guardrails))";
+const AUTHORITY_WINDOW = 300;
 
 /** @type {Array<{name: string, pattern: RegExp, severity: string}>} */
 const INJECTION_PATTERNS = [
@@ -51,6 +69,26 @@ const INJECTION_PATTERNS = [
       /\b(base64\s+decode|rot13|hex\s+decode|unicode\s+escape)\b.*\b(instruction|prompt|command)\b/i,
     severity: "medium",
   },
+  {
+    // #14483 (LEDGER-12): "authority / educational framing" jailbreak family from the
+    // 2026-09-21 live promptfoo red-team run. Attacks claim a fictional
+    // safety/research authority ("safe educational context", "as a researcher",
+    // "for testing purposes only") AND ask the model to drop its rules
+    // ("ignore your guidelines", "uncensored outputs", "update your behavior").
+    //
+    // Either half alone is ordinary traffic ("best uncensored model?", "as a
+    // researcher, summarize this paper"), so the rule is a CO-OCCURRENCE: the
+    // framing and the bypass request must both appear, in either order, within
+    // AUTHORITY_WINDOW characters. Every alternative is a fixed phrase and the only
+    // variable-length gap is a bounded, lazy `[\s\S]{0,N}?` (ReDoS rule).
+    name: "authority_educational_framing",
+    pattern: new RegExp(
+      `\\b(?:${AUTHORITY_FRAMING}\\b[\\s\\S]{0,${AUTHORITY_WINDOW}}?\\b${BYPASS_REQUEST}` +
+        `|${BYPASS_REQUEST}\\b[\\s\\S]{0,${AUTHORITY_WINDOW}}?\\b${AUTHORITY_FRAMING})\\b`,
+      "i"
+    ),
+    severity: "medium",
+  },
 ];
 
 /**
@@ -66,6 +104,13 @@ const INJECTION_PATTERNS = [
  * this constant only bounds the regex scan. Refs #3932 / #4041.
  */
 export const MAX_INJECTION_SCAN_BYTES = 16 * 1024;
+
+// Inserted between the two halves of a capped scan. It has to break a pattern
+// rather than blend into one: every INJECTION_PATTERN joins its words with \s+,
+// so a bare newline would let "ignore all previous" at the end of the head and
+// "instructions" at the start of the tail match across a boundary they never
+// actually shared.
+const SCAN_GAP = "\n[GAP]\n";
 
 // ─── PII Patterns ────────────────────────────────────────────────────
 
@@ -111,9 +156,11 @@ const PII_PATTERNS = [
  */
 function getConfig() {
   return {
-    enabled: process.env.INPUT_SANITIZER_ENABLED !== "false",
+    // Default ON (opt-out). Truthy/falsy parsing accepts true/1/yes/on and false/0/no/off.
+    enabled: parseEnvBoolean(process.env.INPUT_SANITIZER_ENABLED, true),
     mode: process.env.INPUT_SANITIZER_MODE || "warn", // "warn" | "block" | "redact"
-    piiRedaction: process.env.PII_REDACTION_ENABLED === "true",
+    piiRedaction: parseEnvBoolean(process.env.PII_REDACTION_ENABLED, false),
+    blockThreshold: resolveBlockThreshold(),
   };
 }
 
@@ -134,6 +181,30 @@ function getConfig() {
  * @param {Object} body
  * @returns {string[]}
  */
+/**
+ * Push every string a single content part carries.
+ * A part is not always `{ text }`: a `tool_result` block carries its payload on
+ * `content`, as a string or as a nested block list. redactBody() below already
+ * rewrites the string form, so the file agrees that a part can carry text there --
+ * only this extractor did not look, which left tool output unscanned.
+ * @param {*} part
+ * @param {string[]} contents
+ */
+function collectPartText(part, contents) {
+  if (typeof part === "string") {
+    contents.push(part);
+    return;
+  }
+  if (!part || typeof part !== "object") return;
+  if (typeof part.text === "string") contents.push(part.text);
+  if (typeof part.content === "string") contents.push(part.content);
+  else if (Array.isArray(part.content))
+    for (const nested of part.content) {
+      if (typeof nested === "string") contents.push(nested);
+      else if (nested && typeof nested.text === "string") contents.push(nested.text);
+    }
+}
+
 function extractMessageContents(body) {
   const contents = [];
 
@@ -150,11 +221,7 @@ function extractMessageContents(body) {
       contents.push(msg.content);
     } else if (msg && Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (typeof part === "string") {
-          contents.push(part);
-        } else if (part.text) {
-          contents.push(part.text);
-        }
+        collectPartText(part, contents);
       }
     }
   }
@@ -164,8 +231,7 @@ function extractMessageContents(body) {
     contents.push(body.system);
   } else if (Array.isArray(body.system)) {
     for (const s of body.system) {
-      if (typeof s === "string") contents.push(s);
-      else if (s.text) contents.push(s.text);
+      collectPartText(s, contents);
     }
   }
 
@@ -187,17 +253,38 @@ function extractMessageContents(body) {
 }
 
 /**
+ * Reduce the joined carriers to the bytes worth scanning, under the cap.
+ *
+ * The budget itself is deliberate (hot-path perf, #3932 / #4041) and is unchanged:
+ * at most MAX_INJECTION_SCAN_BYTES characters reach the pattern loop. What changes
+ * is which bytes. extractMessageContents() appends `system`, `input`, `prompt`,
+ * `instructions`, `query` and `documents` *after* the message list, so taking only
+ * a prefix meant that one long message hid all six of them -- at 30 KB of ordinary
+ * conversation the guard saw none of them, and none of the newest turns either.
+ *
+ * Take both ends instead. The tail is where content that has never been scanned
+ * before lives: the small carriers, and the turn that was just added.
+ * @param {string} text
+ * @returns {string}
+ */
+function buildInjectionScanText(text) {
+  if (text.length <= MAX_INJECTION_SCAN_BYTES) return text;
+  // The gap comes out of the budget, so the pattern loop still never sees more
+  // than MAX_INJECTION_SCAN_BYTES characters.
+  const budget = MAX_INJECTION_SCAN_BYTES - SCAN_GAP.length;
+  const head = Math.floor(budget / 2);
+  const tail = budget - head;
+  return text.slice(0, head) + SCAN_GAP + text.slice(text.length - tail);
+}
+
+/**
  * Scan content for prompt injection patterns.
  * @param {string} text
  * @returns {Array<{pattern: string, severity: string, match: string}>}
  */
 function detectInjection(text) {
   const detections = [];
-  // Bound the regex scan to the first 16 KB — see MAX_INJECTION_SCAN_BYTES
-  // (hot-path perf, #3932 / #4041). Slice before the loop so each pattern only
-  // ever scans the capped prefix, never the full (possibly hundreds of KB) body.
-  const scanText =
-    text.length > MAX_INJECTION_SCAN_BYTES ? text.slice(0, MAX_INJECTION_SCAN_BYTES) : text;
+  const scanText = buildInjectionScanText(text);
   for (const rule of INJECTION_PATTERNS) {
     const match = scanText.match(rule.pattern);
     if (match) {
@@ -271,15 +358,19 @@ export function sanitizeRequest(body, logger = console) {
       );
     }
 
-    if (config.mode === "block" && highSeverity.length > 0) {
+    // Shared threshold policy with evaluatePromptInjection / createInjectionGuard.
+    // Default threshold is "high" (medium is observe-only unless lowered via env).
+    if (config.mode === "block" && shouldBlockDetections(injections, config.blockThreshold)) {
       result.blocked = true;
       return result;
     }
   }
 
   // ── PII Detection / Redaction ──
+  // PII rewrite is controlled by PII_REDACTION_ENABLED only.
+  // INPUT_SANITIZER_MODE is reserved for prompt-injection policy (warn/block/log).
   if (config.piiRedaction) {
-    const piiResult = processPII(fullText, config.mode === "redact");
+    const piiResult = processPII(fullText, true);
     result.piiDetections = piiResult.detections;
 
     if (piiResult.detections.length > 0) {
@@ -287,11 +378,9 @@ export function sanitizeRequest(body, logger = console) {
         `[SANITIZER] PII detected: ${piiResult.detections.map((d) => `${d.type}(${d.count})`).join(", ")}`
       );
 
-      if (config.mode === "redact") {
-        // Deep clone and replace message contents with redacted versions
-        result.sanitizedBody = redactBody(body);
-        result.modified = true;
-      }
+      // Deep clone and replace message contents with redacted versions
+      result.sanitizedBody = redactBody(body);
+      result.modified = true;
     }
   }
 
@@ -304,36 +393,105 @@ export function sanitizeRequest(body, logger = console) {
  * @returns {Object}
  */
 function redactBody(body) {
+  // Deep clone to avoid mutating original
   const clone = JSON.parse(JSON.stringify(body));
   const messageSource = clone.messages !== undefined ? clone.messages : clone.input;
   const messages = Array.isArray(messageSource)
     ? messageSource
-    : messageSource && typeof messageSource === "object"
-      ? [messageSource]
-      : [];
+    : messageSource === undefined || messageSource === null
+      ? []
+      : [messageSource];
 
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      msg.content = processPII(msg.content, true).text;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (typeof part === "string") {
-          const idx = msg.content.indexOf(part);
-          msg.content[idx] = processPII(part, true).text;
-        } else if (part.text) {
-          part.text = processPII(part.text, true).text;
-        }
-      }
+  const redactContentValue = (value) => {
+    if (typeof value === "string") {
+      return processPII(value, true).text;
     }
+    if (Array.isArray(value)) {
+      return value.map((part) => {
+        if (typeof part === "string") {
+          return processPII(part, true).text;
+        }
+        if (part && typeof part === "object") {
+          const next = { ...part };
+          if (typeof next.text === "string") {
+            next.text = processPII(next.text, true).text;
+          }
+          if (typeof next.content === "string") {
+            next.content = processPII(next.content, true).text;
+          } else if (Array.isArray(next.content)) {
+            next.content = next.content.map((nested) => {
+              if (typeof nested === "string") return processPII(nested, true).text;
+              if (nested && typeof nested === "object" && typeof nested.text === "string") {
+                return { ...nested, text: processPII(nested.text, true).text };
+              }
+              return nested;
+            });
+          }
+          return next;
+        }
+        return part;
+      });
+    }
+    return value;
+  };
+
+  const redactedMessages = messages.map((msg) => {
+    if (typeof msg === "string") {
+      return processPII(msg, true).text;
+    }
+    if (!msg || typeof msg !== "object") {
+      return msg;
+    }
+    const next = { ...msg };
+    if ("content" in next) {
+      next.content = redactContentValue(next.content);
+    }
+    if (typeof next.text === "string") {
+      next.text = processPII(next.text, true).text;
+    }
+    return next;
+  });
+
+  if (clone.messages !== undefined) {
+    clone.messages = Array.isArray(clone.messages) ? redactedMessages : redactedMessages[0];
+  } else if (clone.input !== undefined) {
+    clone.input = Array.isArray(clone.input) ? redactedMessages : redactedMessages[0];
   }
 
   if (typeof clone.system === "string") {
     clone.system = processPII(clone.system, true).text;
+  } else if (Array.isArray(clone.system)) {
+    clone.system = clone.system.map((entry) => {
+      if (typeof entry === "string") return processPII(entry, true).text;
+      if (entry && typeof entry === "object") {
+        const next = { ...entry };
+        if (typeof next.text === "string") next.text = processPII(next.text, true).text;
+        if (typeof next.content === "string") next.content = processPII(next.content, true).text;
+        return next;
+      }
+      return entry;
+    });
+  }
+
+  if (typeof clone.input === "string") {
+    clone.input = processPII(clone.input, true).text;
+  }
+  if (typeof clone.prompt === "string") {
+    clone.prompt = processPII(clone.prompt, true).text;
+  } else if (Array.isArray(clone.prompt)) {
+    clone.prompt = clone.prompt.map((entry) =>
+      typeof entry === "string" ? processPII(entry, true).text : entry
+    );
   }
 
   return clone;
 }
 
-// ─── Exports for Testing ──────────────────────────────────────────────
-
-export { detectInjection, processPII, extractMessageContents, INJECTION_PATTERNS, PII_PATTERNS };
+export {
+  detectInjection,
+  processPII,
+  extractMessageContents,
+  buildInjectionScanText,
+  INJECTION_PATTERNS,
+  PII_PATTERNS,
+};

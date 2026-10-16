@@ -8,15 +8,40 @@ const { getAccountDisplayName, getProviderDisplayName } =
   await import("../../src/lib/display/names.ts");
 const { resolveProviderName } = await import("../../src/lib/display/useProviderNodeMap.ts");
 
-test("toJsonErrorPayload: preserves upstream error objects that already have error payloads", () => {
-  const payload = {
-    error: {
-      message: "provider exploded",
-      code: "quota_exceeded",
-    },
-  };
-
-  assert.deepEqual(toJsonErrorPayload(payload), payload);
+// #15159 wave 1.1 INVERTED — do not restore.
+//
+// This test used to be:
+//   assert.deepEqual(toJsonErrorPayload(payload), payload)
+// i.e. it asserted a FULL-OBJECT PASSTHROUGH. That passthrough was the bug, not
+// the contract: `toJsonErrorPayload` has 21 call sites across 13 production
+// files that each serialize its return value straight into an HTTP response
+// body, so returning the upstream object verbatim let the provider put ANY
+// field it liked into the client-visible payload. Proven with
+// `{"error":{"message":"boom at /srv/app/dist/client.js:44:12
+// api_key=sk-live-SECRET123","token":"sk-live-XYZ","internal_path":"/srv/app/internal"}}`
+// — key, server path and both unrelated fields came back intact.
+//
+// The helper now builds the `error` record from an explicit allow-list
+// (message/type/code/param/reason/status) and sanitizes every string through
+// `sanitizeErrorMessage`. The full regression guard — including proof that
+// sibling fields are dropped and credentials are redacted — lives in
+// tests/unit/upstream-error-payload-sanitization.test.ts.
+test("toJsonErrorPayload: keeps the allow-listed fields of an upstream error payload", () => {
+  assert.deepEqual(
+    toJsonErrorPayload({
+      error: {
+        message: "provider exploded",
+        code: "quota_exceeded",
+      },
+    }),
+    {
+      error: {
+        message: "provider exploded",
+        type: "upstream_error",
+        code: "quota_exceeded",
+      },
+    }
+  );
 });
 
 test("toJsonErrorPayload: normalizes object payloads with string error", () => {
@@ -32,8 +57,10 @@ test("toJsonErrorPayload: normalizes object payloads with string error", () => {
 test("toJsonErrorPayload: wraps plain objects under error key", () => {
   assert.deepEqual(toJsonErrorPayload({ status: 503, message: "backend down" }), {
     error: {
-      status: 503,
       message: "backend down",
+      type: "upstream_error",
+      code: "upstream_error",
+      status: 503,
     },
   });
 });
@@ -92,6 +119,7 @@ test("toJsonErrorPayload: parses JSON strings recursively", () => {
   assert.deepEqual(toJsonErrorPayload(raw), {
     error: {
       message: "nested json",
+      type: "upstream_error",
       code: "bad_request",
     },
   });
@@ -237,7 +265,7 @@ test("getProviderDisplayName: prefers node metadata and simplifies compatible ID
     "Friendly Node"
   );
   assert.equal(
-    getProviderDisplayName("anthropic-compatible-responses-02669115-2545-4896-b003-cb4dac09d441", {
+    getProviderDisplayName("anthropic-compatible-02669115-2545-4896-b003-cb4dac09d441", {
       name: " ",
       prefix: "Anthropic Prefix",
     }),
@@ -248,8 +276,18 @@ test("getProviderDisplayName: prefers node metadata and simplifies compatible ID
     "Compatible (openai)"
   );
   assert.equal(
-    getProviderDisplayName("anthropic-compatible-responses-02669115-2545-4896-b003-cb4dac09d441"),
+    getProviderDisplayName("openai-compatible-responses-02669115-2545-4896-b003-cb4dac09d441"),
+    "Compatible (openai)"
+  );
+  // Segment-less anthropic-compatible ids (the actual generated shape, #8326) now
+  // resolve to a friendly label too, instead of falling through to the raw ID.
+  assert.equal(
+    getProviderDisplayName("anthropic-compatible-02669115-2545-4896-b003-cb4dac09d441"),
     "Compatible (anthropic)"
+  );
+  assert.equal(
+    getProviderDisplayName("anthropic-compatible-cc-02669115-2545-4896-b003-cb4dac09d441"),
+    "CC Compatible"
   );
   assert.equal(getProviderDisplayName(undefined), "Unknown Provider");
   assert.equal(getProviderDisplayName("plain-provider-id"), "plain-provider-id");

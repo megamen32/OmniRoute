@@ -4,10 +4,19 @@
  * LOCAL_ONLY: registered in routeGuard.ts
  */
 import { z } from "zod";
-import { installCertResult, uninstallCert, checkCertInstalled } from "@/mitm/cert/install";
-import { resolveMitmDataDir } from "@/mitm/dataDir";
-import { getCachedPassword } from "@/mitm/manager";
-import path from "path";
+import {
+  installCaCert,
+  installCertResult,
+  uninstallCert,
+  checkCertInstalled,
+} from "@/mitm/cert/install";
+import { activeCertMissingMessage, resolveActiveMitmCert } from "@/mitm/cert/activeCert";
+import { getCachedPassword, setCachedPassword } from "@/mitm/manager";
+import {
+  isMitmSudoPasswordRequired,
+  normalizeMitmSudoPasswordInput,
+  resolveMitmSudoPassword,
+} from "@/mitm/sudoGate";
 import fs from "fs";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { createErrorResponse } from "@/lib/api/errorResponse";
@@ -18,8 +27,11 @@ export const CertTrustBodySchema = z.object({
   sudoPassword: z.string().optional(),
 });
 
+// The cert file the active migration decision installs/trusts (ca.crt under
+// the root-CA model, server.crt on a legacy-leaf install) — the same file the
+// MITM server serves and the `server` route's "trust-cert" action trusts.
 function certPath(): string {
-  return path.join(resolveMitmDataDir(), "mitm", "server.crt");
+  return resolveActiveMitmCert().certPath;
 }
 
 export async function GET(): Promise<Response> {
@@ -37,19 +49,31 @@ export async function GET(): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   const raw = await request.json().catch(() => ({}));
   const parsed = CertTrustBodySchema.safeParse(raw);
-  const sudoPassword =
-    (parsed.success ? parsed.data.sudoPassword : undefined) ?? getCachedPassword() ?? "";
+  const sudoPassword = resolveMitmSudoPassword(
+    parsed.success ? parsed.data.sudoPassword : undefined,
+    getCachedPassword()
+  );
+
+  if (isMitmSudoPasswordRequired(sudoPassword)) {
+    return createErrorResponse({ status: 400, message: "Missing sudoPassword" });
+  }
 
   try {
-    const crtPath = certPath();
+    const { certPath: crtPath, mode } = resolveActiveMitmCert();
     if (!fs.existsSync(crtPath)) {
-      return createErrorResponse({
-        status: 404,
-        message: "Certificate not found. Generate one first.",
-      });
+      return createErrorResponse({ status: 404, message: activeCertMissingMessage(mode) });
     }
-    const result = await installCertResult(sudoPassword, crtPath);
+    const result =
+      mode === "use-root-ca"
+        ? await installCaCert(sudoPassword, crtPath)
+        : await installCertResult(sudoPassword, crtPath);
     if (result.installed) {
+      const suppliedPassword = parsed.success
+        ? normalizeMitmSudoPasswordInput(parsed.data.sudoPassword)
+        : "";
+      if (process.platform !== "win32" && suppliedPassword) {
+        setCachedPassword(suppliedPassword);
+      }
       const trusted = await checkCertInstalled(crtPath);
       return Response.json({ ok: true, trusted });
     }
@@ -83,8 +107,14 @@ export async function POST(request: Request): Promise<Response> {
 export async function DELETE(request: Request): Promise<Response> {
   const raw = await request.json().catch(() => ({}));
   const parsed = CertTrustBodySchema.safeParse(raw);
-  const sudoPassword =
-    (parsed.success ? parsed.data.sudoPassword : undefined) ?? getCachedPassword() ?? "";
+  const sudoPassword = resolveMitmSudoPassword(
+    parsed.success ? parsed.data.sudoPassword : undefined,
+    getCachedPassword()
+  );
+
+  if (isMitmSudoPasswordRequired(sudoPassword)) {
+    return createErrorResponse({ status: 400, message: "Missing sudoPassword" });
+  }
 
   try {
     const crtPath = certPath();
@@ -93,6 +123,12 @@ export async function DELETE(request: Request): Promise<Response> {
       return Response.json({ ok: true, trusted: false });
     }
     await uninstallCert(sudoPassword, crtPath);
+    const suppliedPassword = parsed.success
+      ? normalizeMitmSudoPasswordInput(parsed.data.sudoPassword)
+      : "";
+    if (process.platform !== "win32" && suppliedPassword) {
+      setCachedPassword(suppliedPassword);
+    }
     const trusted = await checkCertInstalled(crtPath);
     return Response.json({ ok: true, trusted });
   } catch (err) {

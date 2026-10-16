@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, Button, ModelSelectModal, ManualConfigModal } from "@/shared/components";
 import CliStatusBadge from "./CliStatusBadge";
 import { useTranslations } from "next-intl";
@@ -32,7 +32,7 @@ export default function CodexToolCard({
   const [selectedModel, setSelectedModel] = useState("gpt-5.6-sol");
   const [modelMappings, setModelMappings] = useState<Record<string, string>>({});
   const [reasoningEffort, setReasoningEffort] = useState("xhigh");
-  const [wireApi, setWireApi] = useState("chat");
+  const [wireApi, setWireApi] = useState("responses");
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTarget, setModalTarget] = useState<string | null>(null); // null = default model, string = mapping key
   const [modelAliases, setModelAliases] = useState({});
@@ -50,23 +50,13 @@ export default function CodexToolCard({
   const [restoringBackup, setRestoringBackup] = useState(null);
   const cliReady = !!(codexStatus?.installed && codexStatus?.runnable);
 
-  useEffect(() => {
-    // Store the key *id* so the backend can resolve the real secret from DB
-    if (apiKeys?.length > 0 && !selectedApiKey) {
-      setSelectedApiKey(apiKeys[0].id);
-    }
-  }, [apiKeys, selectedApiKey]);
+  // Store the key *id* so the backend can resolve the real secret from DB.
+  // Default to the first available key while the user hasn't picked one —
+  // derived during render instead of synced through an effect
+  // (react-hooks/set-state-in-effect).
+  const effectiveApiKey = selectedApiKey || (apiKeys?.length > 0 ? apiKeys[0].id : "");
 
-  useEffect(() => {
-    if (isExpanded && !codexStatus) {
-      checkCodexStatus();
-      fetchModelAliases();
-      fetchProfiles();
-      fetchBackups();
-    }
-  }, [isExpanded, codexStatus]);
-
-  const fetchModelAliases = async () => {
+  const fetchModelAliases = useCallback(async () => {
     try {
       const res = await fetch("/api/models/alias");
       const data = await res.json();
@@ -74,22 +64,50 @@ export default function CodexToolCard({
     } catch (error) {
       console.log("Error fetching model aliases:", error);
     }
-  };
+  }, []);
 
-  // Parse config content
-  useEffect(() => {
-    if (codexStatus?.config) {
-      const modelMatch = codexStatus.config.match(/^model\s*=\s*"([^"]+)"/im);
+  // ── Profiles ──
+  const fetchProfiles = useCallback(async () => {
+    try {
+      const res = await fetch("/api/cli-tools/codex-profiles");
+      const data = await res.json();
+      if (res.ok) setProfiles(data.profiles || []);
+    } catch (error) {
+      console.log("Error fetching profiles:", error);
+    }
+  }, []);
+
+  // ── Backups ──
+  const fetchBackups = useCallback(async () => {
+    try {
+      const res = await fetch("/api/cli-tools/backups?tool=codex");
+      const data = await res.json();
+      if (res.ok) setBackups(data.backups || []);
+    } catch (error) {
+      console.log("Error fetching backups:", error);
+    }
+  }, []);
+
+  // Parse config content and sync the form fields from a freshly fetched
+  // status (was a separate codexStatus effect — runs right after each fetch
+  // instead so no setState happens synchronously inside an effect body).
+  const syncFormFromStatus = useCallback((status) => {
+    if (status && !status.config) {
+      setWireApi("responses");
+    }
+
+    if (status?.config) {
+      const modelMatch = status.config.match(/^model\s*=\s*"([^"]+)"/im);
       if (modelMatch) setSelectedModel(modelMatch[1]);
 
-      const effortMatch = codexStatus.config.match(/^model_reasoning_effort\s*=\s*"([^"]+)"/im);
+      const effortMatch = status.config.match(/^model_reasoning_effort\s*=\s*"([^"]+)"/im);
       if (effortMatch) setReasoningEffort(effortMatch[1]);
 
-      const wireMatch = codexStatus.config.match(/^wire_api\s*=\s*"([^"]+)"/im);
-      if (wireMatch) setWireApi(wireMatch[1]);
+      const wireMatch = status.config.match(/^wire_api\s*=\s*"([^"]+)"/im);
+      setWireApi(wireMatch?.[1] || "responses");
 
       const newMappings: Record<string, string> = {};
-      const migrationsBlock = codexStatus.config.split("[notice.model_migrations]")[1];
+      const migrationsBlock = status.config.split("[notice.model_migrations]")[1];
       if (migrationsBlock) {
         const nextSectionIdx = migrationsBlock.indexOf("[");
         const chunk =
@@ -102,7 +120,32 @@ export default function CodexToolCard({
       }
       setModelMappings(newMappings);
     }
-  }, [codexStatus]);
+  }, []);
+
+  const checkCodexStatus = useCallback(async () => {
+    setCheckingCodex(true);
+    try {
+      const res = await fetch("/api/cli-tools/codex-settings");
+      const data = await res.json();
+      setCodexStatus(data);
+      syncFormFromStatus(data);
+    } catch (error) {
+      const fallback = { installed: false, error: error.message };
+      setCodexStatus(fallback);
+      syncFormFromStatus(fallback);
+    } finally {
+      setCheckingCodex(false);
+    }
+  }, [syncFormFromStatus]);
+
+  useEffect(() => {
+    if (!(isExpanded && !codexStatus)) return;
+    // Load in an async continuation so every setState happens after an await
+    // (react-hooks/set-state-in-effect: no synchronous setState in effect bodies).
+    void (async () => {
+      await Promise.all([checkCodexStatus(), fetchModelAliases(), fetchProfiles(), fetchBackups()]);
+    })();
+  }, [isExpanded, codexStatus, checkCodexStatus, fetchModelAliases, fetchProfiles, fetchBackups]);
 
   const getConfigStatus = () => {
     if (!cliReady) return null;
@@ -123,30 +166,17 @@ export default function CodexToolCard({
 
   const getDisplayUrl = () => normalizeCodexBaseUrl(customBaseUrl || baseUrl, wireApi);
 
-  const checkCodexStatus = async () => {
-    setCheckingCodex(true);
-    try {
-      const res = await fetch("/api/cli-tools/codex-settings");
-      const data = await res.json();
-      setCodexStatus(data);
-    } catch (error) {
-      setCodexStatus({ installed: false, error: error.message });
-    } finally {
-      setCheckingCodex(false);
-    }
-  };
-
   const handleApplySettings = async () => {
     setApplying(true);
     setMessage(null);
     try {
       // Use sk_omniroute for localhost if no key, otherwise use selected key
       const keyToUse =
-        selectedApiKey && selectedApiKey.trim()
-          ? selectedApiKey
+        effectiveApiKey && effectiveApiKey.trim()
+          ? effectiveApiKey
           : !cloudEnabled
             ? "sk_omniroute"
-            : selectedApiKey;
+            : effectiveApiKey;
 
       // Send both apiKey (as fallback) and keyId to look up the unmasked string natively
       const res = await fetch("/api/cli-tools/codex-settings", {
@@ -155,7 +185,7 @@ export default function CodexToolCard({
         body: JSON.stringify({
           baseUrl: getEffectiveBaseUrl(),
           apiKey: keyToUse,
-          keyId: selectedApiKey,
+          keyId: effectiveApiKey,
           model: selectedModel || CODEX_DEFAULT_MODELS[0],
           reasoningEffort,
           wireApi,
@@ -216,17 +246,6 @@ export default function CodexToolCard({
     }
     setModalOpen(false);
     setModalTarget(null);
-  };
-
-  // ── Profiles ──
-  const fetchProfiles = async () => {
-    try {
-      const res = await fetch("/api/cli-tools/codex-profiles");
-      const data = await res.json();
-      if (res.ok) setProfiles(data.profiles || []);
-    } catch (error) {
-      console.log("Error fetching profiles:", error);
-    }
   };
 
   const handleSaveProfile = async () => {
@@ -298,17 +317,6 @@ export default function CodexToolCard({
       if (res.ok) fetchProfiles();
     } catch (error) {
       console.log("Error deleting profile:", error);
-    }
-  };
-
-  // ── Backups ──
-  const fetchBackups = async () => {
-    try {
-      const res = await fetch("/api/cli-tools/backups?tool=codex");
-      const data = await res.json();
-      if (res.ok) setBackups(data.backups || []);
-    } catch (error) {
-      console.log("Error fetching backups:", error);
     }
   };
 
@@ -550,7 +558,7 @@ openai_base_url = "${getEffectiveBaseUrl()}"
                   </span>
                   {apiKeys.length > 0 ? (
                     <select
-                      value={selectedApiKey}
+                      value={effectiveApiKey}
                       onChange={(e) => setSelectedApiKey(e.target.value)}
                       className="flex-1 px-2 py-1.5 bg-surface rounded text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
                     >
@@ -606,7 +614,7 @@ openai_base_url = "${getEffectiveBaseUrl()}"
                 {/* Reasoning Effort */}
                 <div className="flex items-center gap-2">
                   <span className="w-32 shrink-0 text-sm font-semibold text-text-main text-right">
-                    Reasoning Effort
+                    {t("reasoningEffort")}
                   </span>
                   <span className="material-symbols-outlined text-text-muted text-[14px]">
                     arrow_forward
@@ -616,20 +624,20 @@ openai_base_url = "${getEffectiveBaseUrl()}"
                     onChange={(e) => setReasoningEffort(e.target.value)}
                     className="flex-1 px-2 py-1.5 bg-surface rounded text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
                   >
-                    <option value="none">None</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="xhigh">XHigh</option>
-                    <option value="max">Max</option>
-                    <option value="ultra">Ultra</option>
+                    <option value="none">{t("effortNone")}</option>
+                    <option value="low">{t("effortLow")}</option>
+                    <option value="medium">{t("effortMedium")}</option>
+                    <option value="high">{t("effortHigh")}</option>
+                    <option value="xhigh">{t("effortExtraHigh")}</option>
+                    <option value="max">{t("effortMax")}</option>
+                    <option value="ultra">{t("effortUltra")}</option>
                   </select>
                 </div>
 
                 {/* Wire API */}
                 <div className="flex items-center gap-2">
                   <span className="w-32 shrink-0 text-sm font-semibold text-text-main text-right">
-                    Wire API
+                    {t("wireApi")}
                   </span>
                   <span className="material-symbols-outlined text-text-muted text-[14px]">
                     arrow_forward
@@ -647,7 +655,7 @@ openai_base_url = "${getEffectiveBaseUrl()}"
                 <div className="h-px bg-border/50 my-2"></div>
 
                 <div className="text-[11px] text-text-muted mb-2 font-medium uppercase tracking-wider text-right">
-                  Model Aliases ([notice.model_migrations])
+                  {t("modelAliases")} ([notice.model_migrations])
                 </div>
                 {CODEX_DEFAULT_MODELS.map((defaultModel) => (
                   <div key={defaultModel} className="flex items-center gap-2 group">
@@ -673,7 +681,7 @@ openai_base_url = "${getEffectiveBaseUrl()}"
                       onChange={(e) =>
                         setModelMappings({ ...modelMappings, [defaultModel]: e.target.value })
                       }
-                      placeholder={`Route ${defaultModel} to...`}
+                      placeholder={t("routeModelPlaceholder", { model: defaultModel })}
                       className="flex-1 px-2 py-1.5 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
                     />
                     {modelMappings[defaultModel] && (
@@ -711,7 +719,7 @@ openai_base_url = "${getEffectiveBaseUrl()}"
                   onClick={handleApplySettings}
                   disabled={isApplyDisabled({
                     selectedModel,
-                    selectedApiKey,
+                    selectedApiKey: effectiveApiKey,
                     cloudEnabled,
                     apiKeys,
                   })}

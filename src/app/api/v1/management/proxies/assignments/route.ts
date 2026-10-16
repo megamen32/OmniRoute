@@ -1,14 +1,21 @@
-import { assignProxyToScope, getProxyAssignments, resolveProxyForConnection } from "@/lib/localDb";
+import { assignProxyToScope, getProxyAssignments } from "@/lib/db/proxies";
+import { parseIntegerQueryParam } from "@/lib/api/queryIntegerParam";
+import { resolveProxyForConnection } from "@/lib/db/settings";
 import { proxyAssignmentSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { createErrorResponse, createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { clearDispatcherCache } from "@omniroute/open-sse/utils/proxyDispatcher";
 
-function toPagination(searchParams: URLSearchParams) {
-  const limit = Math.max(1, Math.min(200, Number(searchParams.get("limit") || 100)));
-  const offset = Math.max(0, Number(searchParams.get("offset") || 0));
-  return { limit, offset };
+function toPagination(searchParams: URLSearchParams): { limit: number; offset: number } | Response {
+  const parsedLimit = parseIntegerQueryParam(searchParams, "limit", 100);
+  if (parsedLimit.ok === false) return parsedLimit.response;
+  const parsedOffset = parseIntegerQueryParam(searchParams, "offset", 0);
+  if (parsedOffset.ok === false) return parsedOffset.response;
+  return {
+    limit: Math.max(1, Math.min(200, parsedLimit.value)),
+    offset: Math.max(0, parsedOffset.value),
+  };
 }
 
 export async function GET(request: Request) {
@@ -33,7 +40,9 @@ export async function GET(request: Request) {
     });
 
     const filtered = scopeId ? all.filter((entry) => entry.scopeId === scopeId) : all;
-    const { limit, offset } = toPagination(searchParams);
+    const pagination = toPagination(searchParams);
+    if (pagination instanceof Response) return pagination;
+    const { limit, offset } = pagination;
     const items = filtered.slice(offset, offset + limit);
 
     return Response.json({

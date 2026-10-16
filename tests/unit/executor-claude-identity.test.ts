@@ -176,6 +176,16 @@ describe("claudeIdentity — selectBetaFlags", () => {
     };
     const flags = mod.selectBetaFlags(body, "claude-opus-4");
     assert.ok(flags.includes("context-1m-2025-08-07"));
+    assert.ok(flags.includes("mid-conversation-system-2026-04-07"));
+  });
+
+  it("omits the legacy context-1m beta for Opus 5", () => {
+    const body = {
+      system: "test",
+      tools: [{ name: "test_tool" }],
+    };
+    const flags = mod.selectBetaFlags(body, "claude-opus-5");
+    assert.ok(!flags.includes("context-1m-2025-08-07"));
   });
 
   it("does not include context-1m for sonnet", () => {
@@ -185,20 +195,19 @@ describe("claudeIdentity — selectBetaFlags", () => {
     };
     const flags = mod.selectBetaFlags(body, "claude-sonnet-4");
     assert.ok(!flags.includes("context-1m"));
-  });
-});
-
-describe("claudeIdentity — buildHashFor", () => {
-  it("returns 3-char hex string", () => {
-    const hash = mod.buildHashFor("1.0.0", "2026-01-01");
-    assert.equal(hash.length, 3);
-    assert.ok(/^[0-9a-f]{3}$/.test(hash));
+    assert.ok(!flags.includes("mid-conversation-system"));
   });
 
-  it("returns same hash for same inputs", () => {
-    const a = mod.buildHashFor("1.0.0", "2026-01-01");
-    const b = mod.buildHashFor("1.0.0", "2026-01-01");
-    assert.equal(a, b);
+  it("includes mid-conversation-system without context-1m for Fable", () => {
+    const body = {
+      system: "test",
+      tools: [{ name: "test_tool" }],
+    };
+    for (const model of ["claude-fable-5", "claude-fable-5-1"]) {
+      const flags = mod.selectBetaFlags(body, model);
+      assert.ok(flags.includes("mid-conversation-system-2026-04-07"));
+      assert.ok(!flags.includes("context-1m"));
+    }
   });
 });
 

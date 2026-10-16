@@ -5,9 +5,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Import component (no module-level mocks needed) ──────────────────────────
 
-const { default: NoAuthAccountCard } = await import(
-  "../../../src/shared/components/NoAuthAccountCard"
-);
+const { default: NoAuthAccountCard } =
+  await import("../../../src/shared/components/NoAuthAccountCard");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -244,5 +243,27 @@ describe("NoAuthAccountCard proxy pool dropdown (#5217 Gap 1)", () => {
     // Tooltip is resolved from the referenced pool record, not an inline proxy.
     expect(firstShield.getAttribute("title")).toContain("1.2.3.4");
     expect(firstShield.className).toContain("text-blue-400");
+  });
+});
+
+describe("NoAuthAccountCard set-aside reads", () => {
+  it("reads each bound proxy id once no matter how often the list renders", async () => {
+    const fps = makeFingerprints(2);
+    const { mockFetch } = setupFetchWithProxies(fps, [
+      { fingerprint: fps[0], proxyId: "pool-1" },
+      { fingerprint: fps[1], proxyId: "pool-1" },
+    ]);
+    const el = renderCard();
+    await waitForCondition(() => grid(el)?.querySelectorAll("[data-account-id]").length === 2);
+    // Re-render repeatedly (React StrictMode-style double render + state churn).
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+    }
+    const setAsideCalls = mockFetch.mock.calls.filter((c) =>
+      String(c[0]).includes("/api/admin/proxy-pool-visibility")
+    );
+    expect(setAsideCalls.length).toBe(1);
   });
 });

@@ -21,6 +21,12 @@
  */
 import { createHash } from "node:crypto";
 
+import {
+  getClaudeCodeClientBuildRevision,
+  CLAUDE_CODE_CLIENT_VERSION,
+  getClaudeCodeClientVersion,
+} from "@/shared/constants/claudeCodeClient";
+
 // ────────────────────────────────────────────────────────────────────────────
 // DSL types
 // ────────────────────────────────────────────────────────────────────────────
@@ -96,8 +102,10 @@ export interface InjectBillingHeaderOp {
    *   - static-zero: emit "00000" (relay endpoints don't validate)
    */
   cchAlgo: "sha256-first-user" | "xxhash64-body" | "static-zero";
-  /** Override the embedded `cc_version=` value. Defaults to `2.1.207`. */
+  /** Override the embedded `cc_version=` value. Defaults to CLAUDE_CODE_CLIENT_VERSION. */
   version?: string;
+  /** Override its captured build revision. Defaults to a computed compatibility suffix. */
+  buildRevision?: string;
 }
 
 export interface CcBridgeTransformsConfig {
@@ -114,7 +122,17 @@ export const CCH_SALT = "59cf53e54c78";
 /** Character positions sampled from the first user message text. */
 export const CCH_POSITIONS = [4, 7, 20] as const;
 /** Default `cc_version=` value embedded in the billing header. */
-export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.207";
+export const DEFAULT_CLAUDE_CODE_VERSION = CLAUDE_CODE_CLIENT_VERSION;
+export function getDefaultClaudeCodeVersion(): string {
+  return getClaudeCodeClientVersion();
+}
+/**
+ * Default `cc_version=` suffix. Honours the env override, like the version
+ * above: pinning only one of the two advertises a pair no binary emits.
+ */
+export function getDefaultClaudeCodeBuildRevision(): string {
+  return getClaudeCodeClientBuildRevision();
+}
 /** Identity sentinel prepended for Claude Agent SDK callers. */
 export const CLAUDE_AGENT_SDK_IDENTITY =
   "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
@@ -176,6 +194,7 @@ export const DEFAULT_CC_BRIDGE_PIPELINE: TransformOp[] = [
     entrypoint: "sdk-cli",
     versionFormat: "ex-machina",
     cchAlgo: "sha256-first-user",
+    buildRevision: getDefaultClaudeCodeBuildRevision(),
   },
 ];
 
@@ -267,6 +286,7 @@ interface BuildBillingHeaderOptions {
   versionFormat: "ex-machina" | "omniroute-daystamp";
   cchAlgo: "sha256-first-user" | "xxhash64-body" | "static-zero";
   version?: string;
+  buildRevision?: string;
   now?: Date;
 }
 
@@ -283,13 +303,14 @@ export function buildBillingHeaderValue(
   messages: Message[],
   options: BuildBillingHeaderOptions
 ): string {
-  const version = options.version || DEFAULT_CLAUDE_CODE_VERSION;
+  const version = options.version || getDefaultClaudeCodeVersion();
   const firstUserText = extractFirstUserMessageText(messages);
 
   const suffix =
-    options.versionFormat === "omniroute-daystamp"
+    options.buildRevision ??
+    (options.versionFormat === "omniroute-daystamp"
       ? computeDaystampVersionSuffix(version, options.now)
-      : computeExMachinaVersionSuffix(firstUserText, version);
+      : computeExMachinaVersionSuffix(firstUserText, version));
 
   let cch: string;
   switch (options.cchAlgo) {
@@ -462,6 +483,7 @@ function applyInjectBillingHeader(
     versionFormat: op.versionFormat,
     cchAlgo: op.cchAlgo,
     version: op.version,
+    buildRevision: op.buildRevision,
   });
 
   // Idempotency: replace any existing billing header block (ex-machina + native
@@ -480,10 +502,108 @@ export interface ApplyPipelineResult {
   appliedOpKinds: string[];
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// System carrier resolution
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Where a pipeline's system blocks live on the request body.
+ *
+ *   - `claude`          → the top-level `system` field (string | block array).
+ *   - `openai-messages` → the first `system`/`developer` entry in `messages[]`.
+ *
+ * Claude-shaped bodies keep the historical behaviour (the `system` field is
+ * replaced, created when absent). OpenAI-shaped bodies — every non-Claude
+ * provider key, e.g. `kiro`, which the chatCore hook feeds the client body
+ * before translation — carry the system prompt inside `messages[]`, so writing
+ * `body.system` there would be silently ignored by their translators.
+ */
+type SystemCarrier =
+  { kind: "claude" } | { kind: "openai-messages"; index: number; created: boolean };
+
+function isSystemRole(role: unknown): boolean {
+  return role === "system" || role === "developer";
+}
+
+function resolveSystemCarrier(body: RequestBody): SystemCarrier {
+  const system = body.system;
+  if (system !== undefined && system !== null) return { kind: "claude" };
+
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return { kind: "claude" };
+
+  const index = messages.findIndex(
+    (m) => m && typeof m === "object" && isSystemRole((m as Message).role)
+  );
+  return index >= 0
+    ? { kind: "openai-messages", index, created: false }
+    : { kind: "openai-messages", index: 0, created: true };
+}
+
+/**
+ * Read the carrier's blocks. Returns `null` when the carrier holds content the
+ * pipeline cannot round-trip (non-text parts in a system message), so the caller
+ * leaves the body untouched instead of dropping that content on write-back.
+ *
+ * A string carrier is split on blank lines: the ops (and their idempotency
+ * keys) reason per block, and the OpenAI carrier only has one string field to
+ * hold them, so blocks are joined with `\n\n` on write-back.
+ */
+function readCarrierBlocks(body: RequestBody, carrier: SystemCarrier): SystemBlock[] | null {
+  if (carrier.kind === "claude") return normalizeSystemToBlocks(body.system);
+  if (carrier.created) return [];
+
+  const messages = body.messages as Message[];
+  const content = messages[carrier.index]?.content;
+  if (content === undefined || content === null) return [];
+  if (typeof content === "string") return textToBlocks(content);
+  if (!Array.isArray(content)) return null;
+
+  const blocks: SystemBlock[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object" || typeof part.text !== "string") return null;
+    blocks.push(...textToBlocks(part.text));
+  }
+  return blocks;
+}
+
+function textToBlocks(text: string): SystemBlock[] {
+  if (text.length === 0) return [];
+  return text.split(/\n\n+/).map((paragraph) => ({ type: "text", text: paragraph }));
+}
+
+function blocksToText(blocks: SystemBlock[]): string {
+  return blocks
+    .filter((b) => isTextBlock(b) && b.text.length > 0)
+    .map((b) => (b as SystemBlock & { text: string }).text)
+    .join("\n\n");
+}
+
+function writeCarrierBlocks(
+  body: RequestBody,
+  carrier: SystemCarrier,
+  blocks: SystemBlock[]
+): void {
+  if (carrier.kind === "claude") {
+    body.system = blocks;
+    return;
+  }
+
+  const messages = body.messages as Message[];
+  if (carrier.created) {
+    if (blocks.length === 0) return;
+    messages.unshift({ role: "system", content: blocksToText(blocks) });
+    return;
+  }
+
+  const message = messages[carrier.index];
+  if (message) message.content = blocksToText(blocks);
+}
+
 /**
  * Run the configured transform pipeline against a request body.
  *
- * The body is mutated in place (its `system` field is replaced); returned for
+ * The body is mutated in place (its system carrier is replaced); returned for
  * chaining. `appliedOpKinds` lists the ops that ran (omitting no-ops when
  * config is disabled). When `config.enabled === false`, the body is returned
  * unchanged and `appliedOpKinds` is empty.
@@ -499,7 +619,13 @@ export function applyCcBridgeTransformPipeline(
     return { body, appliedOpKinds: [] };
   }
 
-  let blocks = normalizeSystemToBlocks(body.system);
+  const carrier = resolveSystemCarrier(body);
+  const carrierBlocks = readCarrierBlocks(body, carrier);
+  if (carrierBlocks === null) {
+    return { body, appliedOpKinds: [] };
+  }
+
+  let blocks = carrierBlocks;
   const appliedOpKinds: string[] = [];
 
   for (const op of config.pipeline) {
@@ -540,7 +666,7 @@ export function applyCcBridgeTransformPipeline(
   // ex-machina sanitizeSystemText trim semantics).
   blocks = blocks.filter((b) => !isTextBlock(b) || b.text.length > 0);
 
-  body.system = blocks;
+  writeCarrierBlocks(body, carrier, blocks);
   return { body, appliedOpKinds };
 }
 

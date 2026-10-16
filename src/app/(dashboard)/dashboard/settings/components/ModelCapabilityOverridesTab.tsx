@@ -3,33 +3,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Card, Button } from "@/shared/components";
-import { matchesSearch } from "@/shared/utils/turkishText";
+import {
+  filterModelOverrideTargets,
+  toModelOverrideTargets,
+  type PricingCatalogProvider,
+} from "@/lib/modelCapabilityOverrideTargets";
 
-type ModelOverrideKey = "max_token";
+type ModelOverrideKey =
+  "context_length" | "max_input_tokens" | "max_output_tokens" | "reasoning_efforts";
+type ModelOverrideValue = number | string[];
 type StatusTone = "success" | "error" | "info";
 
-type ModelOverrideTarget = {
-  target: string;
-  provider: string;
-  modelId: string;
-  label: string;
-};
-
-interface PricingCatalogModel {
-  id: string;
-  name: string;
-}
-
-interface PricingCatalogProvider {
-  id: string;
-  alias: string;
-  models: PricingCatalogModel[];
-}
+type ModelOverrideTarget = import("@/lib/modelCapabilityOverrideTargets").ModelOverrideTarget;
 
 interface ModelCapabilityOverride {
   target: string;
   key: ModelOverrideKey;
-  value: number;
+  value: ModelOverrideValue;
 }
 
 interface StatusMessage {
@@ -55,29 +45,8 @@ function useModelCapabilityOverridesData() {
     window.setTimeout(() => setStatusMessage(null), 4000);
   }, []);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [catalogRes, overridesRes] = await Promise.all([
-        fetch("/api/pricing/models"),
-        fetch("/api/model-capability-overrides"),
-      ]);
-      if (catalogRes.ok)
-        setCatalog((await catalogRes.json()) as Record<string, PricingCatalogProvider>);
-      if (overridesRes.ok) {
-        const payload = (await overridesRes.json()) as { overrides?: ModelCapabilityOverride[] };
-        setOverrides(payload.overrides || []);
-      }
-    } catch (error) {
-      console.error("Failed to load model capability overrides:", error);
-      showStatus("error", t("modelOverrideLoadFailed"));
-    } finally {
-      setLoading(false);
-    }
-  }, [showStatus, t]);
-
   const saveOverride = useCallback(
-    async (target: string, key: ModelOverrideKey, value: number) => {
+    async (target: string, key: ModelOverrideKey, value: number | string) => {
       try {
         const response = await fetch("/api/model-capability-overrides", {
           method: "PATCH",
@@ -114,28 +83,44 @@ function useModelCapabilityOverridesData() {
   );
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [catalogRes, overridesRes] = await Promise.all([
+          fetch("/api/pricing/models"),
+          fetch("/api/model-capability-overrides"),
+        ]);
+        if (catalogRes.ok) {
+          const catalogPayload = (await catalogRes.json()) as Record<
+            string,
+            PricingCatalogProvider
+          >;
+          if (!cancelled) setCatalog(catalogPayload);
+        }
+        if (overridesRes.ok) {
+          const payload = (await overridesRes.json()) as { overrides?: ModelCapabilityOverride[] };
+          if (!cancelled) setOverrides(payload.overrides || []);
+        }
+      } catch (error) {
+        console.error("Failed to load model capability overrides:", error);
+        if (!cancelled) showStatus("error", t("modelOverrideLoadFailed"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showStatus, t]);
 
   return { catalog, overrides, loading, statusMessage, saveOverride, removeOverride };
-}
-
-function toTargets(catalog: Record<string, PricingCatalogProvider>): ModelOverrideTarget[] {
-  return Object.values(catalog).flatMap((provider) =>
-    provider.models.map((model) => ({
-      target: `${provider.id}/${model.id}`,
-      provider: provider.id,
-      modelId: model.id,
-      label: `${provider.id}/${model.id}`,
-    }))
-  );
 }
 
 export default function ModelCapabilityOverridesTab() {
   const t = useTranslations("settings");
   const { catalog, overrides, loading, statusMessage, saveOverride, removeOverride } =
     useModelCapabilityOverridesData();
-  const targets = useMemo(() => toTargets(catalog), [catalog]);
+  const targets = useMemo(() => toModelOverrideTargets(catalog), [catalog]);
 
   if (loading) return <div className="text-sm text-text-muted animate-pulse">{t("loading")}</div>;
 
@@ -168,7 +153,7 @@ function ModelCapabilityOverridesPanel({
 }: {
   targets: ModelOverrideTarget[];
   overrides: ModelCapabilityOverride[];
-  onSave: (target: string, key: ModelOverrideKey, value: number) => void;
+  onSave: (target: string, key: ModelOverrideKey, value: number | string) => void;
   onRemove: (target: string, key: ModelOverrideKey) => void;
 }) {
   const [selectedTarget, setSelectedTarget] = useState("");
@@ -201,17 +186,9 @@ function ModelCapabilityOverridesPanel({
 }
 
 function useFilteredTargets(targets: ModelOverrideTarget[], search: string) {
-  return useMemo(() => {
-    const query = search.trim();
-    const source = query
-      ? targets.filter((entry) =>
-          [entry.label, entry.target, entry.provider, entry.modelId].some((candidate) =>
-            matchesSearch(candidate, query)
-          )
-        )
-      : targets;
-    return source.slice(0, 80);
-  }, [search, targets]);
+  // Filter + relevance ranking live in the lib (pure, unit-tested); see
+  // filterModelOverrideTargets for the scoring contract.
+  return useMemo(() => filterModelOverrideTargets(targets, search), [search, targets]);
 }
 
 function ModelOverridesHeader({ count }: { count: number }) {
@@ -312,7 +289,7 @@ function ModelOverrideEditor({
   activeOverrides: ModelCapabilityOverride[];
   activeTarget: string;
   onRemove: (target: string, key: ModelOverrideKey) => void;
-  onSave: (target: string, key: ModelOverrideKey, value: number) => void;
+  onSave: (target: string, key: ModelOverrideKey, value: number | string) => void;
 }) {
   const t = useTranslations("settings");
   return (
@@ -334,13 +311,18 @@ function ModelOverrideForm({
   onSave,
 }: {
   activeTarget: string;
-  onSave: (target: string, key: ModelOverrideKey, value: number) => void;
+  onSave: (target: string, key: ModelOverrideKey, value: number | string) => void;
 }) {
   const t = useTranslations("settings");
-  const [key, setKey] = useState<ModelOverrideKey>("max_token");
+  const [key, setKey] = useState<ModelOverrideKey>("context_length");
   const [value, setValue] = useState("");
+  const isReasoningEfforts = key === "reasoning_efforts";
   const numericValue = Number(value);
-  const saveDisabled = !activeTarget || !Number.isInteger(numericValue) || numericValue <= 0;
+  const saveDisabled =
+    !activeTarget ||
+    (isReasoningEfforts
+      ? value.length === 0
+      : !Number.isInteger(numericValue) || numericValue <= 0);
 
   return (
     <div className="flex flex-col sm:flex-row gap-2">
@@ -349,15 +331,22 @@ function ModelOverrideForm({
         onChange={(event) => setKey(event.target.value as ModelOverrideKey)}
         className="sm:w-40 px-2 py-2 text-xs bg-bg-base border border-border rounded-md focus:outline-none focus:border-primary"
       >
-        <option value="max_token">max_token</option>
+        <option value="context_length">context_length</option>
+        <option value="max_input_tokens">max_input_tokens</option>
+        <option value="max_output_tokens">max_output_tokens</option>
+        <option value="reasoning_efforts">reasoning_efforts</option>
       </select>
       <input
-        type="number"
-        min="1"
-        step="1"
+        type={isReasoningEfforts ? "text" : "number"}
+        min={isReasoningEfforts ? undefined : "1"}
+        step={isReasoningEfforts ? undefined : "1"}
         value={value}
         onChange={(event) => setValue(event.target.value)}
-        placeholder={t("modelOverrideValuePlaceholder")}
+        placeholder={t(
+          isReasoningEfforts
+            ? "modelOverrideReasoningEffortsPlaceholder"
+            : "modelOverrideValuePlaceholder"
+        )}
         className="flex-1 px-3 py-2 text-xs bg-bg-base border border-border rounded-md focus:outline-none focus:border-primary"
       />
       <Button
@@ -365,7 +354,7 @@ function ModelOverrideForm({
         size="sm"
         disabled={saveDisabled}
         onClick={() => {
-          onSave(activeTarget, key, numericValue);
+          onSave(activeTarget, key, isReasoningEfforts ? value : numericValue);
           setValue("");
         }}
       >
@@ -414,7 +403,9 @@ function ModelOverrideRow({
     <div className="px-3 py-2 flex items-center justify-between gap-2 text-xs">
       <div className="flex items-center gap-2 min-w-0">
         <span className="font-mono px-1.5 py-0.5 rounded bg-bg-subtle">{override.key}</span>
-        <span className="font-semibold tabular-nums">{override.value}</span>
+        <span className="font-semibold tabular-nums">
+          {Array.isArray(override.value) ? override.value.join(", ") : override.value}
+        </span>
       </div>
       <button
         type="button"

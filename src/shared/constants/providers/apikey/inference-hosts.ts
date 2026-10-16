@@ -5,6 +5,7 @@
 export const APIKEY_PROVIDERS_INFERENCE = {
   together: {
     id: "together",
+    serviceKinds: ["llm"],
     alias: "together",
     name: "Together AI",
     icon: "group_work",
@@ -22,6 +23,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   // advertised on signup. Bearer-token auth via Authorization: Bearer ov_sk_…
   openvecta: {
     id: "openvecta",
+    serviceKinds: ["llm"],
     alias: "openvecta",
     name: "OpenVecta",
     icon: "vector_polygon",
@@ -29,10 +31,43 @@ export const APIKEY_PROVIDERS_INFERENCE = {
     textIcon: "OV",
     website: "https://openvecta.com",
     hasFree: true,
-    freeNote: "Free credits on signup for OpenAI-compatible inference across LLMs, embeddings, and reasoning models",
+    freeNote:
+      "Free credits on signup for OpenAI-compatible inference across LLMs, embeddings, and reasoning models",
+  },
+  // Openference — OpenAI-compatible AI inference gateway (https://openference.com/).
+  // API-key auth via Authorization: Bearer sk-… on the same gateway as OAuth JWTs.
+  "openference-api": {
+    id: "openference-api",
+    serviceKinds: ["llm"],
+    alias: "ofa",
+    name: "Openference API",
+    icon: "openference",
+    color: "#6366F1",
+    textIcon: "OF",
+    website: "https://openference.com",
+    hasFree: true,
+    freeNote:
+      "Free tier: includes Qwen3.8 27b and Llama 3.2 3B — see openference.com/pricing for current terms",
+  },
+  poolside: {
+    id: "poolside",
+    serviceKinds: ["llm"],
+    alias: "poolside",
+    name: "Poolside",
+    icon: "memory",
+    color: "#111827",
+    textIcon: "PS",
+    passthroughModels: true,
+    website: "https://poolside.ai",
+    hasFree: true,
+    freeNote:
+      "Laguna S 2.1 and XS 2.1 are free during Preview; no public numeric quota is published.",
+    apiHint:
+      "Create a free developer API key, then use https://inference.poolside.ai/v1 as the OpenAI-compatible base URL.",
   },
   fireworks: {
     id: "fireworks",
+    serviceKinds: ["llm"],
     alias: "fireworks",
     name: "Fireworks AI",
     icon: "local_fire_department",
@@ -44,6 +79,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   cerebras: {
     id: "cerebras",
+    serviceKinds: ["llm"],
     alias: "cerebras",
     name: "Cerebras",
     icon: "memory",
@@ -51,10 +87,16 @@ export const APIKEY_PROVIDERS_INFERENCE = {
     textIcon: "CB",
     website: "https://inference.cerebras.ai",
     hasFree: true,
-    freeNote: "Free Trial: 1M tokens/day, 30K TPM, 5 RPM — no credit card.",
+    // #11773: Cerebras retired the no-card 1M tokens/day trial. Live
+    // cerebras.ai/pricing (2026-09-03) is a one-time $5 signup credit that
+    // requires a payment method and expires after 30 days — LongCat-shaped
+    // (hasFree stays true; not a recurring grant).
+    freeNote:
+      "One-time $5 signup credit (30-day validity); a payment method is required. Not a recurring free tier.",
   },
   nvidia: {
     id: "nvidia",
+    serviceKinds: ["llm"],
     alias: "nvidia",
     name: "NVIDIA NIM",
     icon: "developer_board",
@@ -66,6 +108,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   nebius: {
     id: "nebius",
+    serviceKinds: ["llm"],
     alias: "nebius",
     name: "Nebius AI",
     icon: "cloud",
@@ -77,6 +120,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   nube: {
     id: "nube",
+    serviceKinds: ["llm"],
     alias: "nube",
     name: "Nube.sh",
     icon: "cloud",
@@ -91,6 +135,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   siliconflow: {
     id: "siliconflow",
+    serviceKinds: ["llm"],
     alias: "siliconflow",
     name: "SiliconFlow",
     icon: "cloud_queue",
@@ -98,10 +143,12 @@ export const APIKEY_PROVIDERS_INFERENCE = {
     textIcon: "SF",
     website: "https://cloud.siliconflow.com",
     hasFree: true,
-    freeNote: "$1 free credits plus permanently free models after identity verification",
+    freeNote:
+      "$1 free credits plus currently listed $0 models after identity verification; availability and limits may change",
   },
   hyperbolic: {
     id: "hyperbolic",
+    serviceKinds: ["llm"],
     alias: "hyp",
     name: "Hyperbolic",
     icon: "bolt",
@@ -113,6 +160,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   "ollama-cloud": {
     id: "ollama-cloud",
+    serviceKinds: ["llm"],
     alias: "ollamacloud",
     name: "Ollama Cloud",
     icon: "cloud",
@@ -123,6 +171,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   huggingface: {
     id: "huggingface",
+    serviceKinds: ["llm"],
     alias: "hf",
     name: "HuggingFace",
     icon: "face",
@@ -132,20 +181,9 @@ export const APIKEY_PROVIDERS_INFERENCE = {
     hasFree: true,
     freeNote: "Free Inference API for thousands of models (Whisper, VITS, SDXL…)",
   },
-  "github-models": {
-    id: "github-models",
-    alias: "ghm",
-    name: "GitHub Models",
-    icon: "code",
-    color: "#238636",
-    textIcon: "GH",
-    website: "https://github.com/marketplace/models",
-    hasFree: true,
-    freeNote: "Free GPT-5, o-series, DeepSeek-R1, Llama 4, Grok 3 — GitHub account only.",
-    authHint: "Create a GitHub PAT with 'models: read' scope at github.com/settings/tokens",
-  },
   deepinfra: {
     id: "deepinfra",
+    serviceKinds: ["llm"],
     alias: "deepinfra",
     name: "DeepInfra",
     icon: "hub",
@@ -157,6 +195,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   "lambda-ai": {
     id: "lambda-ai",
+    serviceKinds: ["llm"],
     alias: "lambda",
     name: "Lambda AI",
     icon: "bolt",
@@ -166,6 +205,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   sambanova: {
     id: "sambanova",
+    serviceKinds: ["llm"],
     alias: "samba",
     name: "SambaNova",
     icon: "memory",
@@ -177,6 +217,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   nscale: {
     id: "nscale",
+    serviceKinds: ["llm"],
     alias: "nscale",
     name: "nScale",
     icon: "token",
@@ -188,6 +229,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   baseten: {
     id: "baseten",
+    serviceKinds: ["llm"],
     alias: "baseten",
     name: "Baseten",
     icon: "deployed_code",
@@ -199,6 +241,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   publicai: {
     id: "publicai",
+    serviceKinds: ["llm"],
     alias: "publicai",
     name: "PublicAI",
     icon: "public",
@@ -212,17 +255,19 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   "featherless-ai": {
     id: "featherless-ai",
+    serviceKinds: ["llm"],
     alias: "featherless",
     name: "Featherless AI",
     icon: "flutter_dash",
     color: "#EA580C",
     textIcon: "FL",
     website: "https://featherless.ai",
-    hasFree: true,
+    hasFree: false,
     freeNote: "Free tier available — no credit card required",
   },
   friendliai: {
     id: "friendliai",
+    serviceKinds: ["llm"],
     alias: "friendli",
     name: "FriendliAI",
     icon: "handshake",
@@ -234,6 +279,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   wandb: {
     id: "wandb",
+    serviceKinds: ["llm"],
     alias: "wandb",
     name: "Weights & Biases Inference",
     icon: "monitoring",
@@ -243,6 +289,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   "inference-net": {
     id: "inference-net",
+    serviceKinds: ["llm"],
     alias: "inet",
     name: "Inference.net",
     icon: "dns",
@@ -254,6 +301,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   predibase: {
     id: "predibase",
+    serviceKinds: ["llm"],
     alias: "predibase",
     name: "Predibase",
     icon: "deployed_code_history",
@@ -270,6 +318,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   bytez: {
     id: "bytez",
+    serviceKinds: ["llm"],
     alias: "bytez",
     name: "Bytez",
     icon: "api",
@@ -281,6 +330,7 @@ export const APIKEY_PROVIDERS_INFERENCE = {
   },
   monsterapi: {
     id: "monsterapi",
+    serviceKinds: ["llm"],
     alias: "monster",
     name: "MonsterAPI",
     icon: "cloud",
@@ -292,9 +342,13 @@ export const APIKEY_PROVIDERS_INFERENCE = {
       "One-time signup trial credits for decentralized GPU inference (no recurring free plan). No credit card required.",
     passthroughModels: true,
     authHint: "Get API key at monsterapi.ai",
+    deprecated: true,
+    deprecationReason:
+      "Monster API shuttered operations on 2026-06-30. Use alternative OpenAI-compatible providers.",
   },
   modelscope: {
     id: "modelscope",
+    serviceKinds: ["llm"],
     alias: "ms",
     name: "ModelScope",
     icon: "cloud",

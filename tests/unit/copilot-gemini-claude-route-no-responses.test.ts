@@ -27,6 +27,7 @@ import type { RegistryModel } from "../../open-sse/config/providerRegistry.ts";
 
 const CHAT_URL = "https://api.githubcopilot.com/chat/completions";
 const RESPONSES_URL = "https://api.githubcopilot.com/responses";
+const MESSAGES_URL = "https://api.githubcopilot.com/v1/messages";
 
 function getGithubModel(modelId: string): RegistryModel {
   const model = PROVIDER_MODELS["gh"]?.find((entry) => entry.id === modelId);
@@ -35,40 +36,43 @@ function getGithubModel(modelId: string): RegistryModel {
 }
 
 describe("GithubExecutor — Gemini/Claude must never hit /responses (port 9router#1536)", () => {
-  it("routes registered Claude/Gemini Copilot models to chat/completions", () => {
+  it("routes registered Claude Copilot models to the native /v1/messages shim (port decolua/9router#2608)", () => {
     const exec = new GithubExecutor();
     for (const id of [
       "claude-haiku-4.5",
-      "claude-sonnet-4.5",
-      "claude-sonnet-4.6",
       "claude-sonnet-5",
-      "claude-fable-5",
-      "claude-opus-4.6",
-      "claude-opus-4.7",
+      "claude-fable-5.1",
+      "claude-opus-5",
       "claude-opus-4.8",
       "claude-opus-4.8-fast",
-      "claude-opus-4.5",
-      "gemini-3.1-pro-preview",
-      "gemini-3.5-flash",
     ]) {
+      assert.equal(exec.buildUrl(id, false), MESSAGES_URL, `${id} must route to /v1/messages`);
+    }
+  });
+
+  it("routes registered Gemini Copilot models to chat/completions", () => {
+    const exec = new GithubExecutor();
+    for (const id of ["gemini-3.8-flash"]) {
       assert.equal(exec.buildUrl(id, false), CHAT_URL, `${id} must route to chat/completions`);
     }
   });
 
-  it("still uses chat/completions if a Claude/Gemini model is wrongly tagged openai-responses", () => {
+  it("still avoids /responses if a Claude/Gemini model is wrongly tagged openai-responses", () => {
     const exec = new GithubExecutor();
-    const claude = getGithubModel("claude-sonnet-4.6");
-    const gemini = getGithubModel("gemini-3.1-pro-preview");
+    const claude = getGithubModel("claude-sonnet-5");
+    const gemini = getGithubModel("gemini-3.8-flash");
 
     const originalClaude = claude.targetFormat;
     const originalGemini = gemini.targetFormat;
     try {
-      // Simulate a future misconfiguration. The guard must still hold.
+      // Simulate a future misconfiguration. The guard must still hold: Claude
+      // ALWAYS resolves to the native /v1/messages shim (name match beats the
+      // bad tag), Gemini stays on /chat/completions. Neither hits /responses.
       claude.targetFormat = "openai-responses";
       gemini.targetFormat = "openai-responses";
 
-      assert.equal(exec.buildUrl("claude-sonnet-4.6", false), CHAT_URL);
-      assert.equal(exec.buildUrl("gemini-3.1-pro-preview", false), CHAT_URL);
+      assert.equal(exec.buildUrl("claude-sonnet-5", false), MESSAGES_URL);
+      assert.equal(exec.buildUrl("gemini-3.8-flash", false), CHAT_URL);
     } finally {
       claude.targetFormat = originalClaude;
       gemini.targetFormat = originalGemini;
@@ -78,13 +82,12 @@ describe("GithubExecutor — Gemini/Claude must never hit /responses (port 9rout
   it("still routes registered OpenAI/codex Copilot models to /responses", () => {
     const exec = new GithubExecutor();
     for (const id of [
-      "gpt-5.3-codex",
-      "gpt-5.4-mini",
-      "gpt-5.4",
-      "gpt-5.5",
-      "mai-code-1-flash",
-      "gpt-5-mini",
-      "oswe-vscode-prime",
+      "gpt-6-astra",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "mai-code-1.1-flash",
+      "grok-4.6",
     ]) {
       assert.equal(exec.buildUrl(id, false), RESPONSES_URL, `${id} must route to /responses`);
     }
@@ -92,14 +95,13 @@ describe("GithubExecutor — Gemini/Claude must never hit /responses (port 9rout
 
   it("is case-insensitive when guarding (defensive against upper/mixed-case ids)", () => {
     const exec = new GithubExecutor();
-    const claude = getGithubModel("claude-sonnet-4.6");
+    const claude = getGithubModel("claude-sonnet-5");
     const original = claude.targetFormat;
     try {
       claude.targetFormat = "openai-responses";
-      // Look up by the same id (registry is case-sensitive on lookup) but with a
-      // mixed-case path through the guard. We rebuild with the registered id;
-      // the guard normalizes before substring check, so it must still detect.
-      assert.equal(exec.buildUrl("claude-sonnet-4.6", false), CHAT_URL);
+      // Even wrongly tagged, a claude-* id resolves to the native shim (the
+      // name match is case-insensitive), never /responses.
+      assert.equal(exec.buildUrl("claude-sonnet-5", false), MESSAGES_URL);
     } finally {
       claude.targetFormat = original;
     }

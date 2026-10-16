@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useTranslations } from "next-intl";
+import { useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import Card from "./Card";
 import { CardSkeleton } from "./Loading";
 import { fmtCompact as fmt, fmtFull, fmtCost } from "@/shared/utils/formatting";
@@ -30,13 +30,52 @@ import {
 // Main Component
 // ============================================================================
 
+const TOKEN_DISPLAY_MODE_KEY = "omniroute:analytics-token-display-mode";
+export type TokenDisplayMode = "compact" | "exact";
+
+const tokenDisplayListeners = new Set<() => void>();
+
+function subscribeToTokenDisplayMode(listener: () => void): () => void {
+  tokenDisplayListeners.add(listener);
+  return () => {
+    tokenDisplayListeners.delete(listener);
+  };
+}
+
+function readTokenDisplayMode(): TokenDisplayMode {
+  try {
+    if (typeof window === "undefined") return "compact";
+    const saved = localStorage.getItem(TOKEN_DISPLAY_MODE_KEY);
+    if (saved === "exact" || saved === "compact") return saved;
+  } catch {}
+  return "compact";
+}
+
+function writeTokenDisplayMode(mode: TokenDisplayMode): void {
+  try {
+    localStorage.setItem(TOKEN_DISPLAY_MODE_KEY, mode);
+  } catch {}
+  for (const listener of tokenDisplayListeners) listener();
+}
+
 export default function UsageAnalytics() {
+  const locale = useLocale();
   const t = useTranslations("analytics");
   const tCommon = useTranslations("common");
   const [range, setRange] = useState("30d");
   const [analytics, setAnalytics] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const tokenDisplayMode = useSyncExternalStore(
+    subscribeToTokenDisplayMode,
+    readTokenDisplayMode,
+    () => "compact" as TokenDisplayMode
+  );
+
+  const handleToggleDisplayMode = useCallback((mode: TokenDisplayMode) => {
+    writeTokenDisplayMode(mode);
+  }, []);
 
   // Custom date range state
   const [customStart, setCustomStart] = useState("");
@@ -53,6 +92,9 @@ export default function UsageAnalytics() {
       setLoading(true);
       const params = new URLSearchParams();
       params.set("range", range);
+      // This page labels the value as an estimate, so opt into token-price
+      // equivalents for flat-rate subscriptions without changing API defaults.
+      params.set("includeFlatRateEstimates", "true");
       if (range === "custom" && customStart && customEnd) {
         params.set("startDate", customStart);
         params.set("endDate", customEnd);
@@ -87,7 +129,8 @@ export default function UsageAnalytics() {
   }, [range, customStart, customEnd, selectedApiKeys, tCommon]);
 
   useEffect(() => {
-    fetchAnalytics();
+    const timer = window.setTimeout(() => void fetchAnalytics(), 0);
+    return () => window.clearTimeout(timer);
   }, [fetchAnalytics]);
 
   const handleRangeSelect = useCallback((value: string) => {
@@ -111,7 +154,7 @@ export default function UsageAnalytics() {
     if (range !== "custom" || !customStart || !customEnd) return null;
     const fmt = (iso: string) => {
       const d = new Date(iso);
-      return d.toLocaleDateString(undefined, {
+      return d.toLocaleDateString(locale, {
         month: "short",
         day: "numeric",
         hour: "2-digit",
@@ -119,7 +162,7 @@ export default function UsageAnalytics() {
       });
     };
     return `${fmt(customStart)} — ${fmt(customEnd)}`;
-  }, [range, customStart, customEnd]);
+  }, [range, customStart, customEnd, locale]);
 
   const ranges = [
     { value: "1d", label: t("period1D") },
@@ -144,8 +187,13 @@ export default function UsageAnalytics() {
     const wp = analytics?.weeklyPattern || [];
     if (!wp.length) return "—";
     const max = wp.reduce((a, b) => (a.avgTokens > b.avgTokens ? a : b), wp[0]);
-    return max.avgTokens > 0 ? max.day : "—";
-  }, [analytics]);
+    if (max.avgTokens <= 0) return "—";
+    const weekdayIndex = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(max.day);
+    if (weekdayIndex < 0) return max.day;
+    return new Intl.DateTimeFormat(locale, { weekday: "short" }).format(
+      new Date(2024, 0, 7 + weekdayIndex)
+    );
+  }, [analytics, locale]);
 
   const providerCount = useMemo(() => {
     return (analytics?.byProvider || []).length;
@@ -195,6 +243,42 @@ export default function UsageAnalytics() {
           {t("usageAnalyticsTitle")}
         </h2>
         <div className="flex items-center gap-2.5">
+          {/* Token Display Mode Toggle (Compact vs Exact) */}
+          <div
+            role="radiogroup"
+            aria-label={t("tokenDisplayMode")}
+            className="flex items-center gap-0.5 bg-black/[0.03] dark:bg-white/[0.03] rounded-lg p-1 border border-black/5 dark:border-white/5 text-xs"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={tokenDisplayMode === "compact"}
+              onClick={() => handleToggleDisplayMode("compact")}
+              title={t("tokenDisplayCompact")}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                tokenDisplayMode === "compact"
+                  ? "bg-surface text-text-main shadow-xs"
+                  : "text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5"
+              }`}
+            >
+              {t("tokenDisplayCompact")}
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={tokenDisplayMode === "exact"}
+              onClick={() => handleToggleDisplayMode("exact")}
+              title={t("tokenDisplayExact")}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                tokenDisplayMode === "exact"
+                  ? "bg-surface text-text-main shadow-xs"
+                  : "text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5"
+              }`}
+            >
+              {t("tokenDisplayExact")}
+            </button>
+          </div>
+
           {/* API Key Filter */}
           <ApiKeyFilterDropdown
             available={availableApiKeys}
@@ -264,25 +348,41 @@ export default function UsageAnalytics() {
         <StatCard
           icon="generating_tokens"
           label={t("totalTokens")}
-          value={fmt(s.totalTokens)}
+          value={tokenDisplayMode === "exact" ? fmtFull(s.totalTokens) : fmt(s.totalTokens)}
+          tooltip={tokenDisplayMode === "exact" ? `~${fmt(s.totalTokens)}` : fmtFull(s.totalTokens)}
           subValue={`${fmtFull(s.totalRequests)} ${t("chartRequests")}`}
         />
         <StatCard
           icon="input"
           label={t("inputTokens")}
-          value={fmt(s.promptTokens)}
+          value={tokenDisplayMode === "exact" ? fmtFull(s.promptTokens) : fmt(s.promptTokens)}
+          tooltip={
+            tokenDisplayMode === "exact" ? `~${fmt(s.promptTokens)}` : fmtFull(s.promptTokens)
+          }
           color="text-primary"
         />
         <StatCard
           icon="output"
           label={t("outputTokens")}
-          value={fmt(s.completionTokens)}
+          value={
+            tokenDisplayMode === "exact" ? fmtFull(s.completionTokens) : fmt(s.completionTokens)
+          }
+          tooltip={
+            tokenDisplayMode === "exact"
+              ? `~${fmt(s.completionTokens)}`
+              : fmtFull(s.completionTokens)
+          }
           color="text-emerald-500"
         />
         <StatCard
           icon="payments"
           label={t("estCost")}
           value={fmtCost(s.totalCost)}
+          tooltip={
+            s.totalCost !== undefined && s.totalCost !== null
+              ? `$${Number(s.totalCost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`
+              : undefined
+          }
           color="text-amber-500"
         />
       </div>
@@ -310,13 +410,21 @@ export default function UsageAnalytics() {
               {
                 icon: "speed",
                 label: t("perfAvgTokens"),
-                value: fmt(avgTokensPerReq),
+                value:
+                  tokenDisplayMode === "exact" ? fmtFull(avgTokensPerReq) : fmt(avgTokensPerReq),
+                tooltip:
+                  tokenDisplayMode === "exact"
+                    ? `tokens : ~${fmt(avgTokensPerReq)} tokens`
+                    : `tokens : ${fmtFull(avgTokensPerReq)} tokens`,
                 color: "text-cyan-500",
               },
               {
                 icon: "request_quote",
                 label: t("perfCostReq"),
                 value: fmtCost(costPerReq),
+                tooltip: costPerReq
+                  ? `cost : $${Number(costPerReq).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`
+                  : undefined,
                 color: "text-orange-500",
               },
               {
@@ -328,7 +436,14 @@ export default function UsageAnalytics() {
               {
                 icon: "bolt",
                 label: t("perfFastReq"),
-                value: fmt(s.fastRequests || 0),
+                value:
+                  tokenDisplayMode === "exact"
+                    ? fmtFull(s.fastRequests || 0)
+                    : fmt(s.fastRequests || 0),
+                tooltip:
+                  tokenDisplayMode === "exact"
+                    ? `requests : ~${fmt(s.fastRequests || 0)} requests`
+                    : `requests : ${fmtFull(s.fastRequests || 0)} requests`,
                 color: "text-sky-500",
               },
             ],
@@ -403,16 +518,16 @@ export default function UsageAnalytics() {
       </div>
 
       {/* Provider Breakdown Table */}
-      <ProviderTable byProvider={analytics?.byProvider} />
+      <ProviderTable byProvider={analytics?.byProvider} displayMode={tokenDisplayMode} />
 
       {/* Request Count by Provider & Date — #4009 (some providers bill per-request) */}
-      <RequestCountByProviderDateTable range={range} />
+      <RequestCountByProviderDateTable range={range} displayMode={tokenDisplayMode} />
 
       {/* API Key Table */}
-      <ApiKeyTable byApiKey={analytics?.byApiKey} />
+      <ApiKeyTable byApiKey={analytics?.byApiKey} displayMode={tokenDisplayMode} />
 
       {/* Model Breakdown Table */}
-      <ModelTable byModel={analytics?.byModel} summary={s} />
+      <ModelTable byModel={analytics?.byModel} summary={s} displayMode={tokenDisplayMode} />
     </div>
   );
 }

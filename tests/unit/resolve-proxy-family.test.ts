@@ -12,7 +12,12 @@ describe("resolved proxy config → URL family encoding", () => {
     assert.ok(url!.endsWith("?family=ipv6"), url!);
   });
   it("omits family marker when auto", () => {
-    const url = proxyConfigToUrl({ type: "http", host: "p.example.com", port: 8080, family: "auto" });
+    const url = proxyConfigToUrl({
+      type: "http",
+      host: "p.example.com",
+      port: 8080,
+      family: "auto",
+    });
     assert.ok(!url!.includes("family="), url!);
   });
 });
@@ -32,13 +37,13 @@ async function resetStorage() {
   delete process.env.INITIAL_PASSWORD;
   core.resetDbInstance();
   apiKeysDb.resetApiKeyState();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
 test.after(async () => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("account-level registry proxy carries family=ipv6 through resolveProxyForConnection", async () => {
@@ -115,12 +120,16 @@ test("api-key-level proxy carries family=ipv6 (Step 2 object literal)", async ()
     name: "key-ipv6",
     apiKey: "sk-key-ipv6",
   });
+  const connId = (conn as any).id;
   core
     .getDbInstance()
     .prepare(
       "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('settings', 'perKeyProxyEnabled', 'true')"
     )
     .run();
+  // #8385: the global toggle is a true AND-override — the connection's own
+  // per_key_proxy_enabled must also be on for the api-key-level proxy to apply.
+  await providersDb.updateProviderConnection(connId, { perKeyProxyEnabled: true });
   const proxy = await proxiesDb.createProxy({
     name: "IPv6 API Key Proxy",
     type: "https",
@@ -131,7 +140,7 @@ test("api-key-level proxy carries family=ipv6 (Step 2 object literal)", async ()
   const key = await apiKeysDb.createApiKey("family-key", "machine-f1");
   await apiKeysDb.updateApiKeyPermissions(key.id, { proxyId: proxy.id });
 
-  const resolved = await settingsDb.resolveProxyForConnection((conn as any).id, key.id);
+  const resolved = await settingsDb.resolveProxyForConnection(connId, key.id);
   assert.ok(resolved);
   assert.equal((resolved as any).level, "apiKey");
   assert.equal((resolved as any).proxy.family, "ipv6");

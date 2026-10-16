@@ -24,6 +24,7 @@ export type PricingByProvider = Record<string, PricingModels>;
 export interface ModelCapabilityEntry {
   tool_call: boolean | null;
   reasoning: boolean | null;
+  reasoning_efforts?: string[] | null;
   attachment: boolean | null;
   structured_output: boolean | null;
   temperature: boolean | null;
@@ -70,12 +71,18 @@ export interface ModelsDevInterleaved {
   field?: string;
 }
 
+export interface ModelsDevReasoningOption {
+  type?: string;
+  values?: string[];
+}
+
 export interface ModelsDevModel {
   id: string;
   name: string;
   family?: string;
   attachment?: boolean;
   reasoning?: boolean;
+  reasoning_options?: ModelsDevReasoningOption[];
   tool_call?: boolean;
   structured_output?: boolean;
   temperature?: boolean;
@@ -137,7 +144,6 @@ export const MODELS_DEV_PROVIDER_MAP: Record<string, string[]> = {
   // OAuth / special providers
   bedrock: ["kiro", "kr"], // kr = Kiro (AWS Bedrock)
   "github-copilot": ["github", "gh"],
-  "github-models": ["github", "gh"],
   kilo: ["kilocode", "kc", "kilo-gateway"],
   kilocode: ["kilocode", "kc", "kilo-gateway"],
   "kimi-for-coding": ["kimi-coding", "kmc", "kimi-coding-apikey", "kmca"],
@@ -166,7 +172,6 @@ export const MODELS_DEV_PROVIDER_MAP: Record<string, string[]> = {
   "minimax-cn": ["minimax-cn"],
   longcat: ["lc", "longcat"],
   pollinations: ["pol", "pollinations"],
-  puter: ["pu", "puter"],
   cloudflare: ["cf"],
   scaleway: ["scw"],
   ollama: ["ollamacloud", "ollama-cloud"],
@@ -233,6 +238,19 @@ export function transformModelsDevToPricing(raw: ModelsDevData): PricingByProvid
 
 // ─── Transform: Capabilities ─────────────────────────────
 
+// models.dev lists tiers as reasoning_options: [{ type: "effort", values }].
+// Only the effort option is a reasoning tier; anything else is unrelated.
+function modelsDevEffortValues(
+  options: ModelsDevReasoningOption[] | undefined
+): string[] | null {
+  if (!Array.isArray(options)) return null;
+  const values = options.flatMap((option) =>
+    option?.type === "effort" && Array.isArray(option.values) ? option.values : []
+  );
+  const efforts = values.filter((value) => typeof value === "string" && value.length > 0);
+  return efforts.length > 0 ? [...new Set(efforts)] : null;
+}
+
 /**
  * Transform models.dev raw data → CapabilitiesByProvider format.
  */
@@ -243,14 +261,31 @@ export function transformModelsDevToCapabilities(raw: ModelsDevData): Capabiliti
     const omniRouteProviders = mapProviderId(providerId);
 
     for (const [modelId, model] of Object.entries(providerData.models || {})) {
+      const modalitiesInput = model.modalities?.input ?? [];
+      const modalitiesOutput = model.modalities?.output ?? [];
+      // #8250: models.dev can ship attachment=false while modalities.input still
+      // lists image/video (Kimi K3). Normalize at sync so persisted rows stay
+      // internally consistent before resolve-time reconciliation.
+      let attachment = model.attachment ?? null;
+      if (
+        attachment === false &&
+        [...modalitiesInput, ...modalitiesOutput].some((entry) => {
+          const lower = String(entry).toLowerCase();
+          return lower.includes("image") || lower.includes("video");
+        })
+      ) {
+        attachment = true;
+      }
+
       const cap: ModelCapabilityEntry = {
         tool_call: model.tool_call ?? null,
         reasoning: model.reasoning ?? null,
-        attachment: model.attachment ?? null,
+        reasoning_efforts: modelsDevEffortValues(model.reasoning_options),
+        attachment,
         structured_output: model.structured_output ?? null,
         temperature: model.temperature ?? null,
-        modalities_input: JSON.stringify(model.modalities?.input ?? []),
-        modalities_output: JSON.stringify(model.modalities?.output ?? []),
+        modalities_input: JSON.stringify(modalitiesInput),
+        modalities_output: JSON.stringify(modalitiesOutput),
         knowledge_cutoff: model.knowledge ?? null,
         release_date: model.release_date ?? null,
         last_updated: model.last_updated ?? null,

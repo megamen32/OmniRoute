@@ -1,15 +1,18 @@
-import { errorResponse, unavailableResponse } from "../../utils/error.ts";
 import {
-  BudgetExceededError,
-  selectProvider as selectAutoProvider,
-} from "../autoCombo/engine.ts";
+  errorResponse,
+  unavailableResponse,
+  errorResponseWithComboDiagnostics,
+} from "../../utils/error.ts";
+import { BudgetExceededError, selectProvider as selectAutoProvider } from "../autoCombo/engine.ts";
+import type { ScoringWeights } from "../autoCombo/scoring.ts";
 import {
   resolveRequestModePack,
   parseRequestBudgetCap,
   parseRequestBudgetFallback,
 } from "../autoCombo/requestControls.ts";
-import { selectWithStrategy } from "../autoCombo/routerStrategy.ts";
+import { selectWithStrategyAsync } from "../autoCombo/routerStrategy.ts";
 import { buildComplexityRoutingHint } from "../autoCombo/complexityRouter";
+import { getModePack } from "../autoCombo/modePacks.ts";
 import { recordComboIntent } from "../comboMetrics.ts";
 import { estimateTokens } from "../contextManager.ts";
 import { classifyWithConfig } from "../intentClassifier.ts";
@@ -19,7 +22,15 @@ import { supportsToolCalling } from "../modelCapabilities.ts";
 import type { ResilienceSettings } from "../../../src/lib/resilience/settings";
 import { parseAutoConfig } from "./autoConfig.ts";
 import { dedupeTargetsByExecutionKey } from "./comboData.ts";
-import { getModelContextLimitForModelString } from "./comboStructure.ts";
+import { restoreIncomingOrder } from "./rungOrder.ts";
+import {
+  getModelContextLimitForModelString,
+  providerSupportsEmulatedToolCalling,
+} from "./comboStructure.ts";
+import {
+  calculatePromptCacheAffinityScores,
+  promptCacheTargetIdentity,
+} from "./promptCacheAffinity.ts";
 import type { ResetWindowConfig } from "./quotaScoring.ts";
 import {
   _registerExecutionCandidates,
@@ -54,7 +65,11 @@ export interface ResolveAutoStrategyDeps {
   body: Record<string, unknown>;
   combo: ComboLike;
   settings: Record<string, unknown> | null | undefined;
-  config: { complexityAwareRouting?: boolean };
+  // Index signature keeps this structurally assignable from the caller's much
+  // wider `resolveComboSetupConfig()` return type — without it, TS2559 ("no
+  // properties in common") fires now that `complexityAwareRouting` (the one
+  // property the two types used to share) is gone (#13386).
+  config: { compatFilterFailOpen?: boolean } & Record<string, unknown>;
   relayOptions?: {
     bypassProviderQuotaPolicy?: boolean;
     sessionId?: string | null;
@@ -74,10 +89,58 @@ export type ResolveAutoStrategyResult =
   | { earlyResponse: Response }
   | { orderedTargets: ResolvedComboTarget[]; autoUsedExplicitRouter: boolean };
 
+export interface EvaluateAutoCandidatesOptions {
+  targets: ResolvedComboTarget[];
+  comboName: string;
+  body: Record<string, unknown>;
+  taskType: string;
+  weights: ScoringWeights;
+  sessionId?: string | null;
+  resetWindowConfig?: ResetWindowConfig;
+  resilienceSettings?: ResilienceSettings | null;
+  manifestHint?: RoutingHint | null;
+  buildAutoCandidates: BuildAutoCandidates;
+}
+
+export async function evaluateAutoCandidates(options: EvaluateAutoCandidatesOptions) {
+  const builtCandidates = await options.buildAutoCandidates(
+    options.targets,
+    options.comboName,
+    options.sessionId,
+    options.resetWindowConfig,
+    options.resilienceSettings
+  );
+  const cacheAffinityScores = calculatePromptCacheAffinityScores(
+    builtCandidates,
+    options.body,
+    options.sessionId
+  );
+  const candidates = builtCandidates.map((candidate) => ({
+    ...candidate,
+    cacheAffinity: cacheAffinityScores.get(promptCacheTargetIdentity(candidate)) ?? 0,
+  }));
+  const routableCandidates = candidates.filter(
+    (candidate) => candidate.quotaCutoffBlocked !== true
+  );
+  return {
+    sourceCandidates: builtCandidates,
+    candidates,
+    routableCandidates,
+    scoredTargets: scoreAutoTargets(
+      options.targets,
+      routableCandidates,
+      options.taskType,
+      options.weights,
+      options.manifestHint
+    ),
+  };
+}
+
 /**
  * Resolve target ordering for the `auto` combo strategy.
  *
- * Extracted verbatim from `handleComboChat`'s `if (strategy === "auto")` branch:
+ * Extracted verbatim from `handleComboChat`'s auto-strategy branch (now selected by the
+ * `ordering: "auto"` trait in strategyRegistry.ts):
  * tool-calling + context-window pre-filters, intent classification, candidate
  * building (quota cutoff), explicit-router vs rules selection, complexity-aware
  * scoring and final dedup ordering. Behavior is byte-identical to the previous
@@ -103,16 +166,47 @@ export async function resolveAutoStrategyOrder(
 
   const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0;
   let eligibleTargets = [...orderedTargets];
+  const compatFilterFailOpen =
+    config?.compatFilterFailOpen === true ||
+    (settings as { compatFilterFailOpen?: unknown } | null | undefined)?.compatFilterFailOpen ===
+      true;
 
   if (requestHasTools) {
-    const filtered = eligibleTargets.filter((target) => supportsToolCalling(target.modelStr));
+    // Keep #5240 prompt-emulation providers (toolCalling:"emulated") even when
+    // registry/capability rows honestly report toolCalling:false.
+    const filtered = eligibleTargets.filter(
+      (target) =>
+        supportsToolCalling(target.modelStr) || providerSupportsEmulatedToolCalling(target.provider)
+    );
     if (filtered.length > 0) {
       eligibleTargets = filtered;
-    } else {
+    } else if (compatFilterFailOpen) {
       log.warn(
         "COMBO",
-        "Auto strategy: all candidates filtered by tool-calling policy, falling back to full pool"
+        "Auto strategy: all candidates filtered by tool-calling policy, falling back to full pool (compatFilterFailOpen)"
       );
+    } else {
+      // #8488: fail closed with an explicit compatibility error instead of
+      // re-admitting tool-incapable targets.
+      const toolCount = Array.isArray(body.tools) ? body.tools.length : 0;
+      return {
+        earlyResponse: errorResponseWithComboDiagnostics(
+          400,
+          `No target in combo ${combo.name} supports tool calling; request carried ${toolCount} tools`,
+          {
+            poolSize: eligibleTargets.length,
+            attempted: 0,
+            excluded: eligibleTargets.map((target) => ({
+              provider: target.provider,
+              model: target.modelStr,
+              reason: "tools",
+            })),
+            attemptOrder: [],
+            terminalReason: "capability_mismatch",
+          },
+          { code: "capability_mismatch", type: "invalid_request_error" }
+        ),
+      };
     }
   }
 
@@ -142,9 +236,8 @@ export async function resolveAutoStrategyOrder(
     } else {
       log.warn(
         "COMBO",
-        `Auto strategy: all candidates filtered by context-window policy (est. ${estimatedInputTokens} tokens), falling back to full pool`
+        `Auto strategy: all candidates filtered by approximate context-window policy (est. ${estimatedInputTokens} tokens), falling back to full pool`
       );
-      // eligibleTargets intentionally unchanged — same fallback contract as tool-calling filter
     }
 
     eligibleTargets = await expandAutoComboCandidatePool(eligibleTargets, combo);
@@ -160,13 +253,14 @@ export async function resolveAutoStrategyOrder(
   const {
     routingStrategy,
     candidatePool,
-    weights,
+    weights: configWeights,
     explorationRate,
     budgetCap: configBudgetCap,
     budgetFallback: configBudgetFallback,
     modePack: configModePack,
     resetWindowConfig,
     slaPolicy,
+    nadirConfig,
   } = parseAutoConfig(combo, eligibleTargets);
 
   // Per-request overrides (#6023 / #6024 / #6025 / #3470): X-OmniRoute-Budget,
@@ -180,7 +274,22 @@ export async function resolveAutoStrategyOrder(
   const budgetFallback = requestBudgetFallback ?? configBudgetFallback;
   const requestModePack = resolveRequestModePack(relayOptions?.mode);
   const modePack = requestModePack.override ? requestModePack.modePack : configModePack;
-  if (requestModePack.override || requestBudgetCap !== undefined || requestBudgetFallback !== undefined) {
+  // #7008: `weights` must track the *effective* (post-override) modePack, not just
+  // the combo's stored one. `selectAutoProvider()` (engine.ts) already re-derives
+  // weights internally from the `modePack` it's given, so it correctly reacts to a
+  // per-request X-OmniRoute-Mode override — but `scoreAutoTargets()` (the fallback
+  // ranking below) has no such re-derivation and only ever sees whatever `weights`
+  // it's handed. Without this recompute, a request overriding e.g. `quality-first`
+  // to `ship-fast` would select its primary target under ship-fast weights but rank
+  // every fallback under the stale quality-first weights — the same
+  // select-under-one-policy/rank-under-another bug this module's original fix
+  // (parseAutoConfig honoring the combo's own stored modePack) set out to close.
+  const weights = modePack ? getModePack(modePack) || configWeights : configWeights;
+  if (
+    requestModePack.override ||
+    requestBudgetCap !== undefined ||
+    requestBudgetFallback !== undefined
+  ) {
     log.debug?.(
       "COMBO",
       `Auto strategy: per-request controls applied (mode=${
@@ -191,7 +300,7 @@ export async function resolveAutoStrategyOrder(
 
   let lastKnownGoodProvider: string | undefined;
   try {
-    const { getLKGP } = await import("../../../src/lib/localDb");
+    const { getLKGP } = await import("@/lib/db/settings");
     const lkgp = await getLKGP(combo.name, combo.id || combo.name);
     if (lkgp) lastKnownGoodProvider = lkgp.provider;
   } catch (err) {
@@ -208,16 +317,35 @@ export async function resolveAutoStrategyOrder(
           },
         }
       : resilienceSettings;
-  const candidates = await buildAutoCandidates(
-    eligibleTargets,
-    combo.name,
-    relayOptions?.sessionId,
-    resetWindowConfig,
-    autoCandidateResilienceSettings
+  // Complexity-aware routing: classify the request's difficulty and feed a
+  // tier hint into scoring so tierAffinity / specificityMatch favor
+  // candidates whose tier matches the request.  Always-on since #13386 — the
+  // former opt-in gate (config.complexityAwareRouting) was orphaned by
+  // migration 103 which stripped it as a legacy key, leaving the feature
+  // permanently disabled.  The classification is lightweight (regex-only, no
+  // LLM call) so always running it has negligible cost.
+  const autoManifestHint: RoutingHint | null = await buildComplexityRoutingHint(
+    eligibleTargets.filter((t) => t.kind === "model"),
+    body,
+    log
   );
-  const routableCandidates = candidates.filter(
-    (candidate) => candidate.quotaCutoffBlocked !== true
-  );
+
+  const { sourceCandidates, candidates, routableCandidates, scoredTargets } =
+    await evaluateAutoCandidates({
+      targets: eligibleTargets,
+      comboName: combo.name,
+      body,
+      taskType,
+      weights,
+      sessionId: relayOptions?.sessionId,
+      resetWindowConfig,
+      resilienceSettings: autoCandidateResilienceSettings,
+      manifestHint: autoManifestHint,
+      buildAutoCandidates,
+    });
+  for (let index = 0; index < sourceCandidates.length; index += 1) {
+    sourceCandidates[index].cacheAffinity = candidates[index]?.cacheAffinity;
+  }
   const quotaBlockedCount = candidates.length - routableCandidates.length;
   if (quotaBlockedCount > 0) {
     log.info(
@@ -238,23 +366,35 @@ export async function resolveAutoStrategyOrder(
   if (routableCandidates.length > 0) {
     let selectedProvider: string | null = null;
     let selectedModel: string | null = null;
+    let selectedConnectionId: string | null = null;
     let selectionReason = "";
 
     if (routingStrategy !== "rules") {
       try {
-        const decision = selectWithStrategy(
+        const decision = await selectWithStrategyAsync(
           routableCandidates,
           {
             taskType,
             requestHasTools,
             lastKnownGoodProvider,
+            // #11181: the Routing tab persists an LKGP on/off toggle and
+            // LKGPStrategy guards on `context.lkgpEnabled === false`, but the
+            // field was never forwarded into this context, so the guard never
+            // saw the setting and the off-switch was unreachable.
+            lkgpEnabled: (settings as { lkgpEnabled?: unknown } | null | undefined)?.lkgpEnabled as
+              boolean | undefined,
             estimatedInputTokens,
             sla: slaPolicy,
+            weights,
+            explorationRate,
+            messages: body.messages,
+            nadir: nadirConfig,
           },
           routingStrategy
         );
         selectedProvider = decision.provider;
         selectedModel = decision.model;
+        selectedConnectionId = decision.connectionId ?? null;
         selectionReason = decision.reason;
         autoUsedExplicitRouter = true;
       } catch (err) {
@@ -278,6 +418,7 @@ export async function resolveAutoStrategyOrder(
             modePack,
             budgetCap,
             budgetFallback,
+            estimatedInputTokens,
             explorationRate,
           },
           routableCandidates,
@@ -294,34 +435,20 @@ export async function resolveAutoStrategyOrder(
       }
       selectedProvider = selection.provider;
       selectedModel = selection.model;
+      selectedConnectionId = selection.connectionId ?? null;
       selectionReason = `score=${selection.score.toFixed(3)}${selection.isExploration ? " (exploration)" : ""}`;
     }
 
-    // Complexity-aware routing (2026, opt-in): classify the request's
-    // difficulty and feed a tier hint into scoring so tierAffinity /
-    // specificityMatch favor candidates whose tier matches the request.
-    const autoManifestHint: RoutingHint | null =
-      config.complexityAwareRouting === true
-        ? buildComplexityRoutingHint(
-            eligibleTargets.filter((t) => t.kind === "model"),
-            body,
-            log
-          )
-        : null;
-
-    const scoredTargets = scoreAutoTargets(
-      eligibleTargets,
-      routableCandidates,
-      taskType,
-      weights,
-      autoManifestHint
-    );
     const rankedTargets = scoredTargets.map((entry) => entry.target);
     const selectedTarget =
       scoredTargets.find((entry) => {
         const parsed = parseModel(entry.target.modelStr);
         const modelId = parsed.model || entry.target.modelStr;
-        return entry.target.provider === selectedProvider && modelId === selectedModel;
+        return (
+          entry.target.provider === selectedProvider &&
+          modelId === selectedModel &&
+          (!selectedConnectionId || entry.target.connectionId === selectedConnectionId)
+        );
       })?.target ||
       rankedTargets[0] ||
       eligibleTargets[0];
@@ -338,8 +465,14 @@ export async function resolveAutoStrategyOrder(
     // routable ranked ones (and, when the cutoff is OFF, makes this identical to
     // the pre-cutoff behavior), but a quota-blocked target still survives as a
     // final fallback instead of vanishing — the hard cutoff only de-prioritizes.
+    const preserveRungOrder =
+      (combo as { autoConfig?: { preserveRungOrder?: unknown } })?.autoConfig?.preserveRungOrder ===
+      true;
+    const headTargets = preserveRungOrder
+      ? restoreIncomingOrder(rankedTargets, eligibleTargets)
+      : [selectedTarget, ...rankedTargets];
     orderedTargets = dedupeTargetsByExecutionKey(
-      [selectedTarget, ...rankedTargets, ...eligibleTargets].filter(
+      [...headTargets, ...eligibleTargets].filter(
         (entry): entry is ResolvedComboTarget => entry !== undefined && entry !== null
       )
     );

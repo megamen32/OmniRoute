@@ -1,13 +1,19 @@
 import { CORS_HEADERS } from "@/shared/utils/cors";
 import { v1CountTokensSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
-import { countTextTokens } from "@/shared/utils/tiktokenCounter";
+import { countTextTokens, type TokenizerContext } from "@/shared/utils/tiktokenCounter";
+import { isRuntimeProviderRetirementError } from "@/shared/constants/providerRetirement";
 import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
+import { buildErrorBody } from "@omniroute/open-sse/utils/error.ts";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
+import { isCommonChatGptWebRetirementError } from "@/shared/constants/chatgptWebRetirement";
 import { getModelInfo } from "@/sse/services/model";
-import { extractApiKey, getProviderCredentials, isValidApiKey } from "@/sse/services/auth";
+import { getProviderCredentials } from "@/sse/services/auth";
+import { resolveApiKeyUpstreamScope } from "@/shared/utils/apiKeyUpstreamScope";
+import { isCredentialDiagnosticSentinel } from "@/sse/services/credentialSentinel";
 import { safeResolveProxy } from "@/sse/handlers/chatHelpers";
 import * as log from "@/sse/utils/logger";
+import { isInputTokenCountPlausible } from "@omniroute/open-sse/utils/usageTracking.ts";
 
 /**
  * Handle CORS preflight
@@ -40,7 +46,10 @@ export async function POST(request) {
   }
   const body = validation.data;
 
-  const estimated = buildEstimatedCountResponse(body);
+  const tokenizerContext: TokenizerContext = {
+    model: typeof body.model === "string" ? body.model : undefined,
+  };
+  const estimated = buildEstimatedCountResponse(body, tokenizerContext);
   const requestedModel = typeof body.model === "string" ? body.model : "";
   if (!requestedModel) {
     return estimated;
@@ -52,20 +61,33 @@ export async function POST(request) {
       return estimated;
     }
 
+    // The provider-side count sends the whole conversation upstream, so it must
+    // stay inside the caller key's scope exactly like chat: a key that may not
+    // reach this model, or none of whose allowed connections serve it, gets the
+    // local estimate — never another connection's credential.
+    const keyScope = await resolveApiKeyUpstreamScope(request, requestedModel, modelInfo);
+    if (!keyScope.permitted) {
+      return estimated;
+    }
+
     const credentials = await getProviderCredentials(
       modelInfo.provider,
       null,
-      null,
+      keyScope.allowedConnections,
       modelInfo.model
     );
-    if (!credentials || credentials.allRateLimited) {
+    if (!credentials || isCredentialDiagnosticSentinel(credentials)) {
       return estimated;
     }
 
     const executor = await getExecutor(modelInfo.provider);
     // The provider-side count is a real upstream call — it must honor the
     // connection's proxy assignment exactly like chat execution does.
-    const proxyInfo = await safeResolveProxy(credentials.connectionId);
+    const proxyInfo = await safeResolveProxy(
+      credentials.connectionId,
+      undefined,
+      modelInfo.provider
+    );
     const counted = await runWithProxyContext(proxyInfo?.proxy || null, () =>
       executor?.countTokens?.({
         model: modelInfo.model,
@@ -75,7 +97,13 @@ export async function POST(request) {
       })
     );
 
-    if (!counted || !Number.isFinite(counted.input_tokens)) {
+    if (
+      !counted ||
+      !Number.isFinite(counted.input_tokens) ||
+      !isInputTokenCountPlausible(counted.input_tokens, body) ||
+      // A provider count of 0 for a non-empty request is bogus (#15763).
+      (counted.input_tokens === 0 && estimateInputTokens(body, tokenizerContext) > 0)
+    ) {
       return estimated;
     }
 
@@ -91,6 +119,20 @@ export async function POST(request) {
       }
     );
   } catch (error) {
+    if (isRuntimeProviderRetirementError(error) || isCommonChatGptWebRetirementError(error)) {
+      return new Response(
+        JSON.stringify(
+          buildErrorBody(error.status, error.message, null, {
+            type: "provider_error",
+            code: error.code,
+          })
+        ),
+        {
+          status: error.status,
+          headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+        }
+      );
+    }
     log.debug(
       "COUNT_TOKENS",
       `Falling back to estimate for ${requestedModel}: ${error instanceof Error ? error.message : String(error)}`
@@ -113,22 +155,24 @@ function safeStringify(value) {
 // content, and `thinking` blocks — counting only `text` (as before) reported
 // near-zero for those messages and silently broke Claude Code's auto-compaction
 // (#2337). Image / redacted_thinking blocks are not text-estimable and count 0.
-function estimateContentBlockTokens(part) {
+function estimateContentBlockTokens(part, tokenizerContext: TokenizerContext) {
   if (!part || typeof part !== "object") return 0;
   let tokens = 0;
   switch (part.type) {
     case "text":
-      if (typeof part.text === "string") tokens += countTextTokens(part.text);
+      if (typeof part.text === "string") tokens += countTextTokens(part.text, tokenizerContext);
       break;
     case "tool_use":
-      if (typeof part.name === "string") tokens += countTextTokens(part.name);
-      if (part.input !== undefined) tokens += countTextTokens(safeStringify(part.input));
+      if (typeof part.name === "string") tokens += countTextTokens(part.name, tokenizerContext);
+      if (part.input !== undefined)
+        tokens += countTextTokens(safeStringify(part.input), tokenizerContext);
       break;
     case "tool_result":
-      tokens += estimateToolResultTokens(part.content);
+      tokens += estimateToolResultTokens(part.content, tokenizerContext);
       break;
     case "thinking":
-      if (typeof part.thinking === "string") tokens += countTextTokens(part.thinking);
+      if (typeof part.thinking === "string")
+        tokens += countTextTokens(part.thinking, tokenizerContext);
       break;
     default:
       break;
@@ -138,13 +182,13 @@ function estimateContentBlockTokens(part) {
 
 // A `tool_result` content can be a plain string or an array of nested blocks
 // (text / image). Count string content and nested text blocks.
-function estimateToolResultTokens(content) {
-  if (typeof content === "string") return countTextTokens(content);
+function estimateToolResultTokens(content, tokenizerContext: TokenizerContext) {
+  if (typeof content === "string") return countTextTokens(content, tokenizerContext);
   if (Array.isArray(content)) {
     let tokens = 0;
     for (const block of content) {
       if (block?.type === "text" && typeof block.text === "string") {
-        tokens += countTextTokens(block.text);
+        tokens += countTextTokens(block.text, tokenizerContext);
       }
     }
     return tokens;
@@ -152,33 +196,38 @@ function estimateToolResultTokens(content) {
   return 0;
 }
 
-function buildEstimatedCountResponse(body) {
+function estimateInputTokens(body, tokenizerContext: TokenizerContext = {}): number {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   let inputTokens = 0;
 
   for (const msg of messages) {
     if (typeof msg?.content === "string") {
-      inputTokens += countTextTokens(msg.content);
+      inputTokens += countTextTokens(msg.content, tokenizerContext);
       continue;
     }
 
     if (Array.isArray(msg?.content)) {
       for (const part of msg.content) {
-        inputTokens += estimateContentBlockTokens(part);
+        inputTokens += estimateContentBlockTokens(part, tokenizerContext);
       }
     }
   }
 
   if (typeof body?.system === "string") {
-    inputTokens += countTextTokens(body.system);
+    inputTokens += countTextTokens(body.system, tokenizerContext);
   } else if (Array.isArray(body?.system)) {
     for (const block of body.system) {
       if (block?.type === "text" && typeof block.text === "string") {
-        inputTokens += countTextTokens(block.text);
+        inputTokens += countTextTokens(block.text, tokenizerContext);
       }
     }
   }
 
+  return inputTokens;
+}
+
+function buildEstimatedCountResponse(body, tokenizerContext: TokenizerContext = {}) {
+  const inputTokens = estimateInputTokens(body, tokenizerContext);
   return new Response(
     JSON.stringify({
       input_tokens: inputTokens,

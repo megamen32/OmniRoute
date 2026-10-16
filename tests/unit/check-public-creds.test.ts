@@ -46,7 +46,7 @@ test('does NOT flag empty-string fallback (process.env || "")', () => {
 });
 
 test("does NOT flag an *Env key — it carries the env-var NAME, not the secret", () => {
-  const src = `clientIdEnv: "QWEN_OAUTH_CLIENT_ID",`;
+  const src = `clientIdEnv: "EXAMPLE_OAUTH_CLIENT_ID",`;
   assert.deepEqual(findLiteralCreds(src, new Set(), "x.ts"), []);
 });
 
@@ -65,6 +65,25 @@ test("allowlist freezes a literal by file:line:value key", () => {
   const src = `\nclientIdDefault: "site-specific-123",`;
   const allow = new Set(["x.ts:2:site-specific-123"]);
   assert.deepEqual(findLiteralCreds(src, allow, "x.ts"), []);
+});
+
+test("allowlist preserves the local ZCode handshake client ID without weakening credential detection", () => {
+  // 335 newlines puts the statement on line 336, which is where it lives in
+  // zcodeProtocol.ts today. The allowlist key carries the line number, so this
+  // literal has to be kept in step with the source (it moved 302 -> 313 -> 336).
+  const src = `${"\n".repeat(335)}clientId: \`omniroute-\${process.pid}\`,`;
+  assert.deepEqual(
+    findLiteralCreds(src, KNOWN_LITERAL_CREDS, "open-sse/executors/zcodeProtocol.ts"),
+    []
+  );
+  assert.equal(
+    findLiteralCreds(
+      src.replace("omniroute-", "upstream-client-"),
+      KNOWN_LITERAL_CREDS,
+      "open-sse/executors/zcodeProtocol.ts"
+    ).length,
+    1
+  );
 });
 
 test("a NEW literal is still flagged even with the real frozen allowlist", () => {
@@ -114,8 +133,8 @@ test("every frozen literal is actually present in a scanned file (no dead allowl
 });
 
 test("with an empty allowlist the real scanned files surface zero violations (all migrated to resolvePublicCred)", () => {
-  // All five public client_ids (9 call-sites) were migrated to resolvePublicCred() in
-  // #3493, so neither anchor file has literal credentials anymore.
+  // Public client_ids were migrated to resolvePublicCred() in #3493, so neither
+  // anchor file has literal credentials anymore.
   const reg = fs.readFileSync(
     path.join(repoRoot, "open-sse/config/providerRegistry.ts"),
     "utf8"

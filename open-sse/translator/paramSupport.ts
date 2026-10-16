@@ -25,15 +25,60 @@ type StripRule = {
   drop?: string[];
   clampToModelMaxOutput?: boolean;
   maxOutputCap?: number;
+  // Remap `thinking.type` from one value to another instead of dropping the
+  // whole field, preserving any other keys already on `thinking` (e.g.
+  // budget_tokens). Only applies when `thinking` is an object whose current
+  // `type` matches the key.
+  mapThinkingType?: Record<string, string>;
 };
 
 const MAX_OUTPUT_TOKEN_KEYS = ["max_tokens", "max_completion_tokens", "max_output_tokens"] as const;
 
+// GitHub Copilot rejects `temperature` (HTTP 400 "Unsupported parameter:
+// 'temperature' is not supported with this model") for GPT-5.4 and newer GPT-5.x
+// (gpt-5.5, gpt-5.6-sol/terra/luna, gpt-5.10, ...) and for GPT-6.x — including
+// ids without a minor version such as gpt-6-astra. Anchored so gpt-5, gpt-5.3-codex
+// and malformed ids like gpt-5.4invalid keep their temperature. A leading
+// `provider/` prefix is ignored. Shared with GithubExecutor.transformRequest.
+const GITHUB_NO_TEMPERATURE_MODEL = /^gpt-(?:5\.(?:[4-9]|[1-9]\d+)|6(?:\.\d+)?)(?:-|$)/i;
+
+export function isGithubTemperatureUnsupportedModel(model: string | null | undefined): boolean {
+  if (typeof model !== "string" || !model) return false;
+  const bare = model.slice(model.lastIndexOf("/") + 1);
+  return GITHUB_NO_TEMPERATURE_MODEL.test(bare);
+}
+
 const STRIP_RULES: StripRule[] = [
   // claude-opus-4 series: temperature is deprecated (Anthropic returns 400). #1748
   { match: /claude-opus-4/i, drop: ["temperature"] },
-  // GitHub Copilot gpt-5.4: temperature unsupported.
-  { provider: "github", match: /gpt-5\.4/i, drop: ["temperature"] },
+  // All Claude models: newer Claude Code clients send a top-level `diagnostics`
+  // telemetry object gated behind a beta OmniRoute does not advertise, so
+  // Anthropic 400s with "diagnostics: Extra inputs are not permitted".
+  { match: /claude/i, drop: ["diagnostics"] },
+  // GitHub Copilot GPT-5.4+ and GPT-6.x: temperature unsupported.
+  { provider: "github", match: isGithubTemperatureUnsupportedModel, drop: ["temperature"] },
+  // OpenAI GPT-5.0 family (gpt-5, gpt-5-mini, gpt-5-nano, dated snapshots) always
+  // reasons and rejects sampling params with HTTP 400 "Unsupported parameter:
+  // 'temperature' is not supported with this model" (same for top_p). Agent
+  // clients (Hermes, OpenClaw, ...) send a temperature on every turn, so each
+  // first attempt burned a round trip before the combo fell back (#14133).
+  // Versioned GPT-5.1+ ids (gpt-5.1, gpt-5.4, gpt-5.6-luna, ...) are NOT listed:
+  // they default to reasoning_effort "none", where sampling IS accepted, so a
+  // static strip would drop a legitimate temperature. The reasoning-aware
+  // stripGpt5SamplingWhenReasoning (services/gpt5SamplingGuard.ts) strips them
+  // only when an active effort is present. `gpt-5-chat*` accepts sampling.
+  {
+    provider: "openai",
+    match: (m: string) => /^gpt-5(?:-|$)/i.test(m) && !/chat/i.test(m),
+    drop: ["temperature", "top_p"],
+  },
+  // Codex /responses (chatgpt.com backend-api) rejects sampling params with
+  // FastAPI 400 `{"detail":"Unsupported parameter: temperature"}`. Native
+  // Codex passthrough returns before the Responses allowlist, so this rule
+  // must run from CodexExecutor.transformRequest via
+  // stripCodexPassthroughRejectedParams. Live: combo codex-review
+  // gpt-5.6-sol-xhigh / gpt-5.6-luna-max.
+  { provider: "codex", match: /.*/, drop: ["temperature", "top_p"] },
   // GitHub Copilot Claude (except opus/sonnet 4.6): thinking + reasoning_effort rejected. #713
   {
     provider: "github",
@@ -50,6 +95,13 @@ const STRIP_RULES: StripRule[] = [
   // (format:"openai") does not accept the Claude-style `thinking` body field
   // and returns 400 "Unsupported parameter(s): thinking". Upstream #2268.
   { provider: "nvidia", match: /minimax-m2\.7/i, drop: ["thinking"] },
+  // Mistral GLM 5.2 rejects Claude-style thinking payloads.
+  { provider: "mistral", match: /(?:^|\/)zai-glm-5(?:[.-])2\b/i, drop: ["thinking", "reasoning"] },
+  // NVIDIA NIM: OpenAI-compatible wrapper 400s on `prompt_cache_key` (Codex CLI
+  // injects it natively for its own prompt caching). NIM has no documented
+  // support for this field (providerSupportsCaching already treats nvidia as
+  // non-cache-capable) — safe to drop provider-wide, not model-specific. #7617.
+  { provider: "nvidia", match: /.*/, drop: ["prompt_cache_key"] },
   // VolcEngine Ark caps the Kimi coding-plan endpoint at max_tokens <= 32768
   // server-side ("integer above maximum value, expected a value <= 32768"),
   // independent of the model's own catalog ceiling. Confirmed against two
@@ -58,7 +110,47 @@ const STRIP_RULES: StripRule[] = [
   // MoonshotAI/kimi-cli#1124), and by upstream decolua/9router#2460. Scoped to
   // OmniRoute's actual volcengine Kimi id (not a broad /kimi/i regex) so it
   // never clamps an unrelated future Kimi listing whose Ark cap may differ.
-  { provider: "volcengine", match: /^kimi-k2-5-260127$/, maxOutputCap: 32768, clampToModelMaxOutput: true },
+  {
+    provider: "volcengine",
+    match: /^kimi-k2-5-260127$/,
+    maxOutputCap: 32768,
+    clampToModelMaxOutput: true,
+  },
+  // #7364: Z.AI's glm-4.6v vision endpoint enforces a 32768 max_tokens ceiling
+  // server-side and 400s when a client sends a larger explicit max_tokens (e.g. a
+  // client defaulting to 65536). Scoped to both wire paths that can reach this
+  // model: "zai" (DefaultExecutor, Claude format by default — glm-4.6v is only
+  // reachable there as a custom model attached to the connection, so it is NOT in
+  // PROVIDER_MODELS["zai"] and clampToModelMaxOutput would find no catalog ceiling
+  // to clamp against, hence the fixed maxOutputCap) and "glm" (GlmExecutor, OpenAI
+  // format — glm-4.6v IS in the registry catalog there, `GLM_SHARED_MODELS` in
+  // glmProvider.ts, maxOutputTokens: 32768, so clampToModelMaxOutput suffices).
+  { provider: "zai", match: /^glm-4\.6v$/i, maxOutputCap: 32768 },
+  { provider: "glm", match: /^glm-4\.6v$/i, clampToModelMaxOutput: true },
+  // Azure gpt-4o-mini deployments cap completion tokens at 16384 and 400 on
+  // anything larger: "max_tokens is too large: 32000. This model supports at
+  // most 16384 completion tokens". OmniRoute's own tool-calling floor
+  // (DEFAULT_MIN_TOKENS = 32000, applied by adjustMaxTokens) raises even a tiny
+  // explicit max_tokens to 32000 whenever tools are present, so every agentic
+  // client trips this on its first turn. PROVIDER_MAX_TOKENS is not the right
+  // lever here: it is provider-wide, and the same Azure resource also serves
+  // GPT-5 deployments whose ceiling is far higher. Azure deployment names are
+  // operator-chosen, hence a prefix match rather than an exact id, and the
+  // models are passthrough (no catalog maxOutputTokens for clampToModelMaxOutput
+  // to read), hence the fixed cap.
+  { provider: "azure-openai", match: /^gpt-4o-mini/i, maxOutputCap: 16384 },
+  { provider: "azure-ai", match: /^gpt-4o-mini/i, maxOutputCap: 16384 },
+  // AgentRouter routes GLM models through the generic DefaultExecutor (no
+  // GLM-specific handling), so a Claude-style `thinking.type: "adaptive"`
+  // (the default a Claude-format client like Claude Code sends) reaches
+  // AgentRouter's upstream GLM endpoint verbatim and 400s: `thinking.type
+  // "adaptive" is not supported by glm models; must be one of enabled,
+  // disabled`. The native GLM/ZAI executor already remaps adaptive->enabled
+  // for its own provider (glm.ts); AgentRouter needs the same mapping since
+  // it never reaches that code path. Scoped to the whole glm-* family, not a
+  // single model id, since AgentRouter's static catalog carries no glm-*
+  // entries (passthroughModels: true lets arbitrary GLM ids through). #13696.
+  { provider: "agentrouter", match: /glm-/i, mapThinkingType: { adaptive: "enabled" } },
 ];
 
 function matches(rule: StripRule, model: string): boolean {
@@ -101,6 +193,24 @@ function applyMaxOutputClamp(
 }
 
 /**
+ * When a rule requests it, remap `body.thinking.type` from one value to
+ * another (e.g. "adaptive" -> "enabled"), preserving every other key already
+ * present on `thinking`. No-op when `thinking` is absent, not an object, or
+ * its current `type` has no entry in the rule's map.
+ */
+function applyThinkingTypeMap(rule: StripRule, body: Record<string, unknown>): void {
+  if (!rule.mapThinkingType) return;
+  const thinking = body.thinking;
+  if (!thinking || typeof thinking !== "object" || Array.isArray(thinking)) return;
+  const thinkingRecord = thinking as Record<string, unknown>;
+  const currentType = thinkingRecord.type;
+  if (typeof currentType !== "string") return;
+  const mapped = rule.mapThinkingType[currentType];
+  if (mapped === undefined || mapped === currentType) return;
+  body.thinking = { ...thinkingRecord, type: mapped };
+}
+
+/**
  * Remove unsupported params from `body` in place. Returns the same reference
  * (or `body` unchanged when it is not a plain object / model is empty).
  */
@@ -123,6 +233,7 @@ export function stripUnsupportedParams<T>(
       if (rec[key] !== undefined) delete rec[key];
     }
     applyMaxOutputClamp(rule, provider, model, rec);
+    applyThinkingTypeMap(rule, rec);
   }
 
   // Phase 2: Config-driven rules from DB

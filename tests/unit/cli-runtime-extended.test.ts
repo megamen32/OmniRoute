@@ -14,7 +14,7 @@ const originalSpawn = childProcess.spawn;
 const originalExecFileSync = childProcess.execFileSync;
 const originalEnv = { ...process.env };
 
-const tempDirs = new Set();
+const tempDirs = new Set<string>();
 
 async function importFresh(label) {
   return import(`${pathToFileURL(modulePath).href}?case=${label}-${Date.now()}-${Math.random()}`);
@@ -50,7 +50,7 @@ test.afterEach(() => {
   restoreEnv();
 
   for (const dir of tempDirs) {
-    fs.rmSync(dir as any, { recursive: true, force: true });
+    fs.rmSync(dir as any, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
   tempDirs.clear();
 });
@@ -90,6 +90,16 @@ test("CLI config helpers enforce safe config homes and expose per-tool config pa
   const expectedOpencodeRoot = process.env.XDG_CONFIG_HOME;
   assert.deepEqual(cliRuntime.getCliConfigPaths("opencode"), {
     config: path.join(expectedOpencodeRoot, "opencode", "opencode.json"),
+  });
+});
+
+test("Devin config resolver does not prepend the home directory twice", async () => {
+  if (process.platform === "win32") return;
+  delete process.env.CLI_CONFIG_HOME;
+  const cliRuntime = await importFresh("devin-config-path");
+
+  assert.deepEqual(cliRuntime.getCliConfigPaths("devin"), {
+    config: path.join(os.homedir(), ".config", "devin", "config.json"),
   });
 });
 
@@ -291,6 +301,11 @@ test("getCliRuntimeStatus resolves known binaries from npm global prefix discove
   };
   syncBuiltinESMExports();
 
+  // #12565 moved npm-prefix detection (and its process-lifetime success cache) into
+  // cliRuntimeNpmPrefix.ts. importFresh() only re-evaluates cliRuntime.ts; that module
+  // is shared, so an earlier case's cached prefix would bypass this case's mock.
+  const npmPrefixModule = await import("../../src/shared/services/cliRuntimeNpmPrefix.ts");
+  npmPrefixModule.__resetNpmGlobalPrefixCacheForTests();
   const cliRuntime = await importFresh("npm-prefix-known-path");
   const status = await cliRuntime.getCliRuntimeStatus("qoder");
 
@@ -330,11 +345,21 @@ test("getCliRuntimeStatus ignores suspicious known-path binaries and symlink esc
     fs.symlinkSync(outsideTarget, path.join(escapeBinDir, "qodercli"));
     process.env.npm_config_prefix = escapePrefix;
 
+    // #7753: every candidate checkKnownPath() ever receives is constructed by
+    // getKnownToolPaths() from a trusted root (here: npm_config_prefix/bin) — so a
+    // symlink placed exactly at that generated candidate path (the version-manager
+    // shim pattern used by nvm-windows/nvm/asdf/pyenv: trusted shim location,
+    // private per-version store target) is legitimate and must now be ACCEPTED even
+    // though its resolved target lives outside every EXPECTED_PARENT_PATHS entry.
+    // A genuinely unsafe symlink (one whose ORIGINAL location is also untrusted, not
+    // reachable through this known-path candidate generator) is covered separately
+    // by tests/unit/cliRuntime-symlink-escape-7753.test.ts via the exported
+    // checkKnownPath().
     const escapedRuntime = await importFresh("symlink-escape");
     const escapedStatus = await escapedRuntime.getCliRuntimeStatus("qoder");
 
-    assert.equal(escapedStatus.installed, false);
-    assert.equal(escapedStatus.reason, "symlink_escape");
+    assert.equal(escapedStatus.installed, true);
+    assert.equal(escapedStatus.reason, null);
   }
 });
 

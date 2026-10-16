@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { getApiKeys, createApiKey, isCloudEnabled, updateApiKeyPermissions } from "@/lib/localDb";
+import {
+  getApiKeys,
+  getApiKeysCount,
+  createApiKey,
+  updateApiKeyPermissions,
+} from "@/lib/db/apiKeys";
+import { isCloudEnabled } from "@/lib/db/settings";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud } from "@/lib/cloudSync";
 import { createKeySchema } from "@/shared/validation/schemas";
@@ -30,18 +36,18 @@ export async function GET(request: Request) {
   if (authError) return authError;
 
   try {
-    const keys = await getApiKeys();
+    const { limit, offset } = parsePagination(request);
+    const dbLimit = limit ?? undefined;
+    const total = getApiKeysCount();
+    const keys = await getApiKeys(dbLimit, offset);
     const maskedKeys = keys.map((k) => ({
       ...k,
       key: maskStoredApiKey(k.key),
     }));
-    const { limit, offset } = parsePagination(request);
-    const pagedKeys =
-      limit === null ? maskedKeys.slice(offset) : maskedKeys.slice(offset, offset + limit);
 
     return NextResponse.json({
-      keys: pagedKeys,
-      total: maskedKeys.length,
+      keys: maskedKeys,
+      total,
       allowKeyReveal: isApiKeyRevealEnabled(),
     });
   } catch (error) {
@@ -65,19 +71,30 @@ export async function POST(request) {
     }
     const {
       name,
+      modelAccessMode,
+      allowedModels,
+      allowedCombos,
       noLog,
       scopes,
+      allowedConnections,
       allowUsageCommand,
       usageLimitEnabled,
       dailyUsageLimitUsd,
       weeklyUsageLimitUsd,
       chaosModeEnabled,
+      expiresAt,
     } = validation.data;
 
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
     const normalizedScopes = normalizeSelfServiceScopesForCreate(scopes);
-    const apiKey = await createApiKey(name, machineId, normalizedScopes);
+    const apiKey = await createApiKey(name, machineId, normalizedScopes, {
+      modelAccessMode,
+      allowedModels,
+      allowedCombos,
+      allowedConnections,
+      expiresAt,
+    });
     if (
       noLog === true ||
       allowUsageCommand === true ||
@@ -112,13 +129,20 @@ export async function POST(request) {
         name: apiKey.name,
         id: apiKey.id,
         machineId: apiKey.machineId,
+        modelAccessMode: apiKey.modelAccessMode,
+        allowedModels: apiKey.allowedModels,
+        allowedCombos: apiKey.allowedCombos,
+        allowedConnections: apiKey.allowedConnections,
         noLog: noLog === true,
         allowUsageCommand: allowUsageCommand === true,
         usageLimitEnabled: usageLimitEnabled === true,
         dailyUsageLimitUsd: dailyUsageLimitUsd ?? null,
         weeklyUsageLimitUsd: weeklyUsageLimitUsd ?? null,
         chaosModeEnabled: chaosModeEnabled === true,
+        expiresAt: expiresAt ?? null,
         streamDefaultMode: "legacy",
+        compressionEnabled: true,
+        cacheDefaultMode: "legacy",
       },
       { status: 201 }
     );

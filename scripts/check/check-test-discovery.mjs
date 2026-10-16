@@ -22,13 +22,14 @@
 // --update regrava o baseline com o estado atual (use só para REMOVER religados;
 // adições novas devem ser corrigidas, não congeladas — esse é o ponto do gate).
 //
-// Limitações documentadas (v1):
-//  - `exclude` de arquivo individual em vitest configs não é modelado (1 caso hoje:
-//    providerDiversity.test.ts — coletado pelo include, deliberadamente excluído).
+// Limitações documentadas:
+//  - Vitest exclude deve ser literal; expressões dinâmicas falham fechadas.
+//  - Quarentena tem coletor separado e nunca conta como execução ativa/saudável.
 //  - @omniroute/* ficam fora do walk (têm CI próprio: opencode-*-ci.yml).
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseVitestExcludes, validateQuarantine } from "../quality/quarantine-contract.mjs";
 
 const ROOT = process.cwd();
 const BASELINE_PATH = path.resolve(
@@ -57,7 +58,7 @@ export const COLLECTORS = [
   // abaixo). Subdir novo: adicione aqui E nos scripts (o drift-check + o gate de
   // órfãos forçam a manutenção em sincronia).
   {
-    glob: "tests/unit/{api,auth,authz,build,cli,cli-helper,combo,compression,correctness,cors,db,db-adapters,docs,gamification,guardrails,lib,mcp,memory,runtime,security,services,settings,shared,ui,usage}/**/*.test.ts",
+    glob: "tests/unit/{api,auth,authz,build,chatcore,cli,cli-helper,combo,compression,correctness,cors,db,db-adapters,docs,gamification,guardrails,lib,mcp,memory,runtime,security,services,settings,shared,translator,ui,usage}/**/*.test.ts",
     sources: ["package.json"],
   },
   // Node native runner — tests/unit/dashboard/** roda numa invocação separada com o hook
@@ -86,8 +87,11 @@ export const COLLECTORS = [
       ".github/workflows/quality.yml": "test:unit:ci:shard",
     },
   },
-  // Node native runner — test:integration (top-level only; tests/integration/services/ NÃO roda)
+  // Node native runner — test:integration (top-level only)
   { glob: "tests/integration/*.test.ts", sources: ["package.json"] },
+  // Node native runner — test:services:int (gated RUN_SERVICES_INT=1; embedded-service
+  // installer/lifecycle tests — slow, network-dependent, never runs unopted in CI)
+  { glob: "tests/integration/services/*.test.ts", sources: ["package.json"] },
   // Node native runner — test:combo:matrix / test:integration (combo strategy decision matrix, 17 strategies)
   { glob: "tests/integration/combo-matrix/*.test.ts", sources: ["package.json"] },
   // Node native runner — test:combo:live (gated real-upstream smoke; RUN_COMBO_LIVE=1 + VPS creds)
@@ -107,17 +111,50 @@ export const COLLECTORS = [
     glob: "open-sse/services/__tests__/antigravity-quota-family.test.ts",
     sources: ["vitest.mcp.config.ts"],
   },
+  // #8890 landed this suite here without wiring a runner, so it had never run once.
+  {
+    glob: "open-sse/services/__tests__/fail-fast-concurrency-gate.test.ts",
+    sources: ["vitest.mcp.config.ts"],
+  },
   { glob: "tests/unit/autoCombo/**/*.test.ts", sources: ["vitest.mcp.config.ts"] },
+  { glob: "tests/unit/api/**/*.spec.ts", sources: ["vitest.mcp.config.ts"] },
+  { glob: "src/lib/memory/__tests__/generic-backend.test.ts", sources: ["vitest.mcp.config.ts"] },
   { glob: "tests/unit/encryption.spec.ts", sources: ["vitest.mcp.config.ts"] },
   { glob: "src/shared/components/**/*.test.tsx", sources: ["vitest.mcp.config.ts"] },
   { glob: "src/shared/hooks/__tests__/**/*.test.tsx", sources: ["vitest.mcp.config.ts"] },
   { glob: "src/app/(dashboard)/**/__tests__/**/*.test.tsx", sources: ["vitest.mcp.config.ts"] },
-  // vitest.config.ts via test:vitest:ui (roda com path-filter `tests/unit/ui`, então o
-  // conjunto EFETIVO é a interseção do include `tests/unit/**/*.test.tsx` com o filtro)
+  // vitest.config.ts via test:vitest:ui. The script uses the config-wide include list.
   {
-    glob: "tests/unit/ui/**/*.test.tsx",
+    glob: "tests/unit/**/*.test.tsx",
     sources: ["package.json", "vitest.config.ts"],
-    anchors: { "package.json": "tests/unit/ui", "vitest.config.ts": "tests/unit/**/*.test.tsx" },
+    anchors: { "package.json": "test:vitest:ui", "vitest.config.ts": "tests/unit/**/*.test.tsx" },
+  },
+  // vitest.config.ts include — open-sse/__tests__ files collected by vitest.config.ts.
+  // These were previously listed as orphans because the COLLECTORS only modelled the
+  // tests/unit/**/*.test.tsx include; the open-sse globs were missing. Both the top-level
+  // glob and the more-specific services sub-path glob from vitest.config.ts are listed so
+  // the drift-check anchors remain exact matches to the config file text.
+  {
+    glob: "open-sse/**/__tests__/**/*.test.ts",
+    sources: ["vitest.config.ts"],
+    anchors: { "vitest.config.ts": "open-sse/**/__tests__/**/*.test.ts" },
+  },
+  // vitest.config.ts include — src/lib/memory and src/lib/skills __tests__ collected by vitest.config.ts.
+  {
+    glob: "src/lib/memory/__tests__/**/*.test.ts",
+    sources: ["vitest.config.ts"],
+    anchors: { "vitest.config.ts": "src/lib/memory/__tests__/**/*.test.ts" },
+  },
+  {
+    glob: "src/lib/skills/__tests__/**/*.test.ts",
+    sources: ["vitest.config.ts"],
+    anchors: { "vitest.config.ts": "src/lib/skills/__tests__/**/*.test.ts" },
+  },
+  // vitest.config.ts include — single-file entry for the .test.ts encryption file.
+  {
+    glob: "tests/unit/encryption.test.ts",
+    sources: ["vitest.config.ts"],
+    anchors: { "vitest.config.ts": "tests/unit/encryption.test.ts" },
   },
   // Playwright — test:e2e (o script passa tests/e2e/*.spec.ts; testMatch **/*.spec.ts)
   { glob: "tests/e2e/*.spec.ts", sources: ["package.json"] },
@@ -126,6 +163,13 @@ export const COLLECTORS = [
   {
     glob: "tests/e2e/protocol-clients.test.ts",
     sources: ["scripts/dev/run-protocol-clients-tests.mjs"],
+  },
+  // Playwright — suíte de homologação real (npm run homolog, L4 UI): run.mjs invoca
+  // `playwright test -c tests/homolog/ui/playwright.config.ts` (testMatch **/*.spec.ts).
+  {
+    glob: "tests/homolog/ui/*.spec.ts",
+    sources: ["scripts/homolog/run.mjs"],
+    anchors: { "scripts/homolog/run.mjs": "tests/homolog/ui/playwright.config.ts" },
   },
 ];
 
@@ -165,8 +209,20 @@ export function globToRegExp(glob) {
 
 /** Arquivos de teste não casados por NENHUM glob de collector (ordem preservada). */
 export function findOrphans(files, globs) {
-  const regexes = globs.map(globToRegExp);
-  return files.filter((f) => !regexes.some((re) => re.test(f)));
+  const collectors = globs.map((entry) => {
+    const collector = typeof entry === "string" ? { glob: entry } : entry;
+    return {
+      include: globToRegExp(collector.glob),
+      exclude: (collector.exclude ?? []).map(globToRegExp),
+    };
+  });
+  return files.filter(
+    (file) =>
+      !collectors.some(
+        (collector) =>
+          collector.include.test(file) && !collector.exclude.some((exclude) => exclude.test(file))
+      )
+  );
 }
 
 /**
@@ -239,10 +295,30 @@ function main() {
 
   // 2) órfãos vs baseline
   const files = collectTestFiles();
-  const orphans = findOrphans(
-    files,
-    COLLECTORS.map((c) => c.glob)
+  const modeled = COLLECTORS.map((collector) => {
+    const config = collector.sources.find((source) => /^vitest.*\.config\.ts$/.test(source));
+    return { ...collector, exclude: config ? parseVitestExcludes(contents[config]) : [] };
+  });
+  const inventory = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "config/quality/vitest-exclusions.json"), "utf8")
   );
+  const quarantineErrors = validateQuarantine(inventory.excluded);
+  const quarantineConfig = fs.readFileSync(path.join(ROOT, "vitest.quarantine.config.ts"), "utf8");
+  const quarantineWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github/workflows/test-quarantine.yml"),
+    "utf8"
+  );
+  if (
+    !quarantineConfig.includes("inventory.excluded.map") ||
+    !quarantineWorkflow.includes("vitest run --config vitest.quarantine.config.ts")
+  ) {
+    quarantineErrors.push("quarantine execution wiring missing");
+  }
+  if (quarantineErrors.length) drift.push(...quarantineErrors);
+  const quarantined = new Set(inventory.excluded.map((entry) => entry.file));
+  const inactive = findOrphans(files, modeled);
+  // Only a valid, wired quarantine may account for a non-active file.
+  const orphans = inactive.filter((file) => quarantineErrors.length || !quarantined.has(file));
   if (!fs.existsSync(BASELINE_PATH) && !UPDATE) {
     console.error(
       `[test-discovery] FAIL — ${path.basename(BASELINE_PATH)} ausente. Bootstrap:\n` +
@@ -259,6 +335,12 @@ function main() {
       };
   const { newOrphans, stale } = evaluateAgainstBaseline(orphans, baseline.orphans || []);
 
+  if (UPDATE && newOrphans.length > 0) {
+    console.error(
+      `[test-discovery] FAIL — --update cannot freeze ${newOrphans.length} new orphan(s); wire their runner instead.`
+    );
+    process.exit(1);
+  }
   if (UPDATE && drift.length === 0) {
     baseline.orphans = orphans;
     fs.writeFileSync(BASELINE_PATH, JSON.stringify(baseline, null, 2) + "\n");
@@ -286,7 +368,7 @@ function main() {
     process.exit(1);
   }
   console.log(
-    `[test-discovery] OK — ${files.length} arquivos de teste, ${COLLECTORS.length} collectors, ${(baseline.orphans || []).length} órfão(s) congelado(s) (dívida rastreada, só decresce)`
+    `[test-discovery] OK — ${files.length} arquivos de teste, ${COLLECTORS.length} collectors, ${quarantined.size} arquivo(s) inventariado(s) em quarentena (não é PASS ativo), ${(baseline.orphans || []).length} órfão(s) congelado(s) (dívida rastreada, só decresce)`
   );
 }
 

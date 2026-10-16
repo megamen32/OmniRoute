@@ -23,7 +23,11 @@ in this order:
 
 1. **`CORS_ALLOW_ALL=true`** (or the legacy `CORS_ORIGIN=*`) → echo the caller's
    `Origin` back (or `*` when there is no `Origin` header), with `Vary: Origin`
-   so caches stay correct.
+   so caches stay correct. The same `applyCorsHeaders()` chokepoint also appends
+   `Vary: Accept-Encoding` to every 2xx-with-body response on the token-authenticated
+   `/v1*`/`/v1beta*` surface (`relaxForTokenAuth`, RFC 9110 §12.5.5, issue #6737), so
+   downstream/shared caches can correctly distinguish compressed vs uncompressed
+   variants.
 2. Otherwise, the request `Origin` is normalized (lower-cased, trailing slash
    stripped) and matched against the **merged allowlist**:
    - env **`CORS_ALLOWED_ORIGINS`** — comma-separated list, and
@@ -135,8 +139,12 @@ and forward — let OmniRoute answer preflight:
 location / {
     proxy_pass http://127.0.0.1:20128;
     proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    # Do NOT set X-Forwarded-For to 127.0.0.1 — it defeats the loopback route guard.
+    # Keep the forwarding headers: a proxy on the same host connects from loopback, and they are
+    # what tells OmniRoute the caller is not the local operator. A proxy that adds none of them
+    # makes every remote caller look local. Never set X-Forwarded-For to 127.0.0.1 either.
 }
 ```
 

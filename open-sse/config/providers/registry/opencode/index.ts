@@ -11,6 +11,10 @@ export const opencodeProvider: RegistryEntry = {
   authHeader: "Authorization",
   authPrefix: "Bearer",
   passthroughModels: true,
+  toolCalling: "emulated",
+  // #15540: the keyless Free tier serves every model below even when the account row
+  // (apiKey "public") only syncs a subset, so a partial discovery must not reject them.
+  liveCatalogAuthoritative: false,
   defaultContextLength: 200000,
   models: [
     // #2900: big-pickle's upstream runs DeepSeek thinking mode — declare the
@@ -22,30 +26,72 @@ export const opencodeProvider: RegistryEntry = {
       supportsReasoning: true,
       interleavedField: "reasoning_content",
     },
-    { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free", supportsReasoning: true },
-    // #3110: MiniMax M3 free tier via OpenCode
-    // #3328: MiniMax M3 is multimodal (verified: describes base64 images via the
-    // opencode upstream) — flag it so vision requests aren't gated/stripped.
+    // #MUSE_SPARK: Muse Spark is served by OpenCode Zen ONLY on the OpenAI
+    // Responses API (https://opencode.ai/zen/v1/responses), not /chat/completions
+    // (confirmed in the official OpenCode Zen docs: https://opencode.ai/docs/zen/).
+    // Without targetFormat:"openai-responses" these models fall through to the
+    // default chat/completions pass-through and the upstream returns null/empty
+    // content (see issue #10867). The opencode provider is passthrough, so
+    // declaring them here only sets the wire format / capability flags — the
+    // live upstream model list already advertises both ids.
+    // #12681: real window confirmed against the opencode-go registry's own
+    // muse-spark-1.2-contributor entries (contextLength: 1048576, maxOutputTokens:
+    // 131072) — without an explicit value here resolution fell back to the
+    // provider-wide defaultContextLength (200000), understating the real window.
     {
-      id: "minimax-m3-free",
-      name: "MiniMax M3 Free",
+      id: "muse-spark-1.2",
+      name: "Muse Spark 1.2",
+      supportsReasoning: true,
+      targetFormat: "openai-responses",
       contextLength: 1048576,
-      supportsVision: true,
+      maxOutputTokens: 131072,
     },
-    { id: "minimax-m2.5-free", name: "MiniMax M2.5 Free", contextLength: 204800 },
-    { id: "ling-2.6-1t-free", name: "Ling 2.6 Free", contextLength: 262000 },
     {
-      id: "trinity-large-preview-free",
-      name: "Trinity Large Preview Free",
-      contextLength: 131000,
+      id: "muse-spark-1.2-contributor-free",
+      name: "Muse Spark 1.2 Contributor Free",
+      supportsReasoning: true,
+      targetFormat: "openai-responses",
+      contextLength: 1048576,
+      maxOutputTokens: 131072,
     },
-    { id: "nemotron-3-super-free", name: "Nemotron 3 Super Free", contextLength: 1000000 },
+    // Muse Spark 1.3 is served only on the Responses API, same as 1.2 above.
+    // Its window matches the published OpenCode catalog instead of the
+    // 200000 provider default.
     {
-      id: "qwen3.6-plus-free",
-      name: "Qwen3.6 Plus Free",
-      targetFormat: "claude",
-      supportsVision: false,
-      contextLength: 200000,
+      id: "muse-spark-1.3",
+      name: "Muse Spark 1.3",
+      supportsReasoning: true,
+      targetFormat: "openai-responses",
+      contextLength: 1048576,
+      maxOutputTokens: 131072,
     },
+    {
+      id: "muse-spark-1.3-contributor-free",
+      name: "Muse Spark 1.3 Contributor Free",
+      supportsReasoning: true,
+      targetFormat: "openai-responses",
+      contextLength: 1048576,
+      maxOutputTokens: 131072,
+    },
+    { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free", supportsReasoning: true },
+    // #6998: 2026-07-14 refresh — the upstream free tier rotated its lineup;
+    // minimax-m3-free, minimax-m2.5-free, ling-2.6-1t-free,
+    // trinity-large-preview-free, nemotron-3-super-free and qwen3.6-plus-free
+    // were delisted (401 "Model X is not supported") and replaced by the 4
+    // entries below, confirmed live against
+    // https://opencode.ai/zen/v1/chat/completions.
+    { id: "mimo-v2.5-free", name: "MiMo V2.5 Free", contextLength: 1048576 },
+    // MiMo V2.6 Flash Free ships a 1M window upstream (same as V2.5); without
+    // this row it falls through to the 200000 provider default and clients
+    // compact far too early.
+    {
+      id: "mimo-v2.6-flash-free",
+      name: "MiMo V2.6 Flash Free",
+      contextLength: 1048576,
+      maxOutputTokens: 131072,
+    },
+    { id: "hy3-free", name: "HY3 Free", contextLength: 131000 },
+    { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra Free", contextLength: 1000000 },
+    { id: "north-mini-code-free", name: "North Mini Code Free", contextLength: 131000 },
   ],
 };

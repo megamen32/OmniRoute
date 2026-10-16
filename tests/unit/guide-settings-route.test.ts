@@ -9,20 +9,20 @@ import * as yaml from "js-yaml";
 const guideSettingsRoute =
   await import("../../src/app/api/cli-tools/guide-settings/[toolId]/route.ts");
 
-const DUMMY_HOME = path.join(os.tmpdir(), "omniroute-qwen-test-" + Date.now());
-const QWEN_CONFIG_PATH = path.join(DUMMY_HOME, ".qwen", "settings.json");
-const QWEN_ENV_PATH = path.join(DUMMY_HOME, ".qwen", ".env");
+const DUMMY_HOME = path.join(os.tmpdir(), "omniroute-guide-settings-test-" + Date.now());
 const OPENCODE_CONFIG_PATH = path.join(DUMMY_HOME, ".config", "opencode", "opencode.json");
+const OPENCODE_JSONC_CONFIG_PATH = path.join(DUMMY_HOME, ".config", "opencode", "opencode.jsonc");
 // cliRuntime.ts hermes entry maps to .config/hermes/config.json (not .hermes/config.yaml)
 const HERMES_CONFIG_PATH = path.join(DUMMY_HOME, ".config", "hermes", "config.json");
 const originalXDG = process.env.XDG_CONFIG_HOME;
 const originalAppData = process.env.APPDATA;
 const originalJwtSecret = process.env.JWT_SECRET;
+const originalAllowContainerWrite = process.env.OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE;
 
 async function createAuthCookie() {
   process.env.JWT_SECRET = "test-cli-tools-secret";
   const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-  const token = await new SignJWT({ sub: "test-user" })
+  const token = await new SignJWT({ authenticated: true, sub: "test-user" })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("1h")
@@ -31,18 +31,14 @@ async function createAuthCookie() {
   return `auth_token=${token}`;
 }
 
-type QwenProviderEntry = {
-  id?: string;
-  baseUrl?: string;
-  envKey?: string;
-  generationConfig?: {
-    contextWindowSize?: number;
-  };
+type HermesConfig = {
+  model?: { default?: string; provider?: string; base_url?: string };
+  providers?: { omniroute?: { base_url?: string; api_key?: string } };
 };
 
-async function buildRequest(body: any) {
+async function buildRequest(toolId: string, body: unknown) {
   const cookie = await createAuthCookie();
-  return new Request("http://localhost/api/cli-tools/guide-settings/qwen", {
+  return new Request(`http://localhost/api/cli-tools/guide-settings/${toolId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", cookie },
     body: JSON.stringify(body),
@@ -57,41 +53,29 @@ test.beforeEach(async () => {
   process.env.XDG_CONFIG_HOME = path.join(DUMMY_HOME, ".config");
   process.env.APPDATA = path.join(DUMMY_HOME, ".config");
   process.env.API_KEY_SECRET = "test-secret";
-  await fs.mkdir(path.dirname(QWEN_CONFIG_PATH), { recursive: true }).catch(() => {});
+  // This suite exercises the config write/merge path, not the container guard
+  // (#10057, covered by cli-container-write-guard tests) — keep it hermetic on
+  // container devboxes/CI runners where /.dockerenv makes the guard answer 422.
+  process.env.OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE = "1";
 });
 
 test.afterEach(async () => {
-  await fs.rm(DUMMY_HOME, { recursive: true, force: true }).catch(() => {});
+  await fs
+    .rm(DUMMY_HOME, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    .catch(() => {});
   if (originalXDG === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalXDG;
   if (originalAppData === undefined) delete process.env.APPDATA;
   else process.env.APPDATA = originalAppData;
   if (originalJwtSecret === undefined) delete process.env.JWT_SECRET;
   else process.env.JWT_SECRET = originalJwtSecret;
-});
-
-test("guide-settings POST creates new qwen settings.json if it doesn't exist", async () => {
-  const req = await buildRequest({
-    baseUrl: "http://my-omni",
-    apiKey: "sk-123",
-    model: "qwen/qwen3-coder-plus",
-  });
-  const response = (await guideSettingsRoute.POST(req, { params: { toolId: "qwen" } })) as Response;
-  const data = (await response.json()) as any;
-
-  assert.equal(response.status, 200, "Response should be OK");
-  assert.equal(data.success, true);
-
-  const content = JSON.parse(await fs.readFile(QWEN_CONFIG_PATH, "utf-8"));
-  // Uses security.auth format (not modelProviders)
-  assert.equal(content.security?.auth?.selectedType, "openai");
-  assert.ok(content.security?.auth?.apiKey.startsWith("sk-"));
-  assert.equal(content.security?.auth?.baseUrl, "http://my-omni");
-  assert.equal(content.model?.name, "qwen/qwen3-coder-plus");
+  if (originalAllowContainerWrite === undefined)
+    delete process.env.OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE;
+  else process.env.OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE = originalAllowContainerWrite;
 });
 
 test("guide-settings POST creates new hermes config.yaml if it doesn't exist", async () => {
-  const req = await buildRequest({
+  const req = await buildRequest("hermes", {
     baseUrl: "http://my-omni",
     apiKey: "sk-hermes",
     model: "gpt-5.4-mini",
@@ -99,45 +83,17 @@ test("guide-settings POST creates new hermes config.yaml if it doesn't exist", a
   const response = (await guideSettingsRoute.POST(req, {
     params: { toolId: "hermes" },
   })) as Response;
-  const data = (await response.json()) as any;
+  const data = (await response.json()) as { success?: boolean };
 
   assert.equal(response.status, 200, "Response should be OK");
   assert.equal(data.success, true);
 
-  const content = yaml.load(await fs.readFile(HERMES_CONFIG_PATH, "utf-8")) as any;
+  const content = yaml.load(await fs.readFile(HERMES_CONFIG_PATH, "utf-8")) as HermesConfig;
   assert.equal(content.model?.default, "gpt-5.4-mini");
   assert.equal(content.model?.provider, "omniroute");
   assert.equal(content.model?.base_url, "http://my-omni/v1");
   assert.equal(content.providers?.omniroute?.base_url, "http://my-omni/v1");
   assert.ok(String(content.providers?.omniroute?.api_key || "").startsWith("sk-"));
-});
-
-test("guide-settings POST merges into existing qwen settings.json", async () => {
-  await fs.mkdir(path.dirname(QWEN_CONFIG_PATH), { recursive: true });
-  await fs.writeFile(
-    QWEN_CONFIG_PATH,
-    JSON.stringify({
-      permissions: { allow: ["Bash(*)"] },
-    }),
-    "utf-8"
-  );
-
-  const req = await buildRequest({
-    baseUrl: "http://my-omni",
-    apiKey: "sk-456",
-    model: "claude-sonnet-4-6",
-  });
-  const response = await guideSettingsRoute.POST(req, { params: { toolId: "qwen" } });
-  assert.equal(response.status, 200);
-
-  const content = JSON.parse(await fs.readFile(QWEN_CONFIG_PATH, "utf-8"));
-  // security.auth format
-  assert.equal(content.security?.auth?.selectedType, "openai");
-  assert.ok(content.security?.auth?.apiKey.startsWith("sk-"));
-  assert.equal(content.security?.auth?.baseUrl, "http://my-omni");
-  assert.equal(content.model?.name, "claude-sonnet-4-6");
-  // Preserves other settings
-  assert.deepEqual(content.permissions?.allow, ["Bash(*)"]);
 });
 
 test("guide-settings POST writes OpenCode config with current schema and multi-model selection", async () => {
@@ -181,7 +137,11 @@ test("guide-settings POST writes OpenCode config with current schema and multi-m
     "cc/claude-sonnet-4-20250514",
     "gg/gemini-2.5-pro",
   ]);
-  assert.equal(content.providers, undefined);
+  // The v2 provider schema is dual-written alongside the v1 block: the v2
+  // entry lives under `providers.omniroute` with `package`/`settings`.
+  assert.equal(content.providers.omniroute.package, "@opencode-ai/ai/providers/openai-compatible");
+  assert.equal(content.providers.omniroute.settings.baseURL, "http://my-omni/v1");
+  assert.ok(content.providers.omniroute.settings.apiKey.startsWith("sk-"));
 });
 
 test("guide-settings POST preserves existing OpenCode config fields while only updating provider.omniroute", async () => {
@@ -252,7 +212,74 @@ test("guide-settings POST preserves existing OpenCode config fields while only u
   assert.equal(content.provider.omniroute.options.baseURL, "http://my-omni/v1");
   assert.ok(content.provider.omniroute.options.apiKey.startsWith("sk-"));
   assert.deepEqual(content.provider.omniroute.models, {
-    "cx/gpt-5.6-sol": { name: "GPT-5.6 Sol" },
-    "opencode-go/kimi-k2.6": { name: "Kimi K2.6" },
+    "cx/gpt-5.6-sol": {
+      name: "GPT-5.6 Sol",
+      limit: { context: 128_000, output: 8192 },
+    },
+    "opencode-go/kimi-k2.6": {
+      name: "Kimi K2.6",
+      limit: { context: 128_000, output: 8192 },
+    },
   });
+});
+
+test("guide-settings POST writes catalog limits and falls back when a model is absent (#15406)", async () => {
+  const req = await buildRequest("opencode", {
+    baseUrl: "http://localhost:20128/v1",
+    apiKey: "sk-123",
+    model: "cx/known-model",
+    models: ["cx/known-model", "unknown/model"],
+    modelLabels: { "cx/known-model": "Known model" },
+    catalog: [
+      {
+        id: "cx/known-model",
+        context_length: 200_000,
+        max_output_tokens: 32_000,
+        capabilities: { reasoning: true },
+      },
+    ],
+  });
+  const response = (await guideSettingsRoute.POST(req, {
+    params: { toolId: "opencode" },
+  })) as Response;
+  assert.equal(response.status, 200);
+
+  const content = parse(await fs.readFile(OPENCODE_CONFIG_PATH, "utf-8"));
+  const known = content.provider.omniroute.models["cx/known-model"];
+  assert.equal(known.limit.context, 200_000);
+  assert.equal(known.limit.output, 32_000);
+  assert.notEqual(known.limit.context, 128_000);
+  assert.notEqual(known.limit.output, 8_192);
+  assert.equal(known.reasoning, true);
+
+  const unknown = content.provider.omniroute.models["unknown/model"];
+  assert.equal(unknown.limit.context, 128_000);
+  assert.equal(unknown.limit.output, 8_192);
+  assert.equal(unknown.reasoning, undefined);
+
+  assert.equal(content.providers.omniroute.models["cx/known-model"].limit.context, 200_000);
+  assert.equal(content.providers.omniroute.models["cx/known-model"].limit.output, 32_000);
+  assert.equal(content.providers.omniroute.models["unknown/model"].limit.context, 128_000);
+  assert.equal(content.providers.omniroute.models["unknown/model"].limit.output, 8_192);
+});
+
+test("guide-settings POST refuses to overwrite an invalid opencode.jsonc (#10227)", async () => {
+  const invalidJsonc = "{ invalid jsonc\n";
+  await fs.mkdir(path.dirname(OPENCODE_JSONC_CONFIG_PATH), { recursive: true });
+  await fs.writeFile(OPENCODE_JSONC_CONFIG_PATH, invalidJsonc, "utf-8");
+
+  const req = await buildRequest("opencode", {
+    baseUrl: "http://my-omni/v1",
+    apiKey: "sk-123",
+    models: ["cx/gpt-5.6-sol"],
+  });
+  const response = (await guideSettingsRoute.POST(req, {
+    params: { toolId: "opencode" },
+  })) as Response;
+  const data = (await response.json()) as { error?: string };
+
+  assert.equal(response.status, 500);
+  assert.match(data.error || "", /invalid JSONC.*refusing to overwrite/i);
+  assert.equal(await fs.readFile(OPENCODE_JSONC_CONFIG_PATH, "utf-8"), invalidJsonc);
+  await assert.rejects(fs.access(OPENCODE_CONFIG_PATH));
 });

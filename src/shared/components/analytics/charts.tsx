@@ -3,7 +3,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import Card from "../Card";
-import { getModelColor } from "@/shared/constants/colors";
+import Tooltip from "../Tooltip";
 import { PROVIDER_COLORS } from "./chartColors";
 import {
   fmtCompact as fmt,
@@ -49,23 +49,63 @@ export function StatCard({
   label,
   value,
   subValue,
+  tooltip,
   color = "text-text-main",
 }: {
   icon: any;
   label: any;
   value: any;
   subValue?: any;
+  tooltip?: string;
   color?: string;
 }) {
+  const isCost = String(label).toLowerCase().includes("cost");
+  const tooltipText = tooltip
+    ? String(tooltip).includes(":")
+      ? tooltip
+      : isCost
+        ? `cost : ${String(tooltip).startsWith("$") ? tooltip : `$${tooltip}`}`
+        : `tokens : ${tooltip} tokens`
+    : null;
+
+  const valueElement = (
+    <span
+      className={`text-2xl font-bold ${color} truncate cursor-default`}
+      data-tooltip={tooltip}
+      title={tooltip ? undefined : String(value)}
+    >
+      {value}
+    </span>
+  );
+
   return (
     <Card className="px-4 py-3 flex flex-col gap-1 min-w-0">
       <div className="flex items-center gap-1.5 text-text-muted text-[11px] uppercase font-semibold tracking-wide min-w-0">
         <span className="material-symbols-outlined text-[14px] shrink-0">{icon}</span>
         <span className="truncate">{label}</span>
       </div>
-      <span className={`text-2xl font-bold ${color} truncate`} title={String(value)}>
-        {value}
-      </span>
+      {tooltipText ? (
+        <Tooltip
+          content={
+            <div className="flex flex-col gap-0.5 text-left py-0.5 min-w-[140px]">
+              <div className="font-semibold text-white/95 text-xs">{label}</div>
+              <div
+                className={`font-mono text-xs ${
+                  color && color !== "text-text-main" ? color : "text-violet-400"
+                } tracking-wide`}
+              >
+                {tooltipText}
+              </div>
+            </div>
+          }
+          className="w-fit max-w-full"
+          delayMs={150}
+        >
+          {valueElement}
+        </Tooltip>
+      ) : (
+        valueElement
+      )}
       {subValue && <span className="text-xs text-text-muted truncate">{subValue}</span>}
     </Card>
   );
@@ -75,7 +115,7 @@ export function StatCard({
 
 export type CompactStatSection = {
   title: string;
-  items: Array<{ icon: string; label: string; value: any; color?: string }>;
+  items: Array<{ icon: string; label: string; value: any; tooltip?: string; color?: string }>;
   /** On mobile use 1 column instead of 2 — useful when values can be long (model names, etc.) */
   wideValues?: boolean;
 };
@@ -99,28 +139,56 @@ export function CompactStatGrid({ sections }: { sections: CompactStatSection[] }
                   : "grid grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-2"
               }
             >
-              {section.items.map((stat, i) => (
-                <div key={i} className="flex items-center justify-between gap-2 min-w-0 py-0.5">
-                  <div
-                    className={`flex items-center gap-1.5 ${section.wideValues ? "shrink-0" : "min-w-0"}`}
-                  >
-                    <span className="material-symbols-outlined text-[14px] text-text-muted shrink-0">
-                      {stat.icon}
-                    </span>
-                    <span
-                      className={`text-[11px] uppercase font-semibold tracking-wide text-text-muted ${section.wideValues ? "whitespace-nowrap" : "truncate"}`}
-                    >
-                      {stat.label}
-                    </span>
-                  </div>
+              {section.items.map((stat, i) => {
+                const statValueEl = (
                   <span
-                    className={`text-sm font-bold text-right ${section.wideValues ? "truncate min-w-0" : "shrink-0"} ${stat.color || "text-text-main"}`}
-                    title={String(stat.value)}
+                    className={`text-sm font-bold text-right cursor-default ${section.wideValues ? "truncate min-w-0" : "shrink-0"} ${stat.color || "text-text-main"}`}
+                    data-tooltip={stat.tooltip}
+                    title={stat.tooltip ? undefined : String(stat.value)}
                   >
                     {stat.value}
                   </span>
-                </div>
-              ))}
+                );
+
+                return (
+                  <div key={i} className="flex items-center justify-between gap-2 min-w-0 py-0.5">
+                    <div
+                      className={`flex items-center gap-1.5 ${section.wideValues ? "shrink-0" : "min-w-0"}`}
+                    >
+                      <span className="material-symbols-outlined text-[14px] text-text-muted shrink-0">
+                        {stat.icon}
+                      </span>
+                      <span
+                        className={`text-[11px] uppercase font-semibold tracking-wide text-text-muted ${section.wideValues ? "whitespace-nowrap" : "truncate"}`}
+                      >
+                        {stat.label}
+                      </span>
+                    </div>
+                    {stat.tooltip ? (
+                      <Tooltip
+                        content={
+                          <div className="flex flex-col gap-0.5 text-left py-0.5 min-w-[120px]">
+                            <div className="font-semibold text-white/95 text-xs">{stat.label}</div>
+                            <div
+                              className={`font-mono text-xs ${stat.color || "text-violet-400"} tracking-wide`}
+                            >
+                              {String(stat.tooltip).includes(":")
+                                ? stat.tooltip
+                                : `${stat.label.toLowerCase().includes("cost") ? "cost" : "tokens"} : ${stat.tooltip}`}
+                            </div>
+                          </div>
+                        }
+                        className={section.wideValues ? "truncate min-w-0" : "shrink-0"}
+                        delayMs={150}
+                      >
+                        {statValueEl}
+                      </Tooltip>
+                    ) : (
+                      statValueEl
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -133,7 +201,13 @@ export function CompactStatGrid({ sections }: { sections: CompactStatSection[] }
 
 export function ActivityHeatmap({ activityMap }) {
   const t = useTranslations("analytics");
+  const locale = useLocale();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const monthFormatter = useMemo(() => createDateFormatter(locale, { month: "short" }), [locale]);
+  const weekdayFormatter = useMemo(
+    () => createDateFormatter(locale, { weekday: "short" }),
+    [locale]
+  );
 
   const cells = useMemo(() => {
     const today = new Date();
@@ -184,27 +258,18 @@ export function ActivityHeatmap({ activityMap }) {
       if (firstDay) {
         const m = new Date(firstDay.date).getMonth();
         if (m !== lastMonth) {
-          const monthNames = [
-            "Jan",
-            "Feb",
-            "Mar",
-            "Apr",
-            "May",
-            "Jun",
-            "Jul",
-            "Aug",
-            "Sep",
-            "Oct",
-            "Nov",
-            "Dec",
-          ];
-          labels.push({ weekIdx, label: monthNames[m] });
+          labels.push({ weekIdx, label: monthFormatter.format(new Date(2024, m, 1)) });
           lastMonth = m;
         }
       }
     });
     return labels;
-  }, [weeks]);
+  }, [monthFormatter, weeks]);
+
+  const weekdayLabels = useMemo(
+    () => [1, 3, 5].map((day) => weekdayFormatter.format(new Date(2024, 0, 7 + day))),
+    [weekdayFormatter]
+  );
 
   function getCellColor(value) {
     if (!value || value === 0) return "bg-white/[0.04]";
@@ -222,9 +287,13 @@ export function ActivityHeatmap({ activityMap }) {
           {t("overview")}
         </h3>
         <span className="text-xs text-text-muted">
-          {Object.keys(activityMap || {}).length} active days ·{" "}
-          {fmt(Object.values(activityMap || {}).reduce((a: number, b: number) => a + b, 0))} tokens
-          · 365 days
+          {t("activitySummary", {
+            active: Object.keys(activityMap || {}).length,
+            tokens: fmt(
+              Object.values(activityMap || {}).reduce((a: number, b: number) => a + b, 0)
+            ),
+            days: 365,
+          })}
         </span>
       </div>
 
@@ -249,11 +318,11 @@ export function ActivityHeatmap({ activityMap }) {
           <div className="flex gap-[3px]">
             <div className="flex flex-col gap-[3px] shrink-0 text-[10px] text-text-muted pr-1 sticky left-0 z-10 bg-surface">
               <span className="h-[10px]"></span>
-              <span className="h-[10px] leading-[10px]">Mon</span>
+              <span className="h-[10px] leading-[10px]">{weekdayLabels[0]}</span>
               <span className="h-[10px]"></span>
-              <span className="h-[10px] leading-[10px]">Wed</span>
+              <span className="h-[10px] leading-[10px]">{weekdayLabels[1]}</span>
               <span className="h-[10px]"></span>
-              <span className="h-[10px] leading-[10px]">Fri</span>
+              <span className="h-[10px] leading-[10px]">{weekdayLabels[2]}</span>
               <span className="h-[10px]"></span>
             </div>
 
@@ -262,7 +331,11 @@ export function ActivityHeatmap({ activityMap }) {
                 {week.map((day, di) => (
                   <div
                     key={di}
-                    title={day ? `${day.date}: ${fmtFull(day.value)} tokens` : ""}
+                    title={
+                      day
+                        ? t("activityCellTitle", { date: day.date, tokens: fmtFull(day.value) })
+                        : ""
+                    }
                     className={`w-[10px] h-[10px] rounded-[2px] ${day ? getCellColor(day.value) : "bg-transparent"}`}
                   />
                 ))}
@@ -273,19 +346,25 @@ export function ActivityHeatmap({ activityMap }) {
       </div>
 
       <div className="flex items-center gap-1 mt-2 ml-6 text-[10px] text-text-muted">
-        <span>Less</span>
+        <span>{t("activityLess")}</span>
         <div className="w-[10px] h-[10px] rounded-[2px] bg-white/[0.04]" />
         <div className="w-[10px] h-[10px] rounded-[2px] bg-primary/20" />
         <div className="w-[10px] h-[10px] rounded-[2px] bg-primary/40" />
         <div className="w-[10px] h-[10px] rounded-[2px] bg-primary/60" />
         <div className="w-[10px] h-[10px] rounded-[2px] bg-primary/90" />
-        <span>More</span>
+        <span>{t("activityMore")}</span>
       </div>
     </Card>
   );
 }
 
-export function ApiKeyTable({ byApiKey }) {
+export function ApiKeyTable({
+  byApiKey,
+  displayMode = "compact",
+}: {
+  byApiKey: any;
+  displayMode?: "compact" | "exact";
+}) {
   const t = useTranslations("analytics");
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState("totalTokens");
@@ -334,7 +413,7 @@ export function ApiKeyTable({ byApiKey }) {
     return (
       <Card className="p-4 flex-1">
         <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wider mb-3">
-          API Key Breakdown
+          {t("chartApiKeyBreakdown")}
         </h3>
         <div className="text-center text-text-muted text-sm py-8">{t("chartNoData")}</div>
       </Card>
@@ -345,7 +424,7 @@ export function ApiKeyTable({ byApiKey }) {
     <Card className="overflow-hidden">
       <div className="p-4 border-b border-border flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wider">
-          API Key Breakdown
+          {t("chartApiKeyBreakdown")}
         </h3>
         <input
           type="text"
@@ -363,7 +442,8 @@ export function ApiKeyTable({ byApiKey }) {
                 className="px-4 py-2.5 text-left cursor-pointer group"
                 onClick={() => toggleSort("apiKeyName")}
               >
-                API Key <SortIndicator active={sortBy === "apiKeyName"} sortOrder={sortOrder} />
+                {t("chartApiKey")}{" "}
+                <SortIndicator active={sortBy === "apiKeyName"} sortOrder={sortOrder} />
               </th>
               <th
                 className="px-4 py-2.5 text-right cursor-pointer group"
@@ -415,14 +495,35 @@ export function ApiKeyTable({ byApiKey }) {
                 <td className="px-4 py-2.5 text-right font-mono text-text-muted">
                   {fmtFull(row.requests)}
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono text-primary">
-                  {fmt(row.promptTokens)}
+                <td
+                  className="px-4 py-2.5 text-right font-mono text-primary"
+                  title={
+                    displayMode === "exact"
+                      ? `~${fmt(row.promptTokens)}`
+                      : fmtFull(row.promptTokens)
+                  }
+                >
+                  {displayMode === "exact" ? fmtFull(row.promptTokens) : fmt(row.promptTokens)}
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono text-emerald-500">
-                  {fmt(row.completionTokens)}
+                <td
+                  className="px-4 py-2.5 text-right font-mono text-emerald-500"
+                  title={
+                    displayMode === "exact"
+                      ? `~${fmt(row.completionTokens)}`
+                      : fmtFull(row.completionTokens)
+                  }
+                >
+                  {displayMode === "exact"
+                    ? fmtFull(row.completionTokens)
+                    : fmt(row.completionTokens)}
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono font-semibold">
-                  {fmt(row.totalTokens)}
+                <td
+                  className="px-4 py-2.5 text-right font-mono font-semibold"
+                  title={
+                    displayMode === "exact" ? `~${fmt(row.totalTokens)}` : fmtFull(row.totalTokens)
+                  }
+                >
+                  {displayMode === "exact" ? fmtFull(row.totalTokens) : fmt(row.totalTokens)}
                 </td>
                 <td className="px-4 py-2.5 text-right font-mono text-amber-500">
                   {fmtCost(row.cost)}
@@ -444,6 +545,7 @@ export function ApiKeyTable({ byApiKey }) {
 }
 
 export function MostActiveDay7d({ activityMap }) {
+  const t = useTranslations("analytics");
   const locale = useLocale();
   const weekdayFormatter = useMemo(
     () => createDateFormatter(locale, { weekday: "long" }),
@@ -485,20 +587,37 @@ export function MostActiveDay7d({ activityMap }) {
         className="text-xs font-semibold uppercase tracking-wider mb-2"
         style={{ color: "var(--color-text-muted)" }}
       >
-        Most Active Day
+        {t("mostActiveDay")}
       </h3>
       {data ? (
         <>
           <span className="text-xl font-bold capitalize" style={{ lineHeight: 1.2 }}>
             {data.weekday}
           </span>
-          <span className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-            {data.label} · {fmt(data.tokens)} tokens
-          </span>
+          <Tooltip
+            content={
+              <div className="flex flex-col gap-0.5 text-left py-0.5 min-w-[140px]">
+                <div className="font-semibold text-white/95 text-xs">{data.weekday}</div>
+                <div className="font-mono text-xs text-violet-400 tracking-wide">
+                  tokens : {fmtFull(data.tokens)} tokens
+                </div>
+              </div>
+            }
+            className="w-fit max-w-full"
+            delayMs={150}
+          >
+            <span
+              className="text-xs mt-1 cursor-default"
+              style={{ color: "var(--color-text-muted)" }}
+              data-tooltip={fmtFull(data.tokens)}
+            >
+              {t("datedTokenCount", { date: data.label, tokens: fmt(data.tokens) })}
+            </span>
+          </Tooltip>
         </>
       ) : (
         <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-          No data in the last 7 days
+          {t("noDataLast7Days")}
         </span>
       )}
     </Card>
@@ -555,13 +674,13 @@ export function WeeklySquares7d({ activityMap }) {
         {t("chartWeekly")}
       </h3>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 6, justifyContent: "center" }}>
-        {days.map((d, i) => (
+        {days.map((d) => (
           <div
             key={d.key}
             style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}
           >
             <div
-              title={`${d.dateLabel}: ${fmtFull(d.val)} tokens`}
+              title={t("activityCellTitle", { date: d.dateLabel, tokens: fmtFull(d.val) })}
               style={{
                 width: 36,
                 height: 36,
@@ -588,143 +707,9 @@ export function WeeklySquares7d({ activityMap }) {
   );
 }
 
-// ── ModelTable ──────────────────────────────────────────────────────────────
+// ── ModelTable (extracted — see ModelTable.tsx / #8769) ───────────────────
 
-export function ModelTable({ byModel, summary }) {
-  const t = useTranslations("analytics");
-  const [sortBy, setSortBy] = useState("totalTokens");
-  const [sortOrder, setSortOrder] = useState("desc");
-
-  const toggleSort = useCallback(
-    (field) => {
-      if (sortBy === field) {
-        setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
-      } else {
-        setSortBy(field);
-        setSortOrder("desc");
-      }
-    },
-    [sortBy]
-  );
-
-  const sorted = useMemo(() => {
-    const arr = [...(byModel || [])];
-    arr.sort((a, b) => {
-      const va = a[sortBy] ?? 0;
-      const vb = b[sortBy] ?? 0;
-      if (typeof va === "string")
-        return sortOrder === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      return sortOrder === "asc" ? va - vb : vb - va;
-    });
-    return arr;
-  }, [byModel, sortBy, sortOrder]);
-
-  return (
-    <Card className="overflow-hidden">
-      <div className="p-4 border-b border-border">
-        <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wider">
-          {t("chartModelBreakdown")}
-        </h3>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="text-xs text-text-muted uppercase bg-black/[0.02] dark:bg-white/[0.02]">
-            <tr>
-              <th
-                className="px-4 py-2.5 text-left cursor-pointer group"
-                onClick={() => toggleSort("model")}
-              >
-                {t("chartModel")}{" "}
-                <SortIndicator active={sortBy === "model"} sortOrder={sortOrder} />
-              </th>
-              <th
-                className="px-4 py-2.5 text-right cursor-pointer group"
-                onClick={() => toggleSort("requests")}
-              >
-                {t("chartRequests")}{" "}
-                <SortIndicator active={sortBy === "requests"} sortOrder={sortOrder} />
-              </th>
-              <th
-                className="px-4 py-2.5 text-right cursor-pointer group"
-                onClick={() => toggleSort("promptTokens")}
-              >
-                {t("chartInput")}{" "}
-                <SortIndicator active={sortBy === "promptTokens"} sortOrder={sortOrder} />
-              </th>
-              <th
-                className="px-4 py-2.5 text-right cursor-pointer group"
-                onClick={() => toggleSort("completionTokens")}
-              >
-                {t("chartOutput")}{" "}
-                <SortIndicator active={sortBy === "completionTokens"} sortOrder={sortOrder} />
-              </th>
-              <th
-                className="px-4 py-2.5 text-right cursor-pointer group"
-                onClick={() => toggleSort("totalTokens")}
-              >
-                {t("chartTotal")}{" "}
-                <SortIndicator active={sortBy === "totalTokens"} sortOrder={sortOrder} />
-              </th>
-              <th
-                className="px-4 py-2.5 text-right cursor-pointer group"
-                onClick={() => toggleSort("cost")}
-              >
-                {t("chartCost")} <SortIndicator active={sortBy === "cost"} sortOrder={sortOrder} />
-              </th>
-              <th className="px-4 py-2.5 text-right w-36">{t("chartShare")}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {sorted.map((m, i) => (
-              <tr
-                key={m.model}
-                className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
-              >
-                <td className="px-4 py-2.5">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: getModelColor(i) }}
-                    />
-                    <span className="font-medium">{m.model}</span>
-                  </div>
-                </td>
-                <td className="px-4 py-2.5 text-right font-mono text-text-muted">
-                  {fmtFull(m.requests)}
-                </td>
-                <td className="px-4 py-2.5 text-right font-mono text-primary">
-                  {fmt(m.promptTokens)}
-                </td>
-                <td className="px-4 py-2.5 text-right font-mono text-emerald-500">
-                  {fmt(m.completionTokens)}
-                </td>
-                <td className="px-4 py-2.5 text-right font-mono font-semibold">
-                  {fmt(m.totalTokens)}
-                </td>
-                <td className="px-4 py-2.5 text-right font-mono text-amber-500">
-                  {fmtCost(m.cost)}
-                </td>
-                <td className="px-4 py-2.5 text-right">
-                  <div className="flex items-center gap-2 justify-end">
-                    <div className="w-16 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{ width: `${m.pct}%`, backgroundColor: getModelColor(i) }}
-                      />
-                    </div>
-                    <span className="text-xs font-mono text-text-muted w-10 text-right">
-                      {m.pct}%
-                    </span>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
-}
+export { ModelTable } from "./ModelTable";
 
 function getServiceTierIcon(serviceTier) {
   if (serviceTier === "priority") return "bolt";
@@ -750,6 +735,7 @@ function getServiceTierCostClass(serviceTier) {
 
 export function ServiceTierBreakdown({ byServiceTier, summary }) {
   const t = useTranslations("costs") as TranslationFn;
+  const tAnalytics = useTranslations("analytics");
   const data = useMemo(() => byServiceTier || [], [byServiceTier]);
   const totalRequests = Number(summary?.totalRequests || 0);
   const totalCost = Number(summary?.totalCost || 0);
@@ -807,7 +793,10 @@ export function ServiceTierBreakdown({ byServiceTier, summary }) {
                   <div>
                     <div className="text-sm font-semibold text-text-main">{tierLabel}</div>
                     <div className="text-xs text-text-muted">
-                      {fmtFull(tier.requests)} requests · {fmt(tier.totalTokens)} tokens
+                      {tAnalytics("requestTokenSummary", {
+                        requests: fmtFull(tier.requests),
+                        tokens: fmt(tier.totalTokens),
+                      })}
                       {usageSavingsText}
                     </div>
                   </div>
@@ -866,7 +855,13 @@ export function UsageDetail({ summary }) {
 
 // ── ProviderTable ──────────────────────────────────────────────────────────
 
-export function ProviderTable({ byProvider }) {
+export function ProviderTable({
+  byProvider,
+  displayMode = "compact",
+}: {
+  byProvider: any;
+  displayMode?: "compact" | "exact";
+}) {
   const t = useTranslations("analytics");
   const [sortBy, setSortBy] = useState("totalTokens");
   const [sortOrder, setSortOrder] = useState("desc");
@@ -969,7 +964,7 @@ export function ProviderTable({ byProvider }) {
               const pct = totalTokens > 0 ? ((p.totalTokens / totalTokens) * 100).toFixed(1) : "0";
               return (
                 <tr
-                  key={p.provider}
+                  key={`${p.provider}-${i}`}
                   className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                 >
                   <td className="px-4 py-2.5">
@@ -984,14 +979,33 @@ export function ProviderTable({ byProvider }) {
                   <td className="px-4 py-2.5 text-right font-mono text-text-muted">
                     {fmtFull(p.requests)}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-primary">
-                    {fmt(p.promptTokens)}
+                  <td
+                    className="px-4 py-2.5 text-right font-mono text-primary"
+                    title={
+                      displayMode === "exact" ? `~${fmt(p.promptTokens)}` : fmtFull(p.promptTokens)
+                    }
+                  >
+                    {displayMode === "exact" ? fmtFull(p.promptTokens) : fmt(p.promptTokens)}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-emerald-500">
-                    {fmt(p.completionTokens)}
+                  <td
+                    className="px-4 py-2.5 text-right font-mono text-emerald-500"
+                    title={
+                      displayMode === "exact"
+                        ? `~${fmt(p.completionTokens)}`
+                        : fmtFull(p.completionTokens)
+                    }
+                  >
+                    {displayMode === "exact"
+                      ? fmtFull(p.completionTokens)
+                      : fmt(p.completionTokens)}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold">
-                    {fmt(p.totalTokens)}
+                  <td
+                    className="px-4 py-2.5 text-right font-mono font-semibold"
+                    title={
+                      displayMode === "exact" ? `~${fmt(p.totalTokens)}` : fmtFull(p.totalTokens)
+                    }
+                  >
+                    {displayMode === "exact" ? fmtFull(p.totalTokens) : fmt(p.totalTokens)}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-amber-500">
                     {fmtCost(p.cost)}

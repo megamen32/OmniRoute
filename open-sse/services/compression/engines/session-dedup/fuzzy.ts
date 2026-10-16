@@ -1,5 +1,5 @@
 // open-sse/services/compression/engines/session-dedup/fuzzy.ts
-import { storeBlock } from "../ccr/index.ts";
+import { buildCcrMarker, tryStoreBlock } from "../ccr/index.ts";
 
 type MessageLike = { role?: string; content?: unknown; [key: string]: unknown };
 
@@ -111,8 +111,9 @@ export function applyFuzzyPass(messages: MessageLike[], opts: FuzzyPassOptions):
 
     const replacements = new Map<number, string>();
     for (const nd of nearDups) {
-      const hash = storeBlock(nd.block.text, opts.principalId);
-      const marker = `[CCR retrieve hash=${hash} chars=${nd.block.text.length}]`;
+      const stored = tryStoreBlock(nd.block.text, opts.principalId, { source: "session-dedup" });
+      if (!stored.stored) continue;
+      const marker = buildCcrMarker(stored.hash, nd.block.text.length);
       if (marker.length < nd.block.text.length) replacements.set(nd.block.index, marker);
     }
     if (replacements.size === 0) return { messages, fuzzyCount: 0 };
@@ -135,14 +136,18 @@ export function runFuzzyPass(
   messages: MessageLike[],
   stepConfig: Record<string, unknown>,
   minBlockChars: number,
-  principalId?: string
+  principalId?: string,
+  callerCanRetrieve = false
 ): FuzzyPassResult {
   const raw = stepConfig["fuzzy"] as
-    | boolean
-    | { enabled?: boolean; minJaccard?: number; shingleSize?: number }
-    | undefined;
+    boolean | { enabled?: boolean; minJaccard?: number; shingleSize?: number } | undefined;
   const cfg = typeof raw === "boolean" ? { enabled: raw } : raw;
   if (!cfg?.enabled) return { messages, fuzzyCount: 0 };
+  // The replacement is a [CCR retrieve] marker. A caller that does not advertise
+  // omniroute_ccr_retrieve cannot expand it, so the near-duplicate text would be
+  // stranded. Skip the whole pass for them; exact dedup (a [dedup:ref] marker the
+  // model resolves by looking back) does not need a tool and stays unaffected.
+  if (!callerCanRetrieve) return { messages, fuzzyCount: 0 };
   return applyFuzzyPass(messages, {
     minJaccard: typeof cfg.minJaccard === "number" ? cfg.minJaccard : 0.85,
     shingleSize: typeof cfg.shingleSize === "number" ? cfg.shingleSize : 3,

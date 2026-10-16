@@ -1,7 +1,11 @@
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
-import { getFreeProxyStats } from "@/lib/localDb";
+import { getFreeProxyStats } from "@/lib/db/freeProxies";
 import { getAllProviders } from "@/lib/freeProxyProviders";
+import {
+  isFreeProxyAutoSyncEnabled,
+  getFreeProxyAutoSyncIntervalMs,
+} from "@/lib/freeProxyProviders/scheduler";
 
 export async function GET(request: Request) {
   const authError = await requireManagementAuth(request);
@@ -14,7 +18,11 @@ export async function GET(request: Request) {
       name: p.name,
       enabled: p.isEnabled(),
     }));
-    return Response.json({ stats, providers });
+    const autoSync = {
+      enabled: isFreeProxyAutoSyncEnabled(),
+      intervalMs: getFreeProxyAutoSyncIntervalMs(),
+    };
+    return Response.json({ stats, providers, autoSync });
   } catch (error) {
     return createErrorResponseFromUnknown(error, "Failed to get free proxy stats");
   }

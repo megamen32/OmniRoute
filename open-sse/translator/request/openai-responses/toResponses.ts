@@ -4,7 +4,14 @@
  * Extracted verbatim from openai-responses.ts. Registration stays in the host.
  */
 import { isOpenAIResponsesStoreEnabled } from "@/lib/providers/requestDefaults";
+import {
+  isInternalReasoningPlaceholder,
+  requiresReasoningContentPresence,
+} from "../../../utils/reasoningPlaceholder.ts";
+import { getReadableReasoningValue } from "../../../utils/reasoningFields.ts";
 import { generateToolCallId } from "../../helpers/toolCallHelper.ts";
+import { coerceToolCallArguments } from "../../helpers/toolArguments.ts";
+import { chatStrictForResponses } from "../../helpers/toolStrict.ts";
 import {
   JsonRecord,
   RESPONSES_STORE_MARKER,
@@ -27,11 +34,15 @@ import {
 const DEFAULT_RESPONSES_REASONING_SUMMARY = "auto";
 const RESPONSES_REASONING_ENCRYPTED_CONTENT_INCLUDE = "reasoning.encrypted_content";
 
-// Chat Completions `response_format: { type: "json_schema" }` → Responses API `text.format`.
+// Chat Completions JSON `response_format` → Responses API `text.format`.
 // Merges into any existing `result.text` (e.g. verbosity) so structured-output schemas from
 // Chat clients survive the translation to the Responses/Codex upstream (#5933).
 function mapChatResponseFormatToResponsesText(body: JsonRecord, result: JsonRecord): void {
   const responseFormat = toRecord(body.response_format);
+  if (responseFormat.type === "json_object") {
+    result.text = { ...toRecord(result.text), format: { type: "json_object" } };
+    return;
+  }
   if (responseFormat.type !== "json_schema") return;
 
   const jsonSchema = toRecord(responseFormat.json_schema);
@@ -47,6 +58,72 @@ function mapChatResponseFormatToResponsesText(body: JsonRecord, result: JsonReco
   if (jsonSchema.strict !== undefined) format.strict = jsonSchema.strict;
 
   result.text = { ...existingText, format };
+}
+
+// The Responses API rejects text.format json_object with 400 "Response input
+// messages must contain the word 'json'" unless an `input` message says "json";
+// `instructions` does not count. Chat Completions counts the system prompt, and
+// this translator hoists that prompt into `instructions`, so a request that was
+// valid as Chat (JSON asked for only in the system prompt) failed upstream.
+// Prepend a constant developer hint in that case: a fixed prefix keeps
+// the prompt-cache prefix stable across turns.
+const JSON_OBJECT_INPUT_HINT = "Respond with a valid JSON object.";
+
+function ensureJsonObjectInputHint(result: JsonRecord): void {
+  if (toRecord(toRecord(result.text).format).type !== "json_object") return;
+  if (!Array.isArray(result.input)) return;
+  const input = result.input as JsonRecord[];
+  const mentionsJson = input.some((item) => {
+    if (item.type !== "message") return false;
+    if (typeof item.content === "string") return /json/i.test(item.content);
+    return toArray(item.content).some((part) => /json/i.test(toString(toRecord(part).text)));
+  });
+  if (mentionsJson) return;
+  input.unshift({
+    type: "message",
+    role: "developer",
+    content: [{ type: "input_text", text: JSON_OBJECT_INPUT_HINT }],
+  });
+}
+
+// Flatten a Chat-Completions content block into the single string the Responses
+// API `instructions` field takes. `instructions` is a string, not a part array,
+// so the text parts are joined; anything non-textual has no representation there
+// and is dropped, exactly as a string-only client would have sent it.
+function buildInstructionsText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return buildResponsesTextParts(content)
+    .map((partValue) => toString(toRecord(partValue).text))
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+}
+
+// Convert a Chat-Completions content block (string or text-part array) into the
+// Responses API `input_text` part array used by message input items.
+function buildResponsesTextParts(content: unknown): unknown[] {
+  if (typeof content === "string") {
+    return [{ type: "input_text", text: content }];
+  }
+  if (Array.isArray(content)) {
+    const parts: unknown[] = [];
+    for (const partValue of content) {
+      // A bare string inside the content array is a real text instruction
+      // (e.g. a harness-injected system reminder), not a structured part.
+      // Silently dropping it lost the instruction (#6954 follow-up).
+      if (typeof partValue === "string") {
+        parts.push({ type: "input_text", text: partValue });
+        continue;
+      }
+      const part = toRecord(partValue);
+      if (part.type === "text" || typeof part.text === "string") {
+        parts.push({ type: "input_text", text: toString(part.text) });
+      }
+    }
+    return parts.length > 0 ? parts : [{ type: "input_text", text: "" }];
+  }
+  return [{ type: "input_text", text: "" }];
 }
 
 export function openaiToOpenAIResponsesRequest(
@@ -81,9 +158,26 @@ export function openaiToOpenAIResponsesRequest(
 
     if (role === "system" || role === "developer") {
       if (!hasSystemMessage) {
-        result.instructions = typeof msg.content === "string" ? msg.content : "";
+        // A content-part array is valid Chat Completions for `system` too, and
+        // clients that cache their prompt (Anthropic `cache_control`) always
+        // send that shape. Reading only the string case turned the entire
+        // system prompt into "" — accepted upstream, so the model answered
+        // with no instructions at all and nothing in the response said so.
+        result.instructions = buildInstructionsText(msg.content);
         hasSystemMessage = true;
+        continue;
       }
+      // Mid-conversation system/developer turns (e.g. harness-injected reminders
+      // from Claude Code) must survive as developer-role input items. The
+      // Responses API supports the `developer` role for exactly this; mapping
+      // them to `assistant` misattributes harness instructions as model output,
+      // and silently dropping them loses them entirely (#6954).
+      input.push({
+        type: "message",
+        role: "developer",
+        content: buildResponsesTextParts(msg.content),
+        status: "completed",
+      });
       continue;
     }
 
@@ -148,17 +242,51 @@ export function openaiToOpenAIResponsesRequest(
         type: "message",
         role: "user",
         content,
+        status: "completed",
       });
     }
 
     // Convert assistant messages
     if (role === "assistant") {
-      // Skip reasoning_content — OpenAI Responses API requires server-generated
-      // rs_* IDs for reasoning items. Synthesizing client-side IDs (e.g. reasoning_N)
-      // causes 400 errors from Responses-compatible upstreams. (#224)
+      const reasoning = getReadableReasoningValue(msg).trim();
+      if (reasoning && !isInternalReasoningPlaceholder(reasoning)) {
+        // Compatibility is decided before protocol translation; this adapter
+        // only encodes the surviving portable plaintext state.
+        input.push({
+          type: "reasoning",
+          content: [{ type: "reasoning_text", text: reasoning }],
+          // Strict Responses-API upstreams (e.g. opencode/zen) require `summary`
+          // on every `input[]` item of type "reasoning", plaintext or opaque —
+          // omitting it rejects the request with `input[N] missing required
+          // field summary`. This item is always freshly built from a chat
+          // client's plaintext reasoning, so there is no source summary to
+          // preserve; default to an empty array like the replay sanitizer does
+          // for opaque items in reasoningInputPolicy.ts (#11108).
+          summary: [],
+        });
+      } else if (
+        isInternalReasoningPlaceholder(reasoning) &&
+        requiresReasoningContentPresence(credentialRecord._provider, model)
+      ) {
+        // Reasoning-presence validation on strict Responses upstreams (opencode
+        // console gateways) rejects thinking-mode history whose assistant turns
+        // lack a reasoning_text item — even when OmniRoute's replay cache missed
+        // and the history only carries the internal sentinel (see
+        // replayOpenAIReasoningMessage's requiresExplicitReasoningReplay branch).
+        // Emit the sentinel text: it satisfies presence validation, and the
+        // response translators suppress the sentinel again on echo (#9573).
+        // Gated to presence-enforcing upstreams only: everywhere else (e.g.
+        // DeepSeek) the sentinel is never promoted, since models echo it as
+        // their own reasoning and stop (#9573/#9610).
+        input.push({
+          type: "reasoning",
+          content: [{ type: "reasoning_text", text: reasoning }],
+          summary: [],
+        });
+      }
 
-      // Skip thinking blocks in array content — same rs_* ID constraint applies
-
+      // Thinking blocks remain display-only here. They do not prove that the
+      // selected target accepts their provider-specific replay representation.
       // Build assistant output content
       const outputContent: unknown[] = [];
       if (typeof msg.content === "string" && msg.content) {
@@ -186,6 +314,7 @@ export function openaiToOpenAIResponsesRequest(
           type: "message",
           role: "assistant",
           content: outputContent,
+          status: "completed",
         });
       }
 
@@ -203,7 +332,8 @@ export function openaiToOpenAIResponsesRequest(
             type: "function_call",
             call_id: clampCallId(toString(toolCall.id).trim() || generateToolCallId()),
             name: fnName,
-            arguments: toString(fn.arguments, "{}"),
+            arguments: coerceToolCallArguments(fn.arguments),
+            status: "completed",
           });
         }
       }
@@ -217,7 +347,8 @@ export function openaiToOpenAIResponsesRequest(
             type: "function_call",
             call_id: clampCallId(`call_${fnName}`),
             name: fnName,
-            arguments: toString(fc.arguments, "{}"),
+            arguments: coerceToolCallArguments(fc.arguments),
+            status: "completed",
           });
         }
       }
@@ -227,7 +358,7 @@ export function openaiToOpenAIResponsesRequest(
     if (role === "tool") {
       input.push({
         type: "function_call_output",
-        call_id: clampCallId(toString(msg.tool_call_id)),
+        call_id: clampCallId(toString(msg.tool_call_id).trim()),
         output:
           typeof msg.content === "string"
             ? msg.content
@@ -239,6 +370,7 @@ export function openaiToOpenAIResponsesRequest(
                   return c;
                 })
               : String(msg.content ?? ""),
+        status: "completed",
       });
     }
 
@@ -246,8 +378,9 @@ export function openaiToOpenAIResponsesRequest(
     if (role === "function") {
       input.push({
         type: "function_call_output",
-        call_id: clampCallId(`call_${toString(msg.name)}`),
+        call_id: clampCallId(`call_${toString(msg.name).trim()}`),
         output: typeof msg.content === "string" ? msg.content : String(msg.content ?? ""),
+        status: "completed",
       });
     }
   }
@@ -261,12 +394,42 @@ export function openaiToOpenAIResponsesRequest(
       )
       .map((item: { type?: string; call_id?: string }) => item.call_id)
   );
-  result.input = input.filter((item: { type?: string; call_id?: string }) => {
+  const orphanFilteredInput = input.filter((item: { type?: string; call_id?: string }) => {
     if (item.type === "function_call_output" && item.call_id) {
       return knownCallIds.has(item.call_id);
     }
     return true;
   });
+  result.input = orphanFilteredInput;
+
+  // Mirror of the filter above: a `function_call` whose output never arrived
+  // (truncated history, client crash mid-tool-loop) makes strict Responses
+  // upstreams reject the whole request with 400 "No tool output found for
+  // function call <id>". Pair every unpaired call with a synthesized empty
+  // output in place rather than dropping the call, so the model still sees
+  // that the call happened and the caller's history stays intact (#15216).
+  const pairedOutputCallIds = new Set(
+    orphanFilteredInput
+      .filter(
+        (item: { type?: string; call_id?: string }) =>
+          item.type === "function_call_output" && item.call_id
+      )
+      .map((item: { type?: string; call_id?: string }) => item.call_id)
+  );
+  const pairedInput: JsonRecord[] = [];
+  for (const item of orphanFilteredInput as Array<{ type?: string; call_id?: string }>) {
+    pairedInput.push(item);
+    if (item.type === "function_call" && item.call_id && !pairedOutputCallIds.has(item.call_id)) {
+      pairedInput.push({
+        type: "function_call_output",
+        call_id: item.call_id,
+        output: "",
+        status: "completed",
+      });
+      pairedOutputCallIds.add(item.call_id);
+    }
+  }
+  result.input = pairedInput;
 
   // If no system message, keep empty instructions
   if (!hasSystemMessage) {
@@ -285,7 +448,8 @@ export function openaiToOpenAIResponsesRequest(
           name,
           description: toString(fn.description),
           parameters: fn.parameters,
-          strict: fn.strict,
+          // Omitted strict is non-strict on Chat but strict-normalized on Responses.
+          strict: chatStrictForResponses(fn),
         };
       }
       return toolValue;
@@ -322,18 +486,45 @@ export function openaiToOpenAIResponsesRequest(
   if (root.conversation_id !== undefined) {
     result.conversation_id = root.conversation_id;
   }
+
+  // GitHub Copilot /responses (and OpenAI) reject a body that has neither a
+  // non-empty `input` nor previous_response_id / prompt / conversation:
+  //   400 One of "input" or "previous_response_id" or 'prompt' or 'conversation'
+  //       must be provided.
+  // System-only turns, empty messages, and orphan-filtered tool results can all
+  // leave input:[] here. Inject a placeholder user item unless a continuity
+  // field already satisfies the validator (mirrors the reverse direction in
+  // openai-responses.ts — 9router#419).
+  if (Array.isArray(result.input) && result.input.length === 0) {
+    const hasContinuity =
+      (typeof result.previous_response_id === "string" && result.previous_response_id.length > 0) ||
+      (typeof result.conversation_id === "string" && result.conversation_id.length > 0) ||
+      (typeof result.prompt === "string" && result.prompt.length > 0);
+    if (!hasContinuity) {
+      result.input = [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "..." }],
+        },
+      ];
+    }
+  }
   if (root.service_tier !== undefined) result.service_tier = root.service_tier;
   if (root.temperature !== undefined) result.temperature = root.temperature;
   // Translate max_tokens / max_completion_tokens → max_output_tokens for Responses API.
   // The Responses API does not accept max_tokens or max_completion_tokens; it requires
   // max_output_tokens. max_completion_tokens takes priority as the newer Chat Completions field.
-  if (root.max_completion_tokens !== undefined) {
+  if (root.max_output_tokens !== undefined) {
+    result.max_output_tokens = root.max_output_tokens;
+  } else if (root.max_completion_tokens !== undefined) {
     result.max_output_tokens = root.max_completion_tokens;
   } else if (root.max_tokens !== undefined) {
     result.max_output_tokens = root.max_tokens;
   }
   if (root.top_p !== undefined) result.top_p = root.top_p;
   mapChatResponseFormatToResponsesText(root, result);
+  ensureJsonObjectInputHint(result);
   // GPT-5 verbosity: Chat Completions `verbosity` → Responses `text.verbosity`.
   const chatVerbosity = normalizeVerbosity(root.verbosity);
   if (chatVerbosity) {
@@ -343,7 +534,7 @@ export function openaiToOpenAIResponsesRequest(
   if (root.reasoning !== undefined) {
     result.reasoning = root.reasoning;
   } else if (root.reasoning_effort !== undefined) {
-    const effort = normalizeResponsesReasoningEffort(root.reasoning_effort);
+    const effort = normalizeResponsesReasoningEffort(root.reasoning_effort, model ?? root.model);
     if (effort && effort !== "none") {
       // Effort-only chat request: default a reasoning summary so the upstream
       // streams thinking back (see the constant's note above).

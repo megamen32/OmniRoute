@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { v5 as uuidv5 } from "uuid";
 
 const { buildKiroPayload } = await import("../../open-sse/translator/request/openai-to-kiro.ts");
 
@@ -121,87 +122,36 @@ test("OpenAI -> Kiro preserves prior history, tool uses and accumulated tool res
 });
 
 test("OpenAI -> Kiro maps invalid or empty assistant tool call arguments to empty input", () => {
-  const invalidResult = buildKiroPayload(
-    "claude-sonnet-4",
-    {
-      messages: [
-        { role: "user", content: "Call a tool" },
+  // #13174 strips unanswered tool_use (Bedrock 400s), so each fixture answers its call.
+  const firstToolInput = (assistant: Record<string, unknown>, callId: string) =>
+    (
+      buildKiroPayload(
+        "claude-sonnet-4",
         {
-          role: "assistant",
-          tool_calls: [
-            {
-              id: "call_invalid",
-              type: "function",
-              function: { name: "read_file", arguments: "{not-json" },
-            },
+          messages: [
+            { role: "user", content: "Call a tool" },
+            { role: "assistant", ...assistant },
+            { role: "tool", tool_call_id: callId, content: "file contents" },
+            { role: "user", content: "continue" },
           ],
         },
-        { role: "user", content: "continue" },
-      ],
-    },
-    false,
-    null
-  );
+        false,
+        null
+      ).conversationState.history[1] as any
+    ).assistantResponseMessage.toolUses[0].input;
+  const call = (id: string, args: string) => ({
+    tool_calls: [{ id, type: "function", function: { name: "read_file", arguments: args } }],
+  });
 
-  assert.deepEqual(
-    (invalidResult.conversationState.history[1] as any).assistantResponseMessage.toolUses[0].input,
-    {}
-  );
-
-  const emptyResult = buildKiroPayload(
-    "claude-sonnet-4",
-    {
-      messages: [
-        { role: "user", content: "Call a tool" },
-        {
-          role: "assistant",
-          tool_calls: [
-            {
-              id: "call_empty",
-              type: "function",
-              function: { name: "read_file", arguments: "" },
-            },
-          ],
-        },
-        { role: "user", content: "continue" },
-      ],
-    },
-    false,
-    null
-  );
-
-  assert.deepEqual(
-    (emptyResult.conversationState.history[1] as any).assistantResponseMessage.toolUses[0].input,
-    {}
-  );
-
-  const toolUseResult = buildKiroPayload(
-    "claude-sonnet-4",
-    {
-      messages: [
-        { role: "user", content: "Call a tool" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool_use",
-              id: "call_tool_use",
-              name: "read_file",
-              input: "{not-json",
-            },
-          ],
-        },
-        { role: "user", content: "continue" },
-      ],
-    },
-    false,
-    null
-  );
-
-  assert.deepEqual(
-    (toolUseResult.conversationState.history[1] as any).assistantResponseMessage.toolUses[0].input,
-    {}
-  );
+  assert.deepEqual(firstToolInput(call("call_invalid", "{not-json"), "call_invalid"), {});
+  assert.deepEqual(firstToolInput(call("call_empty", ""), "call_empty"), {});
+  const toolUseBlock = {
+    type: "tool_use",
+    id: "call_tool_use",
+    name: "read_file",
+    input: "{not-json",
+  };
+  assert.deepEqual(firstToolInput({ content: [toolUseBlock] }, "call_tool_use"), {});
 });
 
 test("OpenAI -> Kiro uses a neutral filler currentMessage when the request ends with assistant history (#5231)", () => {
@@ -882,6 +832,7 @@ test("OpenAI -> Kiro does not inject the '(empty)' placeholder on a trailing too
 });
 
 test("OpenAI -> Kiro generates stable non-random toolUseId when tool_call has no id", () => {
+  const EXPECTED_STABLE_ID = uuidv5("read_file:0", "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
   const makePayload = () =>
     buildKiroPayload(
       "claude-sonnet-4",
@@ -897,6 +848,8 @@ test("OpenAI -> Kiro generates stable non-random toolUseId when tool_call has no
               },
             ],
           },
+          // #13174 strips unanswered tool_use: answer with the derived id.
+          { role: "tool", tool_call_id: EXPECTED_STABLE_ID, content: "x contents" },
           { role: "user", content: "Continue" },
         ],
       },
@@ -904,16 +857,15 @@ test("OpenAI -> Kiro generates stable non-random toolUseId when tool_call has no
       null
     );
 
-  const id1 = (makePayload().conversationState.history as any[]).find(
-    (h) => h.assistantResponseMessage?.toolUses
-  )?.assistantResponseMessage?.toolUses?.[0]?.toolUseId;
-
-  const id2 = (makePayload().conversationState.history as any[]).find(
-    (h) => h.assistantResponseMessage?.toolUses
-  )?.assistantResponseMessage?.toolUses?.[0]?.toolUseId;
+  const toolUseIdOf = () =>
+    (makePayload().conversationState.history as any[]).find(
+      (h) => h.assistantResponseMessage?.toolUses
+    )?.assistantResponseMessage?.toolUses?.[0]?.toolUseId;
+  const [id1, id2] = [toolUseIdOf(), toolUseIdOf()];
 
   assert.ok(id1, "toolUseId must be set even when id is absent");
   assert.equal(id1, id2, "toolUseId must be deterministic (same input → same id)");
+  assert.equal(id1, EXPECTED_STABLE_ID, "toolUseId must be the uuidv5 of name:index");
 });
 
 // Regression for #2446: an OpenAI-style `role:"tool"` message carrying NON-string
@@ -966,7 +918,7 @@ test("OpenAI -> Kiro serializes non-string role:tool content to non-empty text (
 });
 
 // Only Claude models support images in Kiro. Non-Claude Kiro models
-// (deepseek-3.2, minimax-m2.5, glm-5, qwen3-coder-next, auto-kiro) must NOT
+// (deepseek-3.2, minimax-m2.5, glm-5, qwen3-coder-next) must NOT
 // receive image attachments — attaching them is wrong for those models.
 const PNG_DATA_URL = "data:image/png;base64,aGVsbG8=";
 
@@ -1016,8 +968,8 @@ test("OpenAI -> Kiro drops images for non-Claude models (deepseek)", () => {
   );
 });
 
-test("OpenAI -> Kiro drops images for non-Claude models (glm / auto-kiro)", () => {
-  for (const model of ["glm-5", "minimax-m2.5", "qwen3-coder-next", "auto-kiro"]) {
+test("OpenAI -> Kiro drops images for other non-Claude Kiro models", () => {
+  for (const model of ["glm-5", "minimax-m2.5", "qwen3-coder-next"]) {
     const result = buildImageRequest(model);
     const images = result.conversationState.currentMessage.userInputMessage.images;
     assert.ok(
@@ -1031,7 +983,7 @@ test("buildKiroPayload rejects the Anthropic-only [1m] context suffix before Bed
   const body = { messages: [{ role: "user", content: "Hello" }] };
 
   assert.throws(
-    () => buildKiroPayload("claude-opus-4.7-thinking-agentic[1m]", body, true, {}),
+    () => buildKiroPayload("claude-sonnet-5-thinking[1m]", body, true, {}),
     /\[1m\]' suffix is not supported by Kiro upstream/,
     "kr/* model ids carrying [1m] must be rejected, not forwarded to AWS Bedrock"
   );
@@ -1046,27 +998,20 @@ test("buildKiroPayload accepts kr/* model ids without the [1m] suffix", () => {
   );
 });
 
-test("buildKiroPayload strips local Kiro selector suffixes before upstream", () => {
+test("buildKiroPayload strips the supported Thinking selector before upstream", () => {
   const body = { messages: [{ role: "user", content: "Hello" }] };
 
-  const result = buildKiroPayload("claude-sonnet-5-thinking-agentic", body, true, {});
+  const result = buildKiroPayload("claude-sonnet-5-thinking", body, true, {});
   assert.equal(
     result.conversationState.currentMessage.userInputMessage.modelId,
     "claude-sonnet-5",
-    "local -thinking/-agentic aliases must not be forwarded to Kiro"
+    "the local -thinking alias must not be forwarded to Kiro"
   );
   assert.equal(
     result.additionalModelRequestFields?.output_config?.effort,
     "high",
     "the -thinking selector should still request Kiro adaptive thinking"
   );
-});
-
-test("buildKiroPayload maps auto-kiro selector to Kiro auto upstream id", () => {
-  const body = { messages: [{ role: "user", content: "Hello" }] };
-
-  const result = buildKiroPayload("auto-kiro", body, true, {});
-  assert.equal(result.conversationState.currentMessage.userInputMessage.modelId, "auto");
 });
 
 // Regression for upstream decolua/9router PR #2270: the dash->dot normalization's
@@ -1140,6 +1085,31 @@ test("buildKiroPayload enables thinking mode for Claude models via reasoning_eff
     /<max_thinking_length>\d+<\/max_thinking_length>/,
     "max_thinking_length directive must be injected into user content"
   );
+});
+
+test("buildKiroPayload uses native Max reasoning for Kiro GPT-5.6 models", () => {
+  for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    const result = buildKiroPayload(
+      model,
+      {
+        messages: [{ role: "user", content: "Solve a hard problem" }],
+        reasoning_effort: "max",
+        max_tokens: 64000,
+      },
+      false,
+      null
+    );
+
+    assert.ok(result.additionalModelRequestFields, "Max reasoning must be forwarded to Kiro");
+    assert.equal(result.additionalModelRequestFields.reasoning.effort, "max");
+    assert.equal(result.additionalModelRequestFields.output_config, undefined);
+    assert.equal(result.additionalModelRequestFields.thinking, undefined);
+    assert.equal(result.additionalModelRequestFields.max_tokens, undefined);
+    assert.doesNotMatch(
+      result.conversationState.currentMessage.userInputMessage.content,
+      /<thinking_mode>/
+    );
+  }
 });
 
 test("buildKiroPayload drops temperature when thinking is enabled", () => {

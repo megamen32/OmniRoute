@@ -1,7 +1,10 @@
+import type { ModelCapabilityResolutionSnapshot } from "@/lib/modelCapabilities";
+
 import type { AutoVariant } from "./autoPrefix";
 import { VALID_VARIANTS } from "./autoPrefix";
-import { parseAutoSuffix } from "./suffixComposition";
-import { isValidModelFamily, AUTO_FAMILY_IDS } from "./modelFamily";
+import type { PreparedVirtualAutoComboInputs } from "./virtualFactory";
+import { parseAutoSuffix, type AutoCategory, type AutoTier } from "./suffixComposition";
+import { isValidModelFamily, AUTO_FAMILY_IDS, type ModelFamily } from "./modelFamily";
 
 export { AUTO_FAMILY_IDS };
 
@@ -38,9 +41,18 @@ export const AUTO_TEMPLATE_VARIANTS: Record<string, AutoVariant | undefined> = {
   "auto/cheap": "cheap",
   "auto/offline": "offline",
   "auto/smart": "smart",
-  "auto/claude-opus": "smart",
-  "auto/claude-sonnet": "coding",
+  // auto/claude-{opus,sonnet,haiku} are model-FAMILY ids (#15675), resolved by
+  // `isValidModelFamily` — not weight-pack variants (those left the pool unfiltered).
   "auto/best-free": "cheap",
+  // Subscription-first routing (see `subscriptionLadder.ts`). `auto/subscription`
+  // maps to no weight variant on purpose: its pool is already restricted to
+  // plan-included connections, so the scorer should rank them on merit rather
+  // than bias toward cheap/fast within an allowance the operator already paid for.
+  "auto/subscription": undefined,
+  "auto/thrifty": "cheap",
+  // Chaos mode — parallel dispatch to top-N stable models
+  "auto/best-chaos": "chaos",
+  "auto/chaos": "chaos",
 };
 
 /**
@@ -61,9 +73,20 @@ export const AUTO_SUFFIX_VARIANTS: string[] = [
   "auto/multimodal",
 ];
 
+/**
+ * Flat `auto/*` ids that carry a tier overlay even though they are not written
+ * in `<category>:<tier>` form. `auto/best-free` established the pattern; the
+ * two subscription-first ids reuse it so a caller can ask for the behavior
+ * without also having to pick a category.
+ */
+export const FLAT_TIER_OVERLAY_IDS: Record<string, AutoTier> = {
+  "auto/best-free": "free",
+  "auto/subscription": "subscription",
+  "auto/thrifty": "thrifty",
+};
+
 type ResolvedAutoVariant =
-  | { recognized: true; variant: AutoVariant | undefined }
-  | { recognized: false };
+  { recognized: true; variant: AutoVariant | undefined } | { recognized: false };
 
 export function resolveAutoVariant(modelStr: string, suffix: string): ResolvedAutoVariant {
   if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, modelStr)) {
@@ -110,13 +133,112 @@ export function isPaidTierAutoId(autoId: string): boolean {
   return parsed.valid && parsed.tier === "pro";
 }
 
-export async function createBuiltinAutoCombo(modelStr: string, suffix: string) {
-  const { createVirtualAutoCombo } = await import("./virtualFactory.ts");
+/**
+ * Resolved spec for a built-in `auto/*` id: either a flat variant (legacy) or
+ * a category/tier overlay (#4235 Phase B). Category `vision`/`multimodal` adds
+ * a candidate filter so the virtual combo only scores vision-capable models.
+ */
+export type BuiltinAutoSpec =
+  | { variant: AutoVariant | undefined }
+  | { category: AutoCategory; tier?: AutoTier }
+  | { family: ModelFamily };
+
+/**
+ * Vision-flavored flat ids that MUST resolve to the `vision` category (candidate
+ * filter by capability), not to a flat variant: the vision-bridge guardrail and
+ * its self-loop depend on `auto/best-vision` picking a model that can actually
+ * see images. Mapping it to `smart` scored ALL candidates and resolved to
+ * text-only models (e.g. deepseek-v4-flash-free), breaking every describe call.
+ */
+const VISION_CATEGORY_AUTO_IDS: Record<string, { category: "vision"; tier?: AutoTier }> = {
+  "auto/best-vision": { category: "vision" },
+  "auto/pro-vision": { category: "vision", tier: "pro" },
+};
+
+/**
+ * Pure resolver for a built-in `auto/*` id. Extracted from
+ * `createBuiltinAutoCombo` so the catalog mapping is unit-testable without
+ * materializing a virtual combo (which requires the DB).
+ */
+export function resolveBuiltinAutoSpec(modelStr: string, suffix: string): BuiltinAutoSpec {
+  const visionSpec = VISION_CATEGORY_AUTO_IDS[modelStr];
+  if (visionSpec) return visionSpec;
 
   const resolved = resolveAutoVariant(modelStr, suffix);
   if (resolved.recognized) {
-    const spec = modelStr === "auto/best-free" ? { tier: "free" as const } : undefined;
-    const virtualCombo = await createVirtualAutoCombo(resolved.variant, spec);
+    return { variant: resolved.variant };
+  }
+
+  if (isValidModelFamily(suffix)) return { family: suffix };
+
+  const parsed = parseAutoSuffix(suffix);
+  if (parsed.valid) {
+    return {
+      category: parsed.category as AutoCategory,
+      ...(parsed.tier ? { tier: parsed.tier } : {}),
+    };
+  }
+
+  return { variant: undefined };
+}
+
+export async function prepareBuiltinAutoComboInputs(
+  resolutionSnapshot?: ModelCapabilityResolutionSnapshot
+): Promise<PreparedVirtualAutoComboInputs> {
+  const { prepareVirtualAutoComboInputs } = await import("./virtualFactory.ts");
+  return prepareVirtualAutoComboInputs({
+    includeResolvedCapabilities: true,
+    resolutionSnapshot,
+  });
+}
+
+export async function createBuiltinAutoCombo(
+  modelStr: string,
+  suffix: string,
+  prepared?: PreparedVirtualAutoComboInputs
+) {
+  const { createVirtualAutoCombo, createVirtualAutoComboFromPrepared } =
+    await import("./virtualFactory.ts");
+  const materialize = (
+    variant: AutoVariant | undefined,
+    spec?: Parameters<typeof createVirtualAutoCombo>[1]
+  ) =>
+    prepared
+      ? createVirtualAutoComboFromPrepared(prepared, variant, spec)
+      : createVirtualAutoCombo(variant, spec);
+
+  const spec = resolveBuiltinAutoSpec(modelStr, suffix);
+
+  if ("category" in spec) {
+    // #4235 Phase B category/tier path (incl. vision ids like auto/best-vision).
+    const virtualCombo = await materialize(undefined, {
+      category: spec.category,
+      ...(spec.tier ? { tier: spec.tier } : {}),
+    });
+    virtualCombo.name = modelStr;
+    virtualCombo.id = modelStr;
+    return virtualCombo;
+  }
+
+  if ("variant" in spec && spec.variant !== undefined) {
+    const overlayTier = FLAT_TIER_OVERLAY_IDS[modelStr];
+    const virtualCombo = await materialize(spec.variant, {
+      ...(overlayTier ? { tier: overlayTier } : {}),
+    });
+    virtualCombo.name = modelStr;
+    virtualCombo.id = modelStr;
+    return virtualCombo;
+  }
+
+  // Advertised `auto/*` ids whose template maps to no variant (auto/chat,
+  // auto/best-chat, auto/pro-chat) still materialize via the default
+  // (unconstrained) virtual combo rather than throwing "Unknown built-in".
+  if (Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, modelStr)) {
+    const overlayTier = FLAT_TIER_OVERLAY_IDS[modelStr];
+    const virtualCombo = await materialize(
+      undefined,
+      overlayTier ? { tier: overlayTier } : undefined
+    );
     virtualCombo.name = modelStr;
     virtualCombo.id = modelStr;
     return virtualCombo;
@@ -125,7 +247,7 @@ export async function createBuiltinAutoCombo(modelStr: string, suffix: string) {
   // #4235 Phase B: `auto/<category>[:<tier>]` (e.g. auto/coding:fast, auto/vision).
   const parsed = parseAutoSuffix(suffix);
   if (parsed.valid) {
-    const virtualCombo = await createVirtualAutoCombo(undefined, {
+    const virtualCombo = await materialize(undefined, {
       category: parsed.category,
       tier: parsed.tier,
     });
@@ -138,7 +260,7 @@ export async function createBuiltinAutoCombo(modelStr: string, suffix: string) {
   // auto/gemma, auto/llama, auto/gemini) — spans whatever installed backends
   // currently expose that model family, degrading gracefully as backends rotate.
   if (isValidModelFamily(suffix)) {
-    const virtualCombo = await createVirtualAutoCombo(undefined, { family: suffix });
+    const virtualCombo = await materialize(undefined, { family: suffix });
     virtualCombo.name = modelStr;
     virtualCombo.id = modelStr;
     return virtualCombo;

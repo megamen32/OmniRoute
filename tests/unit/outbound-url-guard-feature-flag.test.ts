@@ -39,7 +39,7 @@ test("arePrivateProviderUrlsAllowed honors DB override = 'true' even when env is
   await withEnv("false", async () => {
     await withDbOverride("true", async () => {
       const { arePrivateProviderUrlsAllowed } =
-        await import("../../src/shared/network/outboundUrlGuard.ts");
+        await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
       assert.equal(
         arePrivateProviderUrlsAllowed(),
         true,
@@ -53,7 +53,7 @@ test("arePrivateProviderUrlsAllowed returns false when DB override = 'false' and
   await withEnv(undefined, async () => {
     await withDbOverride("false", async () => {
       const { arePrivateProviderUrlsAllowed } =
-        await import("../../src/shared/network/outboundUrlGuard.ts");
+        await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
       assert.equal(arePrivateProviderUrlsAllowed(), false);
     });
   });
@@ -63,7 +63,7 @@ test("arePrivateProviderUrlsAllowed honors env = 'true' when DB has no override"
   await withEnv("true", async () => {
     await withDbOverride(undefined, async () => {
       const { arePrivateProviderUrlsAllowed } =
-        await import("../../src/shared/network/outboundUrlGuard.ts");
+        await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
       assert.equal(arePrivateProviderUrlsAllowed(), true);
     });
   });
@@ -73,8 +73,62 @@ test("arePrivateProviderUrlsAllowed default (no env, no DB) returns false", asyn
   await withEnv(undefined, async () => {
     await withDbOverride(undefined, async () => {
       const { arePrivateProviderUrlsAllowed } =
-        await import("../../src/shared/network/outboundUrlGuard.ts");
+        await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
       assert.equal(arePrivateProviderUrlsAllowed(), false);
     });
   });
+});
+
+test("arePrivateProviderUrlsAllowed honors DB override = 'false' even when env is 'true'", async () => {
+  await withEnv("true", async () => {
+    await withDbOverride("false", async () => {
+      const { arePrivateProviderUrlsAllowed, getProviderValidationGuard } =
+        await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
+      assert.equal(
+        arePrivateProviderUrlsAllowed(),
+        false,
+        "a dashboard OFF must not be re-enabled by the env opt-in"
+      );
+      assert.equal(getProviderValidationGuard(), "block-metadata");
+    });
+  });
+});
+
+test("DB override = 'false' leaves the legacy OUTBOUND_SSRF_GUARD_ENABLED=false hatch as it was", async () => {
+  const prev = process.env.OUTBOUND_SSRF_GUARD_ENABLED;
+  process.env.OUTBOUND_SSRF_GUARD_ENABLED = "false";
+  try {
+    await withEnv(undefined, async () => {
+      await withDbOverride("false", async () => {
+        const { arePrivateProviderUrlsAllowed } =
+          await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
+        assert.equal(arePrivateProviderUrlsAllowed(), true);
+      });
+    });
+  } finally {
+    if (prev === undefined) delete process.env.OUTBOUND_SSRF_GUARD_ENABLED;
+    else process.env.OUTBOUND_SSRF_GUARD_ENABLED = prev;
+  }
+});
+
+test("a DB override = 'false' for local provider URLs still restores public-only", async () => {
+  const LOCAL_KEY = "OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS";
+  const prev = process.env[LOCAL_KEY];
+  delete process.env[LOCAL_KEY];
+  const { setFeatureFlagOverride, removeFeatureFlagOverride } =
+    await import("../../src/lib/db/featureFlags.ts");
+  setFeatureFlagOverride(LOCAL_KEY, "false");
+  try {
+    await withEnv(undefined, async () => {
+      await withDbOverride(undefined, async () => {
+        const { getProviderValidationGuard } =
+          await import("../../src/shared/network/outboundUrlGuardPolicy.ts");
+        assert.equal(getProviderValidationGuard(), "public-only");
+      });
+    });
+  } finally {
+    removeFeatureFlagOverride(LOCAL_KEY);
+    if (prev === undefined) delete process.env[LOCAL_KEY];
+    else process.env[LOCAL_KEY] = prev;
+  }
 });

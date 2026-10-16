@@ -1,3 +1,5 @@
+import { hasUnsafeModelIdSyntax } from "../utils/modelIdSafety.ts";
+
 /**
  * Embedding Provider Registry
  *
@@ -8,10 +10,16 @@
  * keyed by provider ID (e.g. "nebius", "openai").
  */
 
+export type EmbeddingModality = "text" | "image" | "audio" | "video" | "document";
+export type StructuredEmbeddingProtocol = "jina-v1" | "gemini-embed-content" | "llama-cpp-mtmd";
+export type SingleTextEmbeddingProtocol = "clova-v2";
+
 export interface EmbeddingModel {
   id: string;
   name: string;
   dimensions?: number;
+  /** Structured input modalities explicitly supported by this registry model. */
+  modalities?: EmbeddingModality[];
   /**
    * Model-level default request parameters injected into the upstream body when
    * the client did not already supply them. Used for asymmetric embedding models
@@ -27,6 +35,21 @@ export interface EmbeddingProvider {
   authType: string;
   authHeader: string;
   models: EmbeddingModel[];
+  /** Provider-native serializer required for canonical structured input. */
+  structuredInputProtocol?: StructuredEmbeddingProtocol;
+  /**
+   * Structured input modalities accepted for models that are NOT listed in `models`
+   * (passthrough providers such as llama.cpp, whose model list is whatever the local
+   * server loaded). The upstream still rejects a modality the loaded model lacks.
+   */
+  passthroughModalities?: EmbeddingModality[];
+  /**
+   * Set when the endpoint embeds exactly ONE text per request (`{"text": …}` →
+   * one vector) instead of accepting OpenAI's `input` array. A batched
+   * `/v1/embeddings` call is then fanned out into N sequential upstream calls and
+   * merged back into a single OpenAI list response.
+   */
+  singleTextProtocol?: SingleTextEmbeddingProtocol;
 }
 
 export interface EmbeddingProviderNodeRow {
@@ -187,6 +210,12 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
     ],
   },
 
+  // #6976 — OpenRouter serves embeddings via a dedicated OpenAI-compatible
+  // /api/v1/embeddings endpoint (omitted from /v1/models, so this catalog is
+  // curated rather than live-discovered). Ids verified against the API
+  // reference (not the display-name collections page) at refresh time:
+  // https://openrouter.ai/docs/api/reference/embeddings and
+  // https://openrouter.ai/collections/embedding-models
   openrouter: {
     id: "openrouter",
     baseUrl: "https://openrouter.ai/api/v1/embeddings",
@@ -204,20 +233,62 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
         dimensions: 3072,
       },
       {
-        id: "openai/text-embedding-ada-002",
-        name: "Text Embedding Ada 002 (OpenRouter)",
-        dimensions: 1536,
+        id: "qwen/qwen3-embedding-8b",
+        name: "Qwen3 Embedding 8B (OpenRouter)",
+        dimensions: 4096,
+      },
+      {
+        id: "qwen/qwen3-embedding-4b",
+        name: "Qwen3 Embedding 4B (OpenRouter)",
+        dimensions: 2560,
+      },
+      {
+        id: "baai/bge-m3",
+        name: "BGE-M3 (OpenRouter)",
+        dimensions: 1024,
+      },
+      {
+        id: "mistralai/mistral-embed-2312",
+        name: "Mistral Embed (OpenRouter)",
+        dimensions: 1024,
+      },
+      {
+        id: "google/gemini-embedding-001",
+        name: "Gemini Embedding 001 (OpenRouter)",
+        dimensions: 3072,
+      },
+      {
+        id: "google/gemini-embedding-2",
+        name: "Gemini Embedding 2 (OpenRouter)",
+        dimensions: 3072,
+      },
+      {
+        id: "google/gemini-embedding-2-preview",
+        name: "Gemini Embedding 2 Preview (OpenRouter)",
+        dimensions: 3072,
       },
     ],
   },
 
   gemini: {
     id: "gemini",
+    structuredInputProtocol: "gemini-embed-content",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/embeddings",
     authType: "apikey",
     authHeader: "bearer",
     models: [
-      { id: "gemini-embedding-2", name: "Gemini Embedding 2", dimensions: 768 },
+      {
+        id: "gemini-embedding-2",
+        name: "Gemini Embedding 2",
+        dimensions: 3072,
+        modalities: ["text", "image", "audio", "video", "document"],
+      },
+      {
+        id: "gemini-embedding-2-preview",
+        name: "Gemini Embedding 2 Preview",
+        dimensions: 3072,
+        modalities: ["text", "image", "audio", "video", "document"],
+      },
       { id: "gemini-embedding-001", name: "Gemini Embedding 001", dimensions: 768 },
     ],
   },
@@ -232,7 +303,9 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
       { id: "voyage-4", name: "Voyage 4", dimensions: 1024 },
       { id: "voyage-4-lite", name: "Voyage 4 Lite", dimensions: 1024 },
       { id: "voyage-3-large", name: "Voyage 3 Large", dimensions: 1024 },
-      { id: "voyage-multilingual-3.5", name: "Voyage Multilingual 3.5", dimensions: 1024 },
+      { id: "voyage-3.5", name: "Voyage 3.5", dimensions: 1024 },
+      { id: "voyage-3.5-lite", name: "Voyage 3.5 Lite", dimensions: 512 },
+      { id: "voyage-multilingual-2", name: "Voyage Multilingual 2", dimensions: 1024 },
       { id: "voyage-code-3", name: "Voyage Code 3", dimensions: 1024 },
       { id: "voyage-code-2", name: "Voyage Code 2", dimensions: 1536 },
       { id: "voyage-finance-2", name: "Voyage Finance 2", dimensions: 1024 },
@@ -240,19 +313,21 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
     ],
   },
 
-  github: {
-    id: "github",
-    baseUrl: "https://models.inference.ai.azure.com/embeddings",
+  // Naver CLOVA Studio — embedding v2. The endpoint takes a single `{"text": …}`
+  // body and returns `{status, result:{embedding:[…1024 floats], inputTokens}}`,
+  // with no batch array and no `usage` object, hence `singleTextProtocol`.
+  "clova-studio": {
+    id: "clova-studio",
+    baseUrl: "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2",
     authType: "apikey",
     authHeader: "bearer",
-    models: [
-      { id: "text-embedding-3-small", name: "Text Embedding 3 Small (GitHub)", dimensions: 1536 },
-      { id: "text-embedding-3-large", name: "Text Embedding 3 Large (GitHub)", dimensions: 3072 },
-    ],
+    singleTextProtocol: "clova-v2",
+    models: [{ id: "clova-embedding-v2", name: "CLOVA Embedding v2", dimensions: 1024 }],
   },
 
   "jina-ai": {
     id: "jina-ai",
+    structuredInputProtocol: "jina-v1",
     baseUrl: "https://api.jina.ai/v1/embeddings",
     authType: "apikey",
     authHeader: "bearer",
@@ -263,11 +338,126 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
         dimensions: 1024,
       },
       { id: "jina-embeddings-v5-text-nano", name: "Jina Embeddings v5 Text Nano", dimensions: 768 },
+      {
+        id: "jina-embeddings-v5-omni-small",
+        name: "Jina Embeddings v5 Omni Small",
+        dimensions: 1024,
+        modalities: ["text", "image", "audio", "video", "document"],
+      },
+      {
+        id: "jina-embeddings-v5-omni-nano",
+        name: "Jina Embeddings v5 Omni Nano",
+        dimensions: 768,
+        modalities: ["text", "image", "audio", "video", "document"],
+      },
       { id: "jina-code-embeddings-1.5b", name: "Jina Code Embeddings 1.5B", dimensions: 1536 },
       { id: "jina-code-embeddings-0.5b", name: "Jina Code Embeddings 0.5B", dimensions: 896 },
-      { id: "jina-embeddings-v4", name: "Jina Embeddings v4", dimensions: 2048 },
-      { id: "jina-clip-v2", name: "Jina CLIP v2", dimensions: 1024 },
+      {
+        id: "jina-embeddings-v4",
+        name: "Jina Embeddings v4",
+        dimensions: 2048,
+        modalities: ["text", "image", "document"],
+      },
+      {
+        id: "jina-clip-v2",
+        name: "Jina CLIP v2",
+        dimensions: 1024,
+        modalities: ["text", "image"],
+      },
       { id: "jina-colbert-v2", name: "Jina ColBERT v2", dimensions: 128 },
+    ],
+  },
+
+  // LM Studio — local OpenAI-compatible server. No auth required.
+  // Models are passthrough (LM Studio exposes its own model list), so the
+  // models array is empty. The baseUrl is the default LM Studio endpoint;
+  // users with a configured provider_node will use that URL instead.
+  lmstudio: {
+    id: "lmstudio",
+    baseUrl: "http://localhost:1234/v1/embeddings",
+    authType: "none",
+    authHeader: "none",
+    models: [],
+  },
+
+  // llama.cpp — local OpenAI-compatible server (llama-server).
+  // API key optional. Models are passthrough (empty models array).
+  "llama-cpp": {
+    id: "llama-cpp",
+    baseUrl: "http://127.0.0.1:8080/v1/embeddings",
+    authType: "none",
+    authHeader: "bearer",
+    models: [],
+    // llama-server with --mmproj embeds images/audio/video via `content` parts.
+    structuredInputProtocol: "llama-cpp-mtmd",
+    passthroughModalities: ["text", "image", "audio", "video"],
+  },
+
+  // Lemonade Server — local OpenAI-compatible AI runtime backed by llama.cpp.
+  // API key optional (defaults to bearer auth if key configured).
+  // Includes harrier-oss-v1-0.6b (1024-dim GGUF) as a curated model.
+  lemonade: {
+    id: "lemonade",
+    baseUrl: "http://localhost:13305/v1/embeddings",
+    authType: "none",
+    authHeader: "bearer",
+    models: [{ id: "harrier-oss-v1-0.6b", name: "Harrier OSS v1 0.6B", dimensions: 1024 }],
+  },
+
+  // Ollama Local — OpenAI-compatible embeddings endpoint. Ollama exposes its
+  // own model catalog, but these common embedding models are useful defaults
+  // for model selection and validation.
+  "ollama-local": {
+    id: "ollama-local",
+    baseUrl: "http://localhost:11434/v1/embeddings",
+    authType: "none",
+    authHeader: "none",
+    models: [
+      { id: "embeddinggemma", name: "EmbeddingGemma" },
+      { id: "nomic-embed-text", name: "Nomic Embed Text" },
+      { id: "bge-m3", name: "BGE M3" },
+    ],
+  },
+
+  // Issue #6660: Mixedbread AI — OpenAI-compatible /v1/embeddings, free tier
+  // available (API key via signup, no card required). Model ids are the
+  // upstream-qualified "mixedbread-ai/<model>" form, mirroring how `together`/
+  // `fireworks` register fully-qualified upstream model ids above.
+  mixedbread: {
+    id: "mixedbread",
+    baseUrl: "https://api.mixedbread.com/v1/embeddings",
+    authType: "apikey",
+    authHeader: "bearer",
+    models: [
+      {
+        id: "mixedbread-ai/mxbai-embed-large-v1",
+        name: "Mixedbread Embed Large v1",
+        dimensions: 1024,
+      },
+      {
+        id: "mixedbread-ai/mxbai-embed-2d-large-v1",
+        name: "Mixedbread Embed 2D Large v1",
+        dimensions: 1024,
+      },
+    ],
+  },
+
+  nanogpt: {
+    id: "nanogpt",
+    baseUrl: "https://nano-gpt.com/v1/embeddings",
+    authType: "apikey",
+    authHeader: "bearer",
+    models: [
+      {
+        id: "text-embedding-3-small",
+        name: "Text Embedding 3 Small",
+        dimensions: 1536,
+      },
+      {
+        id: "text-embedding-3-large",
+        name: "Text Embedding 3 Large",
+        dimensions: 3072,
+      },
     ],
   },
 };
@@ -275,7 +465,36 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
 const EMBEDDING_PROVIDER_ALIASES: Record<string, string> = {
   jina: "jina-ai",
   voyage: "voyage-ai",
+  // The dashboard stores LM Studio connections under the hyphenated provider
+  // id "lm-studio" while the embedding registry keys the provider "lmstudio"
+  // (#11233). Alias the dashboard id so "lm-studio/<model>" resolves instead
+  // of failing with an unknown-provider 400.
+  "lm-studio": "lmstudio",
+  llamacpp: "llama-cpp",
+  "llama.cpp": "llama-cpp",
 };
+
+/** Family name used by clients; Jina's public SKU is omni-small. */
+const EMBEDDING_MODEL_ALIASES: Record<string, string> = {
+  "jina-embeddings-v5-omni": "jina-embeddings-v5-omni-small",
+  // Live native catalog is gemini/gemini-embedding-2. Clients that send the
+  // OpenRouter-style google/ prefix still resolve to the Gemini provider —
+  // do not steal a custom provider_node whose prefix is `google`.
+  "google/gemini-embedding-2": "gemini/gemini-embedding-2",
+  "google/gemini-embedding-2-preview": "gemini/gemini-embedding-2-preview",
+};
+
+function applyEmbeddingModelAliases(modelStr: string): string {
+  for (const [alias, canonical] of Object.entries(EMBEDDING_MODEL_ALIASES)) {
+    if (modelStr === alias) return canonical;
+    // Slash-containing aliases are exact-match only so
+    // openrouter/google/gemini-embedding-2 stays on OpenRouter.
+    if (!alias.includes("/") && modelStr.endsWith(`/${alias}`)) {
+      return `${modelStr.slice(0, -alias.length)}${canonical}`;
+    }
+  }
+  return modelStr;
+}
 
 function resolveEmbeddingProviderId(providerId: string): string {
   return EMBEDDING_PROVIDER_ALIASES[providerId] || providerId;
@@ -305,6 +524,92 @@ export function getEmbeddingProvider(providerId: string): EmbeddingProvider | nu
   return EMBEDDING_PROVIDERS[resolveEmbeddingProviderId(providerId)] || null;
 }
 
+function findDynamicEmbeddingProvider(
+  modelStr: string,
+  dynamicProviders: EmbeddingProvider[] | undefined
+): { provider: string; model: string } | null {
+  const match = dynamicProviders?.find((provider) => modelStr.startsWith(`${provider.id}/`));
+  return match ? { provider: match.id, model: modelStr.slice(match.id.length + 1) } : null;
+}
+
+function parsePrefixedEmbeddingModel(
+  modelStr: string,
+  slashIdx: number,
+  dynamicProviders: EmbeddingProvider[] | undefined
+): { provider: string; model: string } {
+  const rawProvider = modelStr.slice(0, slashIdx);
+  const dynamicExact = dynamicProviders?.find((provider) => provider.id === rawProvider);
+  if (dynamicExact) {
+    return { provider: rawProvider, model: modelStr.slice(slashIdx + 1) };
+  }
+
+  const resolvedProvider = resolveEmbeddingProviderId(rawProvider);
+  if (EMBEDDING_PROVIDERS[resolvedProvider]) {
+    return {
+      provider: resolvedProvider,
+      model: normalizeProviderScopedModelId(resolvedProvider, modelStr.slice(slashIdx + 1)),
+    };
+  }
+
+  const hardcodedProvider = Object.keys(EMBEDDING_PROVIDERS).find((providerId) =>
+    modelStr.startsWith(`${providerId}/`)
+  );
+  if (hardcodedProvider) {
+    return {
+      provider: hardcodedProvider,
+      model: normalizeProviderScopedModelId(
+        hardcodedProvider,
+        modelStr.slice(hardcodedProvider.length + 1)
+      ),
+    };
+  }
+
+  return (
+    findDynamicEmbeddingProvider(modelStr, dynamicProviders) ?? {
+      provider: rawProvider,
+      model: modelStr.slice(slashIdx + 1),
+    }
+  );
+}
+
+function findEmbeddingModelProvider(modelStr: string): string | null {
+  return (
+    Object.entries(EMBEDDING_PROVIDERS).find(([, config]) =>
+      config.models.some((model) => model.id === modelStr)
+    )?.[0] ?? null
+  );
+}
+
+/**
+ * Derive an OpenAI-compatible embeddings config for a chat provider that has NO
+ * curated EMBEDDING_PROVIDERS entry. Works for any registry provider whose base
+ * URL ends in /chat/completions by swapping that suffix for /embeddings (groq,
+ * mistral, together, upstage, fireworks, nvidia, vercel-ai-gateway, ...).
+ * Dynamic-URL providers (no usable static base) derive to
+ * null — they need bespoke URL handling, not a bogus endpoint.
+ *
+ * This is a FALLBACK only: callers must check getEmbeddingProvider() first so
+ * curated entries keep their specialized configuration.
+ */
+export function deriveEmbeddingProviderForChatProvider(
+  providerId: string,
+  chatEntry: { id?: string; baseUrl?: string | string[] } | null | undefined
+): EmbeddingProvider | null {
+  if (!chatEntry) return null;
+  const rawBase = Array.isArray(chatEntry.baseUrl) ? chatEntry.baseUrl[0] : chatEntry.baseUrl;
+  if (!rawBase || typeof rawBase !== "string") return null;
+  // stripTrailingSlashes-equivalent without importing open-sse utils here:
+  const base = rawBase.replace(/\/+$/, "");
+  if (!base.endsWith("/chat/completions")) return null;
+  return {
+    id: providerId,
+    baseUrl: `${base.slice(0, -"/chat/completions".length)}/embeddings`,
+    authType: "apikey",
+    authHeader: "bearer",
+    models: [],
+  };
+}
+
 /**
  * Parse embedding model string (format: "provider/model" or just "model")
  * Returns { provider, model }
@@ -313,52 +618,17 @@ export function parseEmbeddingModel(
   modelStr: string | null,
   dynamicProviders?: EmbeddingProvider[]
 ): { provider: string | null; model: string | null } {
-  if (!modelStr) return { provider: null, model: null };
+  if (!modelStr || hasUnsafeModelIdSyntax(modelStr)) return { provider: null, model: null };
+  modelStr = applyEmbeddingModelAliases(modelStr);
 
   // Check for "provider/model" format
   const slashIdx = modelStr.indexOf("/");
   if (slashIdx > 0) {
-    const rawProvider = modelStr.slice(0, slashIdx);
-    const resolvedProvider = resolveEmbeddingProviderId(rawProvider);
-
-    if (EMBEDDING_PROVIDERS[resolvedProvider]) {
-      return {
-        provider: resolvedProvider,
-        model: normalizeProviderScopedModelId(resolvedProvider, modelStr.slice(slashIdx + 1)),
-      };
-    }
-
-    // Phase 1: Try each hardcoded provider prefix
-    for (const [providerId] of Object.entries(EMBEDDING_PROVIDERS)) {
-      if (modelStr.startsWith(providerId + "/")) {
-        return {
-          provider: providerId,
-          model: normalizeProviderScopedModelId(providerId, modelStr.slice(providerId.length + 1)),
-        };
-      }
-    }
-    // Phase 2: Try dynamic provider_nodes prefix
-    if (dynamicProviders) {
-      for (const dp of dynamicProviders) {
-        if (modelStr.startsWith(dp.id + "/")) {
-          return { provider: dp.id, model: modelStr.slice(dp.id.length + 1) };
-        }
-      }
-    }
-    // Phase 3: Fallback — first segment is provider
-    const provider = modelStr.slice(0, slashIdx);
-    const model = modelStr.slice(slashIdx + 1);
-    return { provider, model };
+    return parsePrefixedEmbeddingModel(modelStr, slashIdx, dynamicProviders);
   }
 
   // No provider prefix — search hardcoded providers for the model
-  for (const [providerId, config] of Object.entries(EMBEDDING_PROVIDERS)) {
-    if (config.models.some((m) => m.id === modelStr)) {
-      return { provider: providerId, model: modelStr };
-    }
-  }
-
-  return { provider: null, model: modelStr };
+  return { provider: findEmbeddingModelProvider(modelStr), model: modelStr };
 }
 
 /**
@@ -408,6 +678,15 @@ export function getEmbeddingModelDefaultParams(
 ): Record<string, unknown> | undefined {
   if (!providerConfig || !modelId) return undefined;
   return providerConfig.models.find((m) => m.id === modelId)?.defaultParams;
+}
+
+export function getEmbeddingModelModalities(
+  providerConfig: EmbeddingProvider | null,
+  modelId: string | null
+): EmbeddingModality[] | undefined {
+  if (!providerConfig || !modelId) return undefined;
+  const model = providerConfig.models.find((entry) => entry.id === modelId);
+  return model ? model.modalities : providerConfig.passthroughModalities;
 }
 
 /**

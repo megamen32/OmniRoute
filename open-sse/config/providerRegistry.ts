@@ -4,17 +4,23 @@
  */
 
 export * from "./providers/shared.ts";
+export {
+  ALIBABA_MODEL_STUDIO_MODELS,
+  ALIBABA_MODEL_STUDIO_MODELS as ALIBABA_DASHSCOPE_MODELS,
+} from "./providers/registry/alibaba/index.ts";
 export { REGISTRY } from "./providers/index.ts";
 import { REGISTRY } from "./providers/index.ts";
+// Imported from `privateHost` rather than `outboundUrlGuard`: this module is reachable from
+// `ProviderDetailPageClient.tsx`, so anything it pulls in has to survive a browser bundle
+// (#11122). `privateHost` is platform-free by contract; the guard module is not.
+import { isPrivateHost } from "@/shared/network/privateHost";
 import {
   RegistryModel,
   REASONING_UNSUPPORTED,
   RegistryOAuth,
   RegistryEntry,
   LegacyProvider,
-  KIMI_CODING_SHARED,
   buildModels,
-  ALIBABA_DASHSCOPE_MODELS,
   GPT_5_5_CONTEXT_LENGTH,
   GPT_5_5_CODEX_CAPABILITIES,
   CHAT_OPENAI_COMPAT_MODELS,
@@ -39,11 +45,22 @@ export function generateLegacyProviders(): Record<string, LegacyProvider> {
     if (entry.responsesBaseUrl) {
       p.responsesBaseUrl = entry.responsesBaseUrl;
     }
+    if (entry.messagesUrl) {
+      p.messagesUrl = entry.messagesUrl;
+    }
     if (entry.requestDefaults) {
       p.requestDefaults = entry.requestDefaults;
     }
     if (typeof entry.timeoutMs === "number") {
       p.timeoutMs = entry.timeoutMs;
+    }
+    // #11526 follow-up: the headers-wait cap override must reach the executor's
+    // LegacyProvider config — dropping it here silently fell back to the 110s
+    // global cap even for providers whose registry entry overrides it (observed:
+    // opencode-go deepseek thinking generations 504ing at exactly 110s despite
+    // fetchStartTimeoutCapMs on the registry entry).
+    if (typeof entry.fetchStartTimeoutCapMs === "number") {
+      p.fetchStartTimeoutCapMs = entry.fetchStartTimeoutCapMs;
     }
 
     // Headers
@@ -127,11 +144,8 @@ export function isLocalProvider(baseUrl?: string | null): boolean {
   try {
     const url = new URL(baseUrl);
     const hostname = url.hostname;
-    // Strictly matching 172.16.0.0/12 (Docker/local) and explicitly blocking ::1 per SSRF hardening
-    return (
-      LOCAL_HOSTNAMES.has(hostname) ||
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname)
-    );
+    if (!hostname) return false;
+    return LOCAL_HOSTNAMES.has(hostname) || isPrivateHost(hostname);
   } catch {
     return false;
   }
@@ -175,6 +189,47 @@ export function getRegistryEntry(provider: string): RegistryEntry | null {
   return REGISTRY[provider] || _byAlias.get(provider) || null;
 }
 
+/** Resolve only a model's explicit reasoning vocabulary. */
+export function getRegistryModelThinkingEfforts(
+  provider: string,
+  modelId: string
+): readonly string[] | undefined {
+  const entry = getRegistryEntry(provider);
+  if (!entry) return undefined;
+  const model = entry.models.find((candidate) => candidate.id === modelId);
+  return model?.supportedThinkingEfforts;
+}
+
+/** Resolve a model's explicit reasoning vocabulary before its provider fallback. */
+export function getRegistryThinkingEfforts(
+  provider: string,
+  modelId: string
+): readonly string[] | undefined {
+  const entry = getRegistryEntry(provider);
+  if (!entry) return undefined;
+  const modelEfforts = getRegistryModelThinkingEfforts(provider, modelId);
+  if (modelEfforts !== undefined) return modelEfforts;
+  return entry.defaultSupportedThinkingEfforts;
+}
+
+/**
+ * Decide whether a non-empty live catalog may exclude omitted static models
+ * during request routing and wildcard expansion.
+ *
+ * Live discovery is authoritative by default, including for dynamic providers.
+ * Providers with intentionally partial discovery must explicitly opt out in
+ * their registry entry.
+ */
+export function providerUsesAuthoritativeLiveCatalog(provider: string): boolean {
+  const entry = getRegistryEntry(provider);
+
+  if (entry && typeof entry.liveCatalogAuthoritative === "boolean") {
+    return entry.liveCatalogAuthoritative;
+  }
+
+  return true;
+}
+
 /** Get all registered provider IDs */
 export function getRegisteredProviders(): string[] {
   return Object.keys(REGISTRY);
@@ -205,9 +260,9 @@ function ensureUnsupportedParamsPopulated(): void {
  */
 export function getUnsupportedParams(provider: string, modelId: string): readonly string[] {
   ensureUnsupportedParamsPopulated();
-  // 1. Check current provider's registry (exact match)
+  // 1. Check current provider's registry (exact match, then declared aliases)
   const entry = getRegistryEntry(provider);
-  const modelEntry = entry?.models?.find((m) => m.id === modelId);
+  const modelEntry = entry?.models?.find((m) => m.id === modelId || m.aliases?.includes(modelId));
   if (modelEntry?.unsupportedParams) return modelEntry.unsupportedParams;
 
   // 2. O(1) lookup in precomputed map (handles cross-provider routing)
@@ -221,7 +276,23 @@ export function getUnsupportedParams(provider: string, modelId: string): readonl
     if (bare) return bare;
   }
 
+  // 4. Provider-wide fallback for providers whose limitation applies to every
+  // model they serve, not just the ones statically catalogued (e.g. AI Horde's
+  // `passthroughModels: true` roster changes as workers come and go, but no
+  // model it hosts supports tool calling — see RegistryEntry.unsupportedParams).
+  if (entry?.unsupportedParams) return entry.unsupportedParams;
+
   return [];
+}
+
+/**
+ * True for providers whose OpenAI-compatible facade rejects a single-text-part
+ * content array and only accepts the equivalent plain string (RegistryEntry.
+ * requiresPlainStringContent). Used by the Responses→Chat translator to scope
+ * its content-collapse workaround to just these providers.
+ */
+export function requiresPlainStringContent(provider: string): boolean {
+  return getRegistryEntry(provider)?.requiresPlainStringContent === true;
 }
 
 /**
@@ -237,11 +308,12 @@ export function getProviderCategory(provider: string): "oauth" | "apikey" {
 }
 
 /**
- * Derive the latest opus/sonnet/haiku model IDs from the `claude` registry entry.
+ * Derive the latest fable/opus/sonnet/haiku model IDs from the `claude` registry entry.
  * Picks the first model whose ID matches each family pattern — registry order
  * determines precedence, so newer models should be listed first.
  */
 export function getClaudeCodeDefaultModels(): {
+  fable: string;
   opus: string;
   sonnet: string;
   haiku: string;
@@ -249,8 +321,30 @@ export function getClaudeCodeDefaultModels(): {
   const models = REGISTRY.claude?.models ?? [];
   const find = (pattern: RegExp) => models.find((m) => pattern.test(m.id))?.id ?? "";
   return {
+    fable: find(/fable/i),
     opus: find(/opus/i),
     sonnet: find(/sonnet/i),
     haiku: find(/haiku/i),
   };
+}
+
+/**
+ * #13452: shared guard for `*-compatible-*` executors' `buildUrl()`.
+ * `BaseExecutor`/`DefaultExecutor` used to default an `openai-compatible-*`
+ * / `anthropic-compatible-*` connection to the real OpenAI/Anthropic API
+ * when `credentials.providerSpecificData.baseUrl` was absent — silently
+ * shipping the connection's own stored "API key" as a Bearer/x-api-key
+ * token to a public third party instead of the operator's intended
+ * local/self-hosted endpoint. `provider` is embedded in the thrown error
+ * only for operator debuggability — it is never sent upstream.
+ */
+export function requireCompatibleBaseUrl(
+  provider: string | null | undefined,
+  providerSpecificData: { baseUrl?: unknown } | null | undefined
+): string {
+  const baseUrl = providerSpecificData?.baseUrl;
+  if (typeof baseUrl === "string" && baseUrl) return baseUrl;
+  throw new Error(
+    `provider node "${provider}" has no baseUrl — node missing or connection not hydrated`
+  );
 }

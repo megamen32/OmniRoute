@@ -1,13 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import type { AuditLogEntry } from "@/lib/compliance/index";
 import ActivityFeed from "./components/ActivityFeed";
-import EventTypeFilter, {
-  type EventCategory,
-  matchesCategory,
-} from "./components/EventTypeFilter";
+import EventTypeFilter, { type EventCategory, matchesCategory } from "./components/EventTypeFilter";
 
 const FEED_LIMIT = 200;
 
@@ -17,7 +14,9 @@ export default function ActivityFeedClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [category, setCategory] = useState<EventCategory>("all");
-  const referenceNowMs = useRef<number>(Date.now());
+  // State (not a ref) because it is rendered: refs cannot be read during
+  // render, and Date.now() cannot run there either — the fetch settles it.
+  const [referenceNowMs, setReferenceNowMs] = useState<number>(0);
 
   const fetchEntries = useCallback(async () => {
     setLoading(true);
@@ -33,10 +32,10 @@ export default function ActivityFeedClient() {
       }
       const data = (await res.json()) as AuditLogEntry[];
       // Reset reference time on fresh load so relative timestamps are stable
-      referenceNowMs.current = Date.now();
+      setReferenceNowMs(Date.now());
       setAllEntries(Array.isArray(data) ? data : []);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch activity";
+      const msg = err instanceof Error ? err.message : t("fetchFailed");
       setError(msg);
     } finally {
       setLoading(false);
@@ -44,7 +43,9 @@ export default function ActivityFeedClient() {
   }, [t]);
 
   useEffect(() => {
-    fetchEntries();
+    void (async () => {
+      await fetchEntries();
+    })();
   }, [fetchEntries]);
 
   const filtered =
@@ -68,7 +69,7 @@ export default function ActivityFeedClient() {
           onClick={() => fetchEntries()}
           disabled={loading}
           className="px-4 py-2 rounded-lg text-sm font-medium bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-main)] hover:bg-[var(--color-bg-alt)] transition-colors disabled:opacity-50"
-          aria-label="Refresh activity feed"
+          aria-label={t("refreshAria")}
         >
           {loading ? (
             <span className="flex items-center gap-2">
@@ -78,14 +79,14 @@ export default function ActivityFeedClient() {
               >
                 progress_activity
               </span>
-              Loading
+              {t("loading")}
             </span>
           ) : (
             <span className="flex items-center gap-2">
               <span className="material-symbols-outlined text-[16px]" aria-hidden="true">
                 refresh
               </span>
-              Refresh
+              {t("refresh")}
             </span>
           )}
         </button>
@@ -114,10 +115,10 @@ export default function ActivityFeedClient() {
             >
               progress_activity
             </span>
-            <span className="text-sm">Loading activity…</span>
+            <span className="text-sm">{t("loadingActivity")}</span>
           </div>
         ) : (
-          <ActivityFeed entries={filtered} referenceNowMs={referenceNowMs.current} />
+          <ActivityFeed entries={filtered} referenceNowMs={referenceNowMs} />
         )}
       </div>
     </div>

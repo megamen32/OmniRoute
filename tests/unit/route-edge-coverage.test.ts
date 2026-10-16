@@ -15,7 +15,10 @@ const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
 const compliance = await import("../../src/lib/compliance/index.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
 const modelsDb = await import("../../src/lib/db/models.ts");
-const localDb = await import("../../src/lib/localDb.ts");
+const { updateSettings } = await import("@/lib/db/settings");
+const { createProxy, assignProxyToScope } = await import("@/lib/db/proxies");
+const { invalidateDbCache } = await import("@/lib/db/readCache");
+const localDb = { updateSettings, createProxy, assignProxyToScope, invalidateDbCache };
 const listKeysRoute = await import("../../src/app/api/keys/route.ts");
 const settingsProxyRoute = await import("../../src/app/api/settings/proxy/route.ts");
 const managementProxiesRoute = await import("../../src/app/api/v1/management/proxies/route.ts");
@@ -37,7 +40,7 @@ async function resetStorage() {
 
   core.resetDbInstance();
   apiKeysDb.resetApiKeyState();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -135,7 +138,7 @@ test.beforeEach(async () => {
 
 test.after(async () => {
   await resetStorage();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("api keys route covers auth, create, masking, pagination fallback and cloud sync", async () => {
@@ -1202,7 +1205,7 @@ test("embeddings route handles responses provider nodes, invalid local nodes, an
     );
     assert.equal(localResponse.status, 200);
     assert.equal(fetchCalls[0].url, "http://localhost:7790/v1/embeddings");
-
+    localDb.invalidateDbCache("nodes");
     const remoteResponse = await withPrepareOverride(
       "SELECT * FROM provider_nodes",
       ({ statement }) =>

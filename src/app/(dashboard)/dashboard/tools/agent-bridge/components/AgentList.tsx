@@ -4,16 +4,22 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { AgentCard } from "./AgentCard";
 import type { MitmTargetView } from "@/mitm/types";
-import type { AgentStateEntry, AgentMappingsMap } from "../AgentBridgePageClient";
+import type {
+  AgentStateEntry,
+  AgentMappingsMap,
+  AgentBridgeServerState,
+} from "../AgentBridgePageClient";
 import type { MappingRow } from "./ModelMappingTable";
 
 interface AgentListProps {
   targets: MitmTargetView[];
   agentStates: AgentStateEntry[];
   serverRunning: boolean;
+  serverState: AgentBridgeServerState;
   mappingsMap: AgentMappingsMap;
   onDnsToggle: (agentId: string, enabled: boolean) => Promise<void>;
   onMappingsSave: (agentId: string, mappings: MappingRow[]) => Promise<void>;
+  onReset: (agentId: string) => Promise<boolean>;
 }
 
 type SetupFilter = "all" | "active" | "setup-required" | "investigating";
@@ -26,9 +32,11 @@ export function AgentList({
   targets,
   agentStates,
   serverRunning,
+  serverState,
   mappingsMap,
   onDnsToggle,
   onMappingsSave,
+  onReset,
 }: AgentListProps) {
   const t = useTranslations("agentBridge");
   const [filter, setFilter] = useState<SetupFilter>("all");
@@ -130,9 +138,11 @@ export function AgentList({
               target={target}
               agentState={stateByAgent[target.id]}
               serverRunning={serverRunning}
+              serverState={serverState}
               mappings={mappingsMap[target.id] ?? []}
               onDnsToggle={onDnsToggle}
               onMappingsSave={onMappingsSave}
+              onReset={onReset}
             />
           ))
         )}

@@ -1,6 +1,15 @@
-import { getUnifiedModelsResponse } from "@/app/api/v1/models/catalog";
+import { getUnifiedModelsResponse as fetchUnifiedModels } from "@/app/api/v1/models/catalog";
+import { getProviderNodeById } from "@/lib/db/providers/nodes";
 import { getServiceModels } from "@/lib/db/serviceModels";
+import { isServiceBackendPluginId } from "@/lib/services/serviceBackends";
 import { getRegistryEntry } from "@omniroute/open-sse/config/providerRegistry.ts";
+import { getProviderById, getProviderByAlias } from "@/shared/constants/providers";
+import { isCompatibleProviderConnectionId } from "@/shared/utils/compatibleProviderId";
+import { stripStaleEncodingHeaders } from "@omniroute/open-sse/utils/upstreamResponseHeaders.ts";
+
+// Object field, not a live ESM binding: tests replace `load` so a planted
+// upstream response reaches GET. Production leaves it pointing at the catalog.
+export const unifiedModels = { load: fetchUnifiedModels };
 
 /**
  * Handle CORS preflight
@@ -20,7 +29,7 @@ export async function OPTIONS() {
  */
 export async function GET(request: Request, { params }: { params: Promise<{ provider: string }> }) {
   const { provider: rawProvider } = await params;
-  if (rawProvider === "cliproxyapi" || rawProvider === "9router") {
+  if (isServiceBackendPluginId(rawProvider)) {
     const models = getServiceModels(rawProvider).filter((model) => model.available !== false);
     return Response.json({
       object: "list",
@@ -37,28 +46,44 @@ export async function GET(request: Request, { params }: { params: Promise<{ prov
   const providerEntry = getRegistryEntry(rawProvider);
   let providerId = rawProvider;
   let providerAlias = rawProvider;
+  let compatiblePrefix: string | null = null;
 
   if (providerEntry) {
     providerId = providerEntry.id;
     providerAlias = providerEntry.alias || providerId;
   } else {
-    // Allow fetching models by connection ID for compatible providers
-    const isCompatibleConnectionId = /^(openai|anthropic)-compatible-chat-[a-f0-9-]+$/.test(rawProvider);
-    if (!isCompatibleConnectionId) {
-      return Response.json(
-        {
-          error: {
-            message: `Unknown provider: ${rawProvider}`,
-            type: "invalid_request_error",
-            code: "invalid_provider",
+    // Fall back to the dashboard-facing provider catalog (covers LOCAL_PROVIDERS, SEARCH_PROVIDERS, etc.)
+    const catalogEntry = getProviderById(rawProvider) ?? getProviderByAlias(rawProvider);
+    if (catalogEntry) {
+      providerId = catalogEntry.id;
+      providerAlias = catalogEntry.alias || providerId;
+    } else {
+      // Allow fetching models by connection ID for compatible providers
+      const isCompatibleConnectionId = isCompatibleProviderConnectionId(rawProvider);
+      if (!isCompatibleConnectionId) {
+        return Response.json(
+          {
+            error: {
+              message: `Unknown provider: ${rawProvider}`,
+              type: "invalid_request_error",
+              code: "invalid_provider",
+            },
           },
-        },
-        { status: 400 }
-      );
+          { status: 400 }
+        );
+      }
+
+      const compatibleNode = (await getProviderNodeById(rawProvider)) as {
+        prefix?: unknown;
+      } | null;
+      compatiblePrefix =
+        typeof compatibleNode?.prefix === "string" && compatibleNode.prefix.trim().length > 0
+          ? compatibleNode.prefix.trim()
+          : null;
     }
   }
 
-  const response = await getUnifiedModelsResponse(request);
+  const response = await unifiedModels.load(request);
   const payload = (await response
     .clone()
     .json()
@@ -76,10 +101,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ prov
     if (!id) return id;
     if (id.startsWith(`${providerAlias}/`)) return id.slice(providerAlias.length + 1);
     if (id.startsWith(`${providerId}/`)) return id.slice(providerId.length + 1);
+    if (compatiblePrefix && id.startsWith(`${compatiblePrefix}/`)) {
+      return id.slice(compatiblePrefix.length + 1);
+    }
     return id;
   };
 
-  const filtered = payload.data.filter((model) => model?.owned_by === providerId);
+  const acceptedOwners = new Set([providerId, providerAlias]);
+  if (compatiblePrefix) acceptedOwners.add(compatiblePrefix);
+  const filtered = payload.data.filter(
+    (model) => typeof model?.owned_by === "string" && acceptedOwners.has(model.owned_by)
+  );
   const deduped = new Map<string, Record<string, any>>();
 
   for (const model of filtered) {
@@ -93,6 +125,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ prov
     });
   }
 
+  // Re-serialization changes the byte length, so the catalog's stale
+  // content-length/content-encoding/transfer-encoding must not ride onto this
+  // smaller body — a stale length makes the response never complete for the
+  // client (the dashboard model picker hangs on "loading" forever, #14092).
+  const headers = stripStaleEncodingHeaders(response.headers);
+
   return Response.json(
     {
       object: payload.object || "list",
@@ -100,7 +138,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ prov
     },
     {
       status: response.status,
-      headers: response.headers,
+      headers,
     }
   );
 }

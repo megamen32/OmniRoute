@@ -8,19 +8,37 @@ import {
 import {
   parseTranslationModel,
   getTranslationProvider,
-  buildDynamicAudioProvider,
-  type ProviderNodeRow,
 } from "@omniroute/open-sse/config/audioRegistry.ts";
+import { resolveDynamicAudioProviders } from "@/app/api/v1/_shared/audioProviderNodes";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
-import { getProviderNodes } from "@/lib/localDb";
 import {
   isAllRateLimitedCredentials,
   rateLimitedProviderResponse,
 } from "@/app/api/v1/_shared/rateLimit";
 import { attachOmniRouteMetaToResponse } from "@/domain/omnirouteResponseMeta";
 import { generateRequestId } from "@/shared/utils/requestId";
+import { getComboByName, getCombos } from "@/lib/db/combos";
+import { getUserDatabaseSettings } from "@/lib/db/databaseSettings";
+import { handleComboChat } from "@omniroute/open-sse/services/combo.ts";
+import { log } from "@omniroute/open-sse/utils/logger.ts";
+import { saveCallLog } from "@/lib/usageDb";
+
+/**
+ * Copy a multipart body, swapping only the `model` field. Combo fan-out needs one
+ * body per target, and the uploaded file part is reused as-is (a Blob can be read
+ * more than once).
+ */
+function withModel(formData: FormData, modelStr: string): FormData {
+  const next = new FormData();
+  for (const [key, value] of formData.entries()) {
+    if (key === "model") continue;
+    next.append(key, value as string | Blob);
+  }
+  next.set("model", modelStr);
+  return next;
+}
 
 /**
  * Handle CORS preflight
@@ -32,6 +50,105 @@ export async function OPTIONS() {
       "Access-Control-Allow-Headers": "*",
     },
   });
+}
+
+/**
+ * Translate with one concrete `provider/model` string. Split out of POST so combo
+ * fan-out can invoke it once per target.
+ */
+async function translateWithModel(
+  formData: FormData,
+  modelStr: string,
+  startTime: number,
+  apiKeyId?: string | null,
+  apiKeyName?: string | null
+): Promise<Response> {
+  // Translation is served by the transcription-capable nodes (Whisper-style
+  // endpoints expose both), plus general chat/responses gateways. Remote hosts are
+  // opt-in (default OFF).
+  const dynamicProviders = await resolveDynamicAudioProviders(
+    "/audio/translations",
+    "audio-transcriptions"
+  );
+
+  const { provider, model: resolvedModel } = parseTranslationModel(modelStr, dynamicProviders);
+  if (!provider) {
+    return errorResponse(
+      HTTP_STATUS.BAD_REQUEST,
+      `Invalid translation model: ${modelStr}. Use format: provider/model`
+    );
+  }
+
+  // Check provider config — hardcoded first, then dynamic
+  const providerConfig =
+    getTranslationProvider(provider) || dynamicProviders.find((dp) => dp.id === provider) || null;
+
+  // Get credentials — skip for local providers (authType: "none")
+  let credentials = null;
+  if (providerConfig && providerConfig.authType !== "none") {
+    const credentialKey = providerConfig.credentialProviderId || provider;
+    // NOTE: the 2nd arg of this helper is `excludeConnectionId`, not "use this
+    // connection" — a combo target's connectionId must never be passed here.
+    credentials = await getProviderCredentialsWithQuotaPreflight(credentialKey);
+    if (!credentials) {
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
+    }
+    if (isAllRateLimitedCredentials(credentials)) {
+      return rateLimitedProviderResponse(provider, credentials);
+    }
+  }
+
+  let response = await handleAudioTranslation({
+    formData,
+    credentials,
+    resolvedProvider: providerConfig,
+    resolvedModel,
+  });
+
+  const connectionId = (credentials as { connectionId?: string } | null)?.connectionId || undefined;
+  const logModel = `${provider}/${resolvedModel}`;
+
+  if (response?.ok) {
+    await clearRecoveredProviderState(credentials);
+    // No text body / playback duration available from the multipart upload, so
+    // per-second pricing cannot be applied → cost 0 (ADD-only headers, body intact).
+    response = attachOmniRouteMetaToResponse(response, {
+      provider,
+      model: resolvedModel,
+      costUsd: 0,
+      latencyMs: Date.now() - startTime,
+      requestId: generateRequestId(),
+    });
+    saveCallLog({
+      method: "POST",
+      path: "/v1/audio/translations",
+      status: 200,
+      model: logModel,
+      provider,
+      connectionId,
+      duration: Date.now() - startTime,
+      apiKeyId: apiKeyId || undefined,
+      apiKeyName: apiKeyName || undefined,
+    }).catch(() => {});
+  } else if (response) {
+    const errorText = await response
+      .clone()
+      .text()
+      .catch(() => "");
+    saveCallLog({
+      method: "POST",
+      path: "/v1/audio/translations",
+      status: response.status,
+      model: logModel,
+      provider,
+      connectionId,
+      duration: Date.now() - startTime,
+      error: errorText.slice(0, 500),
+      apiKeyId: apiKeyId || undefined,
+      apiKeyName: apiKeyName || undefined,
+    }).catch(() => {});
+  }
+  return response;
 }
 
 /**
@@ -54,79 +171,58 @@ export async function POST(request) {
   if (!model) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
+  const modelStr = String(model);
 
   // Enforce API key policies (model restrictions + budget limits)
-  const policy = await enforceApiKeyPolicy(request, model as string);
+  const policy = await enforceApiKeyPolicy(request, modelStr);
   if (policy.rejection) return policy.rejection;
 
-  // Load local provider_nodes for audio routing (only localhost — prevents auth bypass/SSRF)
-  let dynamicProviders: ReturnType<typeof buildDynamicAudioProvider>[] = [];
-  try {
-    const nodes = await getProviderNodes();
-    dynamicProviders = (Array.isArray(nodes) ? (nodes as unknown as ProviderNodeRow[]) : [])
-      .filter((n: ProviderNodeRow) => {
-        if (n.apiType !== "chat" && n.apiType !== "responses") return false;
+  // Forwarded into translateWithModel() (and combo fan-out below) so the
+  // resulting call_logs row is attributable to the API key that made the
+  // request, matching the pattern every other proxied route follows (#13544).
+  const apiKeyId = policy.apiKeyInfo?.id || null;
+  const apiKeyName = policy.apiKeyInfo?.name || null;
+
+  // A bare name (no "/") may be a combo. /v1/models advertises combos, and chat,
+  // embeddings and the sibling /v1/audio/transcriptions all resolve them —
+  // resolving here too keeps the catalog honest and frees callers from hardcoding
+  // a provider's internal model id.
+  if (!modelStr.includes("/")) {
+    try {
+      const combo = await getComboByName(modelStr);
+      if (combo) {
+        let allCombos: Awaited<ReturnType<typeof getCombos>> = [];
         try {
-          const hostname = new URL(n.baseUrl).hostname;
-          // Strictly matching 172.16.0.0/12 (Docker/local) and explicitly blocking ::1 per SSRF hardening
-          return (
-            hostname === "localhost" ||
-            hostname === "127.0.0.1" ||
-            /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname)
-          );
-        } catch {
-          return false;
-        }
-      })
-      .map((n) => buildDynamicAudioProvider(n, "/audio/translations"));
-  } catch {
-    // DB error — fall back to hardcoded providers only
-  }
+          allCombos = await getCombos();
+        } catch {}
+        let settings = {};
+        try {
+          settings = getUserDatabaseSettings();
+        } catch {}
 
-  const { provider, model: resolvedModel } = parseTranslationModel(
-    model as string,
-    dynamicProviders
-  );
-  if (!provider) {
-    return errorResponse(
-      HTTP_STATUS.BAD_REQUEST,
-      `Invalid translation model: ${model}. Use format: provider/model`
-    );
-  }
-
-  // Check provider config — hardcoded first, then dynamic
-  const providerConfig =
-    getTranslationProvider(provider) || dynamicProviders.find((dp) => dp.id === provider) || null;
-
-  // Get credentials — skip for local providers (authType: "none")
-  let credentials = null;
-  if (providerConfig && providerConfig.authType !== "none") {
-    credentials = await getProviderCredentialsWithQuotaPreflight(provider);
-    if (!credentials) {
-      return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
-    }
-    if (isAllRateLimitedCredentials(credentials)) {
-      return rateLimitedProviderResponse(provider, credentials);
+        return handleComboChat({
+          body: { model: modelStr } as any,
+          combo: combo as any,
+          handleSingleModel: async (_reqBody: any, targetModelStr: string) =>
+            translateWithModel(
+              withModel(formData, targetModelStr),
+              targetModelStr,
+              startTime,
+              apiKeyId,
+              apiKeyName
+            ),
+          isModelAvailable: undefined,
+          log,
+          settings,
+          allCombos: allCombos as any,
+          relayOptions: undefined,
+          signal: undefined,
+        } as any);
+      }
+    } catch (err) {
+      log.error("AUDIO", `Combo resolution failed for ${modelStr}: ${err}`);
     }
   }
 
-  let response = await handleAudioTranslation({
-    formData,
-    credentials,
-    resolvedProvider: providerConfig,
-    resolvedModel,
-  });
-  if (response?.ok) {
-    await clearRecoveredProviderState(credentials);
-    // No text body / playback duration available from the multipart upload, so
-    // per-second pricing cannot be applied → cost 0 (ADD-only headers, body intact).
-    response = attachOmniRouteMetaToResponse(response, {
-      provider,
-      model: resolvedModel,
-      costUsd: 0,
-      latencyMs: Date.now() - startTime,
-      requestId: generateRequestId(),
-    });
-  }
-  return response;
+  return translateWithModel(formData, modelStr, startTime, apiKeyId, apiKeyName);
 }

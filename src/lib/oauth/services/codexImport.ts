@@ -26,10 +26,28 @@ export type CodexImportPayload = {
   idToken?: string;
   email: string;
   expiresAt: string;
+  // Mirrors expiresAt — the dashboard token-health badge prefers tokenExpiresAt
+  // over expiresAt, so an upsert that leaves the old row's stale value behind
+  // shows "Token Expired" for freshly imported tokens (#5326 pattern).
+  tokenExpiresAt: string;
   testStatus: "active";
+  isActive: true;
+  errorCode: null;
+  lastError: null;
+  lastErrorAt: null;
+  lastErrorType: null;
+  lastErrorSource: null;
+  backoffLevel: 0;
+  rateLimitedUntil: null;
+  priority?: number;
   providerSpecificData?: {
     chatgptAccountId?: string;
+    // Canonical alias consumed by the existing Codex workspace upsert path.
+    workspaceId?: string;
     chatgptPlanType?: string;
+    // On a matching re-import the existing row's providerSpecificData is
+    // carried through here (preserveExistingCodexConnectionState).
+    [key: string]: unknown;
   };
 };
 
@@ -58,10 +76,7 @@ function decodeJwtPayload(jwt: unknown): Record<string, unknown> | null {
     const missingPadding =
       (BASE64_BLOCK_SIZE - (base64.length % BASE64_BLOCK_SIZE)) % BASE64_BLOCK_SIZE;
     const padded = base64 + "=".repeat(missingPadding);
-    return JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as Record<
-      string,
-      unknown
-    >;
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -82,19 +97,29 @@ export function extractCodexAccountInfo(idToken: string): {
 } {
   const payload = decodeJwtPayload(idToken);
   if (!payload) return {};
-  const chatgpt =
-    (payload["https://api.openai.com/auth"] as Record<string, unknown>) || {};
+  const chatgpt = (payload["https://api.openai.com/auth"] as Record<string, unknown>) || {};
   return {
     email: typeof payload.email === "string" ? payload.email : undefined,
     chatgptAccountId:
-      typeof chatgpt.chatgpt_account_id === "string"
-        ? chatgpt.chatgpt_account_id
-        : undefined,
+      typeof chatgpt.chatgpt_account_id === "string" ? chatgpt.chatgpt_account_id : undefined,
     chatgptPlanType:
-      typeof chatgpt.chatgpt_plan_type === "string"
-        ? chatgpt.chatgpt_plan_type
-        : undefined,
+      typeof chatgpt.chatgpt_plan_type === "string" ? chatgpt.chatgpt_plan_type : undefined,
   };
+}
+
+/**
+ * Decode a JWT's `exp` claim (seconds since epoch, per RFC 7519) without
+ * verifying the signature. Returns `null` when the token isn't a decodable
+ * JWT or carries no numeric `exp`.
+ *
+ * Exported so sibling Codex import paths (e.g. the session-JSON normalizer
+ * at `codexSessionImport.ts`, #6636) can check expiry without duplicating a
+ * 3rd inline JWT decoder.
+ */
+export function decodeJwtExp(jwt: unknown): number | null {
+  const payload = decodeJwtPayload(jwt);
+  const exp = payload && typeof payload.exp === "number" ? payload.exp : null;
+  return exp !== null && Number.isFinite(exp) ? exp : null;
 }
 
 function pickString(...candidates: (string | undefined)[]): string | undefined {
@@ -146,9 +171,7 @@ function unwrapCodexAuthJson(rec: Record<string, unknown>): Record<string, unkno
  * its camelCase alias when it is absent, so a snake_case or mixed export keeps
  * working unchanged.
  */
-function applyCamelCaseAliases(
-  rec: Record<string, unknown>,
-): Record<string, unknown> {
+function applyCamelCaseAliases(rec: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...rec };
   const fillFrom = (snake: string, value: unknown) => {
     if (out[snake] === undefined && typeof value === "string" && value) {
@@ -181,9 +204,7 @@ export function normalizeCodexImportRecord(input: unknown): NormalizeResult {
     return { ok: false, error: "Record is not an object" };
   }
 
-  const rec = applyCamelCaseAliases(
-    unwrapCodexAuthJson(input as Record<string, unknown>),
-  );
+  const rec = applyCamelCaseAliases(unwrapCodexAuthJson(input as Record<string, unknown>));
 
   // Allow type field to be missing or "codex"; reject anything else explicitly so
   // users don't accidentally import claude/gemini exports through this path.
@@ -211,18 +232,22 @@ export function normalizeCodexImportRecord(input: unknown): NormalizeResult {
 
   const chatgptAccountId = pickString(
     fromJwt.chatgptAccountId,
-    rec.account_id as string | undefined,
+    rec.account_id as string | undefined
   );
   const chatgptPlanType = pickString(
     fromJwt.chatgptPlanType,
-    rec.chatgpt_plan_type as string | undefined,
+    rec.chatgpt_plan_type as string | undefined
   );
 
-  const expiresAt =
-    parseExpiry(rec.expired) ?? parseAccessTokenExp(accessToken);
+  const expiresAt = parseExpiry(rec.expired) ?? parseAccessTokenExp(accessToken);
 
   const providerSpecificData: CodexImportPayload["providerSpecificData"] = {};
-  if (chatgptAccountId) providerSpecificData.chatgptAccountId = chatgptAccountId;
+  if (chatgptAccountId) {
+    providerSpecificData.chatgptAccountId = chatgptAccountId;
+    // CodexSwitcher stores this stable value as account_id; mirror it into
+    // workspaceId so createProviderConnection performs its existing upsert.
+    providerSpecificData.workspaceId = chatgptAccountId;
+  }
   if (chatgptPlanType) providerSpecificData.chatgptPlanType = chatgptPlanType;
 
   const payload: CodexImportPayload = {
@@ -232,14 +257,77 @@ export function normalizeCodexImportRecord(input: unknown): NormalizeResult {
     refreshToken,
     email,
     expiresAt,
+    tokenExpiresAt: expiresAt,
     testStatus: "active",
+    // Fresh imported OAuth credentials supersede a previous refresh failure.
+    isActive: true,
+    errorCode: null,
+    lastError: null,
+    lastErrorAt: null,
+    lastErrorType: null,
+    lastErrorSource: null,
+    backoffLevel: 0,
+    rateLimitedUntil: null,
   };
   if (idToken) payload.idToken = idToken;
+  if (typeof rec.priority === "number" && Number.isInteger(rec.priority) && rec.priority > 0) {
+    payload.priority = rec.priority;
+  }
   if (Object.keys(providerSpecificData).length > 0) {
     payload.providerSpecificData = providerSpecificData;
   }
 
   return { ok: true, payload };
+}
+
+function toPsdRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * When a bulk-imported record matches an existing connection (same email +
+ * providerSpecificData.workspaceId — the exact key createProviderConnection's
+ * Codex oauth upsert matches on), the upsert replaces every column the payload
+ * supplies wholesale. Adjust the payload so a re-import refreshes credentials
+ * WITHOUT clobbering state the import cannot know about (#11954 follow-up):
+ *
+ * - providerSpecificData: merge the import's keys OVER the existing row's, so
+ *   chatgptUserId / organizations / workspacePlanType (OAuth login flow),
+ *   runtime quota state (codexExhaustedWindowByScope, codexScopeRateLimitedUntil)
+ *   and the operator-set codexFingerprintMode survive — the same pattern the
+ *   single-file import uses (codexAuthImport.ts).
+ * - priority: drop the forwarded 9router priority — the upsert path never
+ *   reorders siblings, so overwriting the matched row's priority can duplicate
+ *   another connection's. The operator's existing ordering wins.
+ *
+ * Pure: the caller supplies the candidate connections (provider "codex",
+ * authType "oauth"); no match returns the payload unchanged.
+ */
+export function preserveExistingCodexConnectionState(
+  payload: CodexImportPayload,
+  existingConnections: Array<Record<string, unknown>>
+): CodexImportPayload {
+  const workspaceId = payload.providerSpecificData?.workspaceId;
+  if (!workspaceId) return payload;
+  const match = existingConnections.find(
+    (conn) =>
+      conn.provider === "codex" &&
+      conn.authType === "oauth" &&
+      conn.email === payload.email &&
+      toPsdRecord(conn.providerSpecificData).workspaceId === workspaceId
+  );
+  if (!match) return payload;
+  const adjusted: CodexImportPayload = {
+    ...payload,
+    providerSpecificData: {
+      ...toPsdRecord(match.providerSpecificData),
+      ...payload.providerSpecificData,
+    },
+  };
+  delete adjusted.priority;
+  return adjusted;
 }
 
 /**

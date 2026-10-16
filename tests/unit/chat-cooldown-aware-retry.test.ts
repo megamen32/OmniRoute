@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import pino from "pino";
 
 import { createChatPipelineHarness } from "../integration/_chatPipelineHarness.ts";
 
@@ -9,6 +10,9 @@ process.env.STREAM_READINESS_TIMEOUT_MS = "50";
 const harness = await createChatPipelineHarness("chat-cooldown-aware-retry");
 const auth = await import("../../src/sse/services/auth.ts");
 const { getProviderConnectionById } = await import("../../src/lib/db/providers.ts");
+const { logger: rootLogger } = await import("../../src/shared/utils/logger.ts");
+const { __setTlsFetchOverrideForTesting } =
+  await import("../../open-sse/services/claudeTlsClient.ts");
 const {
   BaseExecutor,
   buildOpenAIResponse,
@@ -57,6 +61,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  __setTlsFetchOverrideForTesting(null);
   BaseExecutor.RETRY_CONFIG.maxAttempts = originalRetryConfig.maxAttempts;
   BaseExecutor.RETRY_CONFIG.delayMs = originalRetryConfig.delayMs;
   await resetStorage();
@@ -64,6 +69,49 @@ test.afterEach(async () => {
 
 test.after(async () => {
   await harness.cleanup();
+});
+
+test("handleChat does not probe Claude Web repeatedly after an upstream 429", async () => {
+  await seedConnection("claude-web", {
+    apiKey: "sessionKey=fake-session",
+  });
+  await settingsDb.updateSettings({
+    requestRetry: 3,
+    maxRetryIntervalSec: 3,
+  });
+
+  let completionCalls = 0;
+  __setTlsFetchOverrideForTesting(async (url) => {
+    if (url.endsWith("/organizations")) {
+      return {
+        status: 200,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        text: JSON.stringify([{ uuid: "org-test" }]),
+        body: null,
+      };
+    }
+
+    completionCalls += 1;
+    return {
+      status: 429,
+      headers: new Headers({ "Content-Type": "application/json" }),
+      text: JSON.stringify({ error: { message: "Rate limited." } }),
+      body: null,
+    };
+  });
+
+  const response = await handleChat(
+    buildRequest({
+      body: {
+        model: "claude-web/claude-opus-5",
+        stream: false,
+        messages: [{ role: "user", content: "do not retry a Claude Web 429" }],
+      },
+    })
+  );
+
+  assert.equal(response.status, 429);
+  assert.equal(completionCalls, 1);
 });
 
 test("handleChat waits for a short cooldown and retries once within the configured budget", async () => {
@@ -242,7 +290,7 @@ test("handleChat returns model_cooldown when every credential for the requested 
   assert.ok(Number(response.headers.get("Retry-After")) >= 1);
 });
 
-test("handleChat returns stream readiness timeout without entering cooldown-aware retry or account lockout", async () => {
+test("handleChat retries a direct stream readiness timeout once, without cooldown-aware retry or account lockout", async () => {
   const connection = await seedConnection("openai", {
     apiKey: "sk-openai-stream-readiness-timeout",
   });
@@ -269,7 +317,10 @@ test("handleChat returns stream readiness timeout without entering cooldown-awar
   const body = (await response.json()) as any;
 
   assert.equal(response.status, 504);
-  assert.equal(fetchCalls, 1);
+  // #14209 (issue #14025): a direct (non-combo, non-forced, still-connected) request gets ONE
+  // bounded same-target retry of a readiness timeout before the 504 — so exactly two upstream
+  // calls, and still no cooldown-aware retry loop or account lockout.
+  assert.equal(fetchCalls, 2);
   assert.equal(body.error.code, "STREAM_READINESS_TIMEOUT");
 
   const refreshedConnection = (await getProviderConnectionById((connection as any).id)) as any;
@@ -318,4 +369,60 @@ test("handleChat aborts the pending cooldown wait when the client disconnects", 
   assert.ok(elapsedMs < 1_000, `should abort cooldown wait promptly, got ${elapsedMs}ms`);
   assert.equal(response.status, 499);
   assert.equal(body.error.message, "Request aborted");
+});
+
+test("#15789: requestRetry=3 dispatches upstream exactly 4 times and never logs a retry above its max", async () => {
+  BaseExecutor.RETRY_CONFIG.maxAttempts = 0;
+  await seedConnection("openai", {
+    apiKey: "sk-openai-cooldown-retry-bounds",
+  });
+  await settingsDb.updateSettings({
+    requestRetry: 3,
+    maxRetryIntervalSec: 3,
+  });
+
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response(JSON.stringify({ error: { message: "Rate limit exceeded." } }), {
+      status: 429,
+      headers: { "Content-Type": "application/json", "Retry-After": "1" },
+    });
+  };
+
+  const stream = rootLogger[pino.symbols.streamSym];
+  const originalWrite = stream.write;
+  const cooldownLines: string[] = [];
+  stream.write = function (chunk: unknown, ...rest: unknown[]) {
+    const line = String(chunk);
+    if (line.includes("COOLDOWN_RETRY")) cooldownLines.push(line);
+    return originalWrite.call(this, chunk, ...rest);
+  };
+
+  try {
+    const response = await handleChat(
+      buildRequest({
+        body: {
+          model: "openai/gpt-4.1",
+          stream: false,
+          messages: [{ role: "user", content: "keep hitting 429 until retries run out" }],
+        },
+      })
+    );
+    await response.text();
+    assert.notEqual(response.status, 200);
+  } finally {
+    stream.write = originalWrite;
+  }
+
+  assert.equal(fetchCalls, 4, "maxRetries=3 means one initial dispatch plus three retries");
+
+  const counters = cooldownLines.flatMap((line) =>
+    [...line.matchAll(/(?:retry|attempt) (\d+)\/(\d+)/g)].map((m) => [Number(m[1]), Number(m[2])])
+  );
+  assert.ok(counters.length >= 6, `expected wait + restart log lines, got ${cooldownLines.length}`);
+  for (const [n, max] of counters) {
+    assert.equal(max, 3);
+    assert.ok(n >= 1 && n <= max, `logged ${n}/${max} is out of bounds`);
+  }
 });

@@ -1,22 +1,30 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { cn } from "@/shared/utils/cn";
 import { CliproxyServiceTab } from "./tabs/CliproxyServiceTab";
 import { NinerouterServiceTab } from "./tabs/NinerouterServiceTab";
 import { MuxServiceTab } from "./tabs/MuxServiceTab";
 import { BifrostServiceTab } from "./tabs/BifrostServiceTab";
+import { DarioServiceTab } from "./tabs/DarioServiceTab";
+import { OpenwaServiceTab } from "./tabs/OpenwaServiceTab";
+import { LlmlinguaServiceTab } from "./tabs/LlmlinguaServiceTab";
 
-type Tab = "cliproxy" | "9router" | "mux" | "bifrost";
+type Tab = "cliproxy" | "9router" | "mux" | "bifrost" | "dario" | "openwa" | "llmlingua";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "cliproxy", label: "CLIProxyAPI", icon: "swap_horiz" },
   { id: "9router", label: "9Router", icon: "route" },
   { id: "mux", label: "Mux", icon: "hub" },
   { id: "bifrost", label: "Bifrost", icon: "bolt" },
+  { id: "dario", label: "Dario", icon: "shield_person" },
+  { id: "openwa", label: "open-wa", icon: "chat" },
+  { id: "llmlingua", label: "LLMLingua", icon: "compress" },
 ];
 
 export default function ServicesPage() {
+  const t = useTranslations("embeddedServices");
   const sp = useSearchParams();
   const router = useRouter();
   const active = (sp.get("tab") ?? "cliproxy") as Tab;
@@ -28,11 +36,8 @@ export default function ServicesPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-xl font-semibold text-text-primary">Embedded Services</h1>
-        <p className="text-sm text-text-muted mt-1">
-          External engines managed on demand — CLIProxyAPI, 9Router, Mux, and Bifrost. Accessible on
-          loopback only.
-        </p>
+        <h1 className="text-xl font-semibold text-text-primary">{t("title")}</h1>
+        <p className="text-sm text-text-muted mt-1">{t("description")}</p>
       </header>
 
       {/* Tab strip */}
@@ -62,6 +67,9 @@ export default function ServicesPage() {
         {active === "9router" && <NinerouterServiceTab />}
         {active === "mux" && <MuxServiceTab />}
         {active === "bifrost" && <BifrostServiceTab />}
+        {active === "dario" && <DarioServiceTab />}
+        {active === "openwa" && <OpenwaServiceTab />}
+        {active === "llmlingua" && <LlmlinguaServiceTab />}
       </div>
     </div>
   );

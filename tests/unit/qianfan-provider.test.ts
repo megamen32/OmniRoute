@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 
 import { REGISTRY, getRegistryEntry } from "../../open-sse/config/providerRegistry.ts";
 import { PROVIDERS } from "../../open-sse/config/constants.ts";
@@ -26,7 +24,7 @@ test("qianfan registers Baidu ERNIE as an OpenAI-compatible API key provider", (
 
   assert.ok(APIKEY_PROVIDERS.qianfan, "qianfan should be visible in API key providers");
   assert.equal(APIKEY_PROVIDERS.qianfan.name, "Baidu Qianfan");
-  assert.equal(APIKEY_PROVIDERS.qianfan.website, "https://cloud.baidu.com/product/wenxinworkshop");
+  assert.equal(APIKEY_PROVIDERS.qianfan.website, "https://cloud.baidu.com/product-s/qianfan_home");
   assert.equal(APIKEY_PROVIDERS.qianfan.passthroughModels, undefined);
 
   assert.equal(PROVIDERS.qianfan.baseUrl, registryEntry.baseUrl);
@@ -63,8 +61,4 @@ test("qianfan provider creation schema accepts API-key connections", () => {
     assert.equal(validation.data.provider, "qianfan");
     assert.equal(validation.data.apiKey, "bce-v3/test-key");
   }
-});
-
-test("qianfan has a static provider icon asset", () => {
-  assert.equal(existsSync(join(process.cwd(), "public/providers/qianfan.svg")), true);
 });

@@ -9,9 +9,11 @@
  */
 
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
-const PACKAGE_VERSION = process.env.npm_package_version || "1.8.1";
-const BASE_URL = process.env.OMNIROUTE_BASE_URL || "http://localhost:20128";
+import { APP_CONFIG } from "@/shared/constants/appConfig";
+import { getFleetSkills } from "@/lib/conductor/fleetSkills";
+import { getBaseUrl } from "@/lib/wellKnown";
 
 /**
  * GET /.well-known/agent.json
@@ -19,16 +21,19 @@ const BASE_URL = process.env.OMNIROUTE_BASE_URL || "http://localhost:20128";
  * Returns the OmniRoute Agent Card that describes this gateway's
  * capabilities as an A2A agent.
  */
-export async function GET() {
+export async function GET(request?: NextRequest) {
+  // Conductor PRD RF2: fleet skills from the OmniConductor hub (cached ~60s; [] when
+  // the hub is unset/offline — the card stays valid without the fleet section).
+  const fleetSkills = await getFleetSkills();
+  const baseUrl = getBaseUrl(request);
   const agentCard = {
     name: "OmniRoute AI Gateway",
     description:
-      "Intelligent AI routing gateway with 36+ providers, smart fallback, " +
-      "quota tracking, format translation, and auto-managed combos. " +
-      "Routes AI requests to the optimal provider based on cost, latency, " +
-      "quota availability, and task requirements.",
-    url: `${BASE_URL}/a2a`,
-    version: PACKAGE_VERSION,
+      "Intelligent AI routing gateway with 36+ providers, smart fallback, quota tracking, " +
+      "format translation, and auto-managed combos. Routes AI requests to the optimal " +
+      "provider based on cost, latency, quota availability, and task requirements.",
+    url: `${baseUrl}/a2a`,
+    version: APP_CONFIG.version,
     capabilities: {
       streaming: true,
       pushNotifications: false,
@@ -38,79 +43,56 @@ export async function GET() {
         id: "smart-routing",
         name: "Smart Request Routing",
         description:
-          "Routes AI requests to the optimal provider based on quota, cost, " +
-          "latency, and reliability. Supports combo-based routing with " +
-          "multiple strategies: priority, weighted, round-robin, cost-optimized.",
+          "Routes AI requests to the optimal provider based on quota, cost, latency, and reliability.",
         tags: ["routing", "llm", "optimization", "fallback"],
         examples: [
           "Route this coding task to the fastest available model",
-          "Send this review to an analytical model under $0.50 budget",
-          "Find the cheapest provider with available quota",
+          "Send this review to an analytical model under a $0.50 budget",
         ],
       },
       {
         id: "quota-management",
         name: "Quota & Cost Management",
         description:
-          "Tracks and manages API quotas across 36+ providers with " +
-          "auto-fallback when quotas are exhausted. Provides real-time " +
-          "cost tracking and budget enforcement.",
+          "Tracks and manages API quotas across providers with auto-fallback when quotas are exhausted.",
         tags: ["quota", "cost", "monitoring", "budget"],
-        examples: [
-          "Check remaining quota for all providers",
-          "Which provider has the most available quota?",
-          "Generate a cost report for today",
-        ],
+        examples: ["Check remaining quota for all providers", "Generate a cost report for today"],
       },
       {
         id: "provider-discovery",
         name: "Provider Discovery",
         description:
-          "Discovers providers that can handle a requested capability " +
-          "such as chat, images, audio, search, embeddings, rerank, or video. " +
-          "Reports availability, health, configuration status, and a recommended provider.",
+          "Discovers providers that can handle a requested capability (chat, images, audio, search, embeddings, rerank, video).",
         tags: ["providers", "discovery", "capabilities", "health"],
         examples: [
           "Which providers can handle image generation?",
           "Find healthy providers for embeddings",
-          "What local providers are configured?",
         ],
       },
       {
         id: "cost-analysis",
         name: "Cost Analysis",
         description:
-          "Analyzes usage costs by provider and model, compares recent periods, " +
-          "and returns cost-saving opportunities for agents to act on.",
+          "Analyzes usage costs by provider and model and returns cost-saving opportunities.",
         tags: ["cost", "usage", "analytics", "optimization"],
-        examples: [
-          "How much did we spend this week?",
-          "Which provider is costing the most?",
-          "Suggest cost-saving opportunities for the last 30 days",
-        ],
+        examples: ["How much did we spend this week?", "Which provider costs the most?"],
       },
       {
         id: "health-report",
         name: "Health Report",
         description:
-          "Aggregates provider health, circuit breaker states, rate limit queues, " +
-          "lockouts, and telemetry into a structured report for orchestration.",
+          "Summarizes provider health, circuit-breaker state, rate-limit queues, and telemetry into a structured report.",
         tags: ["health", "monitoring", "resilience", "telemetry"],
-        examples: [
-          "Is everything healthy?",
-          "Report degraded providers and retry timing",
-          "Summarize active rate limits and lockouts",
-        ],
+        examples: ["Is everything healthy?", "Report degraded providers and retry timing"],
       },
       {
         id: "list-capabilities",
         name: "List Capabilities",
-        description:
-          "Returns the full catalog of 42 OmniRoute agent skills (22 API + 20 CLI) " +
-          "with raw URLs for the SKILL.md docs.",
+        description: "Returns the full catalog of OmniRoute agent skills.",
         tags: ["discovery", "capabilities"],
-        examples: ["What can you do?", "List your skills", "Show capabilities"],
+        examples: ["What can you do?", "List your skills"],
       },
+      ...fleetSkills,
     ],
     authentication: {
       schemes: ["api-key"],

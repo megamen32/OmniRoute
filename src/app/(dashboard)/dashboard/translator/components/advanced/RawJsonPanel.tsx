@@ -46,11 +46,13 @@ export default function RawJsonPanel({
 
   // Sync forceOpen changes from parent (deep-link after mount).
   useEffect(() => {
-    if (forceOpen && !open) {
+    if (!forceOpen || open) return;
+    const openFromDeepLink = setTimeout(() => {
       setOpen(true);
       setHasOpened(true);
       onOpenChange?.(true);
-    }
+    }, 0);
+    return () => clearTimeout(openFromDeepLink);
   }, [forceOpen, open, onOpenChange]);
 
   const handleOpenChange = useCallback(
@@ -59,7 +61,7 @@ export default function RawJsonPanel({
       if (next) setHasOpened(true);
       onOpenChange?.(next);
     },
-    [onOpenChange],
+    [onOpenChange]
   );
 
   // ── Translator state (copied from PlaygroundMode.tsx) ──────────────────────
@@ -225,9 +227,9 @@ export default function RawJsonPanel({
   const tgtMeta = FORMAT_META[targetFormat] ?? FORMAT_META["openai"];
 
   // ── i18n safe getter ───────────────────────────────────────────────────────
-  const tr = (key: string, fallback: string): string => {
+  const tr = (key: string, fallback: string, values?: Record<string, string>): string => {
     try {
-      const v = t(key as Parameters<typeof t>[0]);
+      const v = t(key as Parameters<typeof t>[0], values as never);
       if (v === key || v === `translator.${key}`) return fallback;
       return v as string;
     } catch {
@@ -238,7 +240,10 @@ export default function RawJsonPanel({
   return (
     <Collapsible
       title={tr("advancedRawJsonTitle", "Raw JSON (auto-detecção + Monaco)")}
-      subtitle={tr("advancedRawJsonSubtitle", "Cole um request JSON; o formato é detectado automaticamente.")}
+      subtitle={tr(
+        "advancedRawJsonSubtitle",
+        "Cole um request JSON; o formato é detectado automaticamente."
+      )}
       icon="code"
       defaultOpen={defaultOpen || forceOpen}
       className="border-black/5 dark:border-white/5"
@@ -366,13 +371,27 @@ export default function RawJsonPanel({
                 </span>
                 {translationPath === "hub-and-spoke" ? (
                   <span>
-                    {tr("translationPathHubSpoke", "").replace("{source}", FORMAT_META[sourceFormat]?.label ?? sourceFormat).replace("{target}", FORMAT_META[targetFormat]?.label ?? targetFormat) ||
-                      `${FORMAT_META[sourceFormat]?.label ?? sourceFormat} → OpenAI → ${FORMAT_META[targetFormat]?.label ?? targetFormat}`}
+                    {(() => {
+                      const source = FORMAT_META[sourceFormat]?.label ?? sourceFormat;
+                      const target = FORMAT_META[targetFormat]?.label ?? targetFormat;
+                      return (
+                        tr("translationPathHubSpoke", "", { source, target })
+                          .replace("{source}", source)
+                          .replace("{target}", target) || `${source} → OpenAI → ${target}`
+                      );
+                    })()}
                   </span>
                 ) : translationPath === "direct" ? (
                   <span>
-                    {tr("translationPathDirect", "").replace("{source}", FORMAT_META[sourceFormat]?.label ?? sourceFormat).replace("{target}", FORMAT_META[targetFormat]?.label ?? targetFormat) ||
-                      `${FORMAT_META[sourceFormat]?.label ?? sourceFormat} → ${FORMAT_META[targetFormat]?.label ?? targetFormat}`}
+                    {(() => {
+                      const source = FORMAT_META[sourceFormat]?.label ?? sourceFormat;
+                      const target = FORMAT_META[targetFormat]?.label ?? targetFormat;
+                      return (
+                        tr("translationPathDirect", "", { source, target })
+                          .replace("{source}", source)
+                          .replace("{target}", target) || `${source} → ${target}`
+                      );
+                    })()}
                   </span>
                 ) : (
                   <span>{tr("translationPathPassthrough", "Passthrough (same format)")}</span>
@@ -490,7 +509,7 @@ export default function RawJsonPanel({
                         onClick={() => handleCopy(intermediateContent)}
                         className="p-1.5 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-text-main transition-colors"
                         title={tc("copy" as Parameters<typeof tc>[0])}
-                        aria-label="Copy intermediate JSON"
+                        aria-label={tr("copyIntermediateJson", "Copy intermediate JSON")}
                       >
                         <span className="material-symbols-outlined text-[16px]" aria-hidden="true">
                           content_copy
@@ -543,7 +562,7 @@ export default function RawJsonPanel({
                       onClick={() => handleCopy(outputContent)}
                       className="p-1.5 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-text-main transition-colors"
                       title={tc("copy" as Parameters<typeof tc>[0])}
-                      aria-label="Copy output JSON"
+                      aria-label={tr("copyOutputJson", "Copy output JSON")}
                     >
                       <span className="material-symbols-outlined text-[16px]" aria-hidden="true">
                         content_copy
@@ -619,15 +638,12 @@ export default function RawJsonPanel({
                 </div>
                 {activeTemplate && (
                   <div className="flex items-center gap-2 text-xs text-text-muted">
-                    <span
-                      className="material-symbols-outlined text-[14px]"
-                      aria-hidden="true"
-                    >
+                    <span className="material-symbols-outlined text-[14px]" aria-hidden="true">
                       info
                     </span>
                     {tr("templateLoadHint", "Template loaded for format: {format}").replace(
                       "{format}",
-                      FORMAT_META[sourceFormat]?.label ?? sourceFormat,
+                      FORMAT_META[sourceFormat]?.label ?? sourceFormat
                     )}
                   </div>
                 )}

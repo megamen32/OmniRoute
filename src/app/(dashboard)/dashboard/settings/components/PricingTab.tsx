@@ -1,11 +1,14 @@
 "use client";
 
+import { FilterSelect, HeroStat, SyncMini } from "./PricingTabHelpers";
+
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, Button } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import InfoTooltip from "@/shared/components/InfoTooltip";
 import { useTranslations } from "next-intl";
 import { compareTr, matchesSearch } from "@/shared/utils/turkishText";
+import { extractApiErrorMessage } from "@/shared/http/apiErrorMessage";
 
 type CoverageFilter = "all" | "lt50" | "gte50lt100" | "full";
 type AuthFilter = "all" | "oauth" | "apikey" | "unknown";
@@ -48,6 +51,8 @@ interface PricingCatalogProvider {
   format: string;
   modelCount: number;
   models: PricingCatalogModel[];
+  /** Original pricing namespace (e.g. public prefix) when it differs from `alias`. */
+  pricingKey?: string;
 }
 
 function getSourceTone(source: PricingSource): string {
@@ -61,6 +66,37 @@ function getSourceTone(source: PricingSource): string {
     default:
       return "bg-bg-subtle text-text-muted border border-border/40";
   }
+}
+
+type PricingBundle = {
+  catalog?: Record<string, PricingCatalogProvider>;
+  pricing?: Record<string, Record<string, Record<string, number>>>;
+  sources?: Record<string, Record<string, PricingSource>>;
+  sync?: SyncStatus;
+};
+
+async function fetchPricingBundle(): Promise<PricingBundle> {
+  const [catalogRes, pricingRes, syncRes] = await Promise.all([
+    fetch("/api/pricing/models"),
+    fetch("/api/pricing?includeSources=1"),
+    fetch("/api/pricing/sync"),
+  ]);
+  const bundle: PricingBundle = {};
+  if (catalogRes.ok) {
+    bundle.catalog = (await catalogRes.json()) as Record<string, PricingCatalogProvider>;
+  }
+  if (pricingRes.ok) {
+    const pricingPayload = (await pricingRes.json()) as {
+      pricing?: Record<string, Record<string, Record<string, number>>>;
+      sourceMap?: Record<string, Record<string, PricingSource>>;
+    };
+    bundle.pricing = pricingPayload.pricing || {};
+    bundle.sources = pricingPayload.sourceMap || {};
+  }
+  if (syncRes.ok) {
+    bundle.sync = (await syncRes.json()) as SyncStatus;
+  }
+  return bundle;
 }
 
 export default function PricingTab() {
@@ -94,50 +130,55 @@ export default function PricingTab() {
     window.setTimeout(() => setStatusMessage(null), 4000);
   }, []);
 
+  const applyPricingBundle = useCallback((bundle: PricingBundle) => {
+    if (bundle.catalog) setCatalog(bundle.catalog);
+    if (bundle.pricing) setPricingData(bundle.pricing);
+    if (bundle.sources) setPricingSources(bundle.sources);
+    if (bundle.sync) setSyncStatus(bundle.sync);
+    setLoading(false);
+  }, []);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [catalogRes, pricingRes, syncRes] = await Promise.all([
-        fetch("/api/pricing/models"),
-        fetch("/api/pricing?includeSources=1"),
-        fetch("/api/pricing/sync"),
-      ]);
-
-      if (catalogRes.ok) {
-        setCatalog((await catalogRes.json()) as Record<string, PricingCatalogProvider>);
-      }
-
-      if (pricingRes.ok) {
-        const pricingPayload = (await pricingRes.json()) as {
-          pricing?: Record<string, Record<string, Record<string, number>>>;
-          sourceMap?: Record<string, Record<string, PricingSource>>;
-        };
-        setPricingData(pricingPayload.pricing || {});
-        setPricingSources(pricingPayload.sourceMap || {});
-      }
-
-      if (syncRes.ok) {
-        setSyncStatus((await syncRes.json()) as SyncStatus);
-      }
+      applyPricingBundle(await fetchPricingBundle());
     } catch (error) {
       console.error("Failed to load pricing data:", error);
       showStatus("error", t("pricingLoadFailed"));
-    } finally {
       setLoading(false);
     }
-  }, [showStatus, t]);
+  }, [applyPricingBundle, showStatus, t]);
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const bundle = await fetchPricingBundle();
+        if (!cancelled) applyPricingBundle(bundle);
+      } catch (error) {
+        console.error("Failed to load pricing data:", error);
+        if (!cancelled) {
+          showStatus("error", t("pricingLoadFailed"));
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyPricingBundle, showStatus, t]);
 
   const allProviders = useMemo(() => {
     return Object.entries(catalog)
-      .map(([alias, info]) => ({
-        ...info,
-        alias,
-        pricedModels: pricingData[alias] ? Object.keys(pricingData[alias]).length : 0,
-      }))
+      .map(([alias, info]) => {
+        const pricingKey = info.pricingKey || alias;
+        return {
+          ...info,
+          alias,
+          pricingKey,
+          pricedModels: pricingData[pricingKey] ? Object.keys(pricingData[pricingKey]).length : 0,
+        };
+      })
       .sort((left, right) => right.modelCount - left.modelCount);
   }, [catalog, pricingData]);
 
@@ -208,10 +249,13 @@ export default function PricingTab() {
     [allProviders]
   );
 
-  // Reset visible count when filters change
-  useEffect(() => {
+  // Reset visible count when filters change (state adjustment during render)
+  const filtersKey = `${searchQuery}|${coverageFilter}|${authFilter}|${sortKey}`;
+  const [prevFiltersKey, setPrevFiltersKey] = useState(filtersKey);
+  if (prevFiltersKey !== filtersKey) {
+    setPrevFiltersKey(filtersKey);
     setVisibleCount(INITIAL_VISIBLE);
-  }, [searchQuery, coverageFilter, authFilter, sortKey]);
+  }
 
   const stats = useMemo(() => {
     const totalModels = allProviders.reduce((sum, provider) => sum + provider.modelCount, 0);
@@ -312,23 +356,24 @@ export default function PricingTab() {
   );
 
   const saveProvider = useCallback(
-    async (providerAlias: string) => {
+    async (providerAlias: string, pricingKey?: string) => {
       setSaving(true);
       try {
+        const writeKey = pricingKey || providerAlias;
         const response = await fetch("/api/pricing", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [providerAlias]: pricingData[providerAlias] || {} }),
+          body: JSON.stringify({ [writeKey]: pricingData[writeKey] || {} }),
         });
 
         if (!response.ok) {
-          const errorPayload = (await response.json().catch(() => ({}))) as { error?: string };
-          throw new Error(errorPayload.error || t("saveFailed"));
+          const errorPayload = await response.json().catch(() => null);
+          throw new Error(extractApiErrorMessage(errorPayload, t("saveFailed")));
         }
 
         setEditedProviders((previous) => {
           const next = new Set(previous);
-          next.delete(providerAlias);
+          next.delete(writeKey);
           return next;
         });
         await loadData();
@@ -348,22 +393,24 @@ export default function PricingTab() {
   );
 
   const resetProvider = useCallback(
-    async (providerAlias: string) => {
+    async (providerAlias: string, pricingKey?: string) => {
       if (!confirm(t("resetPricingConfirm", { provider: providerAlias.toUpperCase() }))) return;
 
       try {
-        const response = await fetch(`/api/pricing?provider=${providerAlias}`, {
+        const writeKey = pricingKey || providerAlias;
+        const params = new URLSearchParams({ provider: writeKey });
+        const response = await fetch(`/api/pricing?${params.toString()}`, {
           method: "DELETE",
         });
 
         if (!response.ok) {
-          const errorPayload = (await response.json().catch(() => ({}))) as { error?: string };
-          throw new Error(errorPayload.error || t("resetFailed"));
+          const errorPayload = await response.json().catch(() => null);
+          throw new Error(extractApiErrorMessage(errorPayload, t("resetFailed")));
         }
 
         setEditedProviders((previous) => {
           const next = new Set(previous);
-          next.delete(providerAlias);
+          next.delete(writeKey);
           return next;
         });
         await loadData();
@@ -516,7 +563,9 @@ export default function PricingTab() {
                     }`}
                   />
                   <span className="text-xs text-text-main font-medium">
-                    {syncStatus?.enabled ? t("syncEnabled") : t("syncDisabled")}
+                    {syncStatus?.enabled
+                      ? t("pricingAutoSyncEnabled")
+                      : t("pricingAutoSyncDisabled")}
                   </span>
                 </div>
               </div>
@@ -588,11 +637,11 @@ export default function PricingTab() {
           </div>
 
           <FilterSelect
-            label="Coverage"
+            label={t("pricingCoverage")}
             value={coverageFilter}
             onChange={(v) => setCoverageFilter(v as CoverageFilter)}
             options={[
-              { value: "all", label: `All (${allProviders.length})` },
+              { value: "all", label: `${t("pricingAll")} (${allProviders.length})` },
               { value: "lt50", label: "<50%" },
               { value: "gte50lt100", label: "50–99%" },
               { value: "full", label: "100%" },
@@ -600,26 +649,29 @@ export default function PricingTab() {
           />
 
           <FilterSelect
-            label="Auth"
+            label={t("pricingAuth")}
             value={authFilter}
             onChange={(v) => setAuthFilter(v as AuthFilter)}
             options={[
-              { value: "all", label: "All" },
+              { value: "all", label: t("pricingAll") },
               { value: "oauth", label: `OAuth (${authCounts.oauth})` },
               { value: "apikey", label: `API Key (${authCounts.apikey})` },
-              { value: "unknown", label: `Unknown (${authCounts.unknown})` },
+              {
+                value: "unknown",
+                label: `${t("pricingAuthUnknown")} (${authCounts.unknown})`,
+              },
             ]}
           />
 
           <FilterSelect
-            label="Sort"
+            label={t("pricingSort")}
             value={sortKey}
             onChange={(v) => setSortKey(v as SortKey)}
             options={[
-              { value: "modelsDesc", label: "Most models" },
-              { value: "coverageDesc", label: "Highest coverage" },
-              { value: "coverageAsc", label: "Lowest coverage" },
-              { value: "nameAsc", label: "Name (A–Z)" },
+              { value: "modelsDesc", label: t("pricingMostModels") },
+              { value: "coverageDesc", label: t("pricingHighestCoverage") },
+              { value: "coverageAsc", label: t("pricingLowestCoverage") },
+              { value: "nameAsc", label: t("pricingNameAscending") },
             ]}
           />
         </div>
@@ -636,7 +688,7 @@ export default function PricingTab() {
             }`}
           >
             <span className="material-symbols-outlined text-[14px]">warning</span>
-            Coverage gaps ({coverageGapCount})
+            {t("pricingCoverageGaps")} ({coverageGapCount})
           </button>
           {(searchQuery ||
             coverageFilter !== "all" ||
@@ -655,12 +707,16 @@ export default function PricingTab() {
               className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-border bg-bg-subtle text-xs text-text-muted hover:text-text-main cursor-pointer"
             >
               <span className="material-symbols-outlined text-[14px]">close</span>
-              Clear filters
+              {t("pricingClearFilters")}
             </button>
           )}
           <span className="text-text-muted ml-auto">
-            Showing {displayProviders.length} of {totalFiltered}
-            {totalFiltered !== allProviders.length && ` (filtered from ${allProviders.length})`}
+            {t("pricingShowingProviders", {
+              visible: displayProviders.length,
+              total: totalFiltered,
+            })}
+            {totalFiltered !== allProviders.length &&
+              ` ${t("pricingFilteredFrom", { count: allProviders.length })}`}
           </span>
         </div>
       </div>
@@ -671,16 +727,16 @@ export default function PricingTab() {
           <ProviderSection
             key={provider.alias}
             provider={provider}
-            pricingData={pricingData[provider.alias] || {}}
-            sourceMap={pricingSources[provider.alias] || {}}
+            pricingData={pricingData[provider.pricingKey || provider.alias] || {}}
+            sourceMap={pricingSources[provider.pricingKey || provider.alias] || {}}
             isExpanded={expandedProviders.has(provider.alias)}
-            isEdited={editedProviders.has(provider.alias)}
+            isEdited={editedProviders.has(provider.pricingKey || provider.alias)}
             onToggle={() => toggleProvider(provider.alias)}
             onPricingChange={(model, field, value) =>
-              handlePricingChange(provider.alias, model, field, value)
+              handlePricingChange(provider.pricingKey || provider.alias, model, field, value)
             }
-            onSave={() => void saveProvider(provider.alias)}
-            onReset={() => void resetProvider(provider.alias)}
+            onSave={() => void saveProvider(provider.alias, provider.pricingKey)}
+            onReset={() => void resetProvider(provider.alias, provider.pricingKey)}
             saving={saving}
             getSourceLabel={getSourceLabel}
           />
@@ -697,69 +753,14 @@ export default function PricingTab() {
             className="mt-2 mx-auto px-4 py-2 rounded-md border border-border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] text-sm text-text-main cursor-pointer flex items-center gap-1.5"
           >
             <span className="material-symbols-outlined text-[16px]">expand_more</span>
-            Show {Math.min(VISIBLE_INCREMENT, totalFiltered - visibleCount)} more (
-            {totalFiltered - visibleCount} remaining)
+            {t("pricingShowMoreProviders", {
+              count: Math.min(VISIBLE_INCREMENT, totalFiltered - visibleCount),
+              remaining: totalFiltered - visibleCount,
+            })}
           </button>
         )}
       </div>
     </div>
-  );
-}
-
-function HeroStat({ label, value, accent }: { label: string; value: number; accent?: string }) {
-  return (
-    <div className="text-center">
-      <div className="text-[10px] uppercase tracking-wide text-text-muted font-semibold truncate">
-        {label}
-      </div>
-      <div
-        className={`text-2xl font-bold tabular-nums leading-tight ${accent || "text-text-main"}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function SyncMini({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-border/30 bg-bg-base/40 px-2 py-1.5">
-      <p className="text-[9px] uppercase tracking-wide text-text-muted font-semibold truncate">
-        {label}
-      </p>
-      <p className="text-[11px] font-medium text-text-main mt-0.5 truncate" title={value}>
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: Array<{ value: string; label: string }>;
-}) {
-  return (
-    <label className="flex items-center gap-1.5 text-xs text-text-muted">
-      <span className="font-semibold uppercase tracking-wide">{label}:</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="bg-bg-base border border-border rounded-md px-2 py-1.5 text-xs text-text-main cursor-pointer focus:outline-none focus:border-primary"
-      >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }
 

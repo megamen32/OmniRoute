@@ -15,20 +15,25 @@ import { codex } from "./codex";
 import { antigravity } from "./antigravity";
 import { agy } from "./agy";
 import { qoder } from "./qoder";
-import { qwen } from "./qwen";
 import { kimiCoding } from "./kimi-coding";
 import { github } from "./github";
+import { gheCopilot } from "./ghe-copilot";
 import { gitlabDuo } from "./gitlab-duo";
 import { kiro } from "./kiro";
 import { cursor } from "./cursor";
 import { trae } from "./trae";
 import { kilocode } from "./kilocode";
 import { cline } from "./cline";
-import { windsurf } from "./windsurf";
+import { devinDesktop } from "./devin-desktop";
 import { grokCli } from "./grok-cli";
+import { xaiOauth } from "./xai-oauth";
+import { openference } from "./openference";
 import { codebuddyCn } from "./codebuddy-cn";
+import { codebuddyIntl } from "./codebuddy-intl";
+import { workbuddy } from "./workbuddy";
 import { zed } from "./zed";
 import { zedHosted } from "./zed-hosted";
+import { museCode } from "./muse-code";
 
 export const PROVIDERS = {
   claude,
@@ -36,9 +41,9 @@ export const PROVIDERS = {
   antigravity,
   agy,
   qoder,
-  qwen,
   "kimi-coding": kimiCoding,
   github,
+  "ghe-copilot": gheCopilot,
   "gitlab-duo": gitlabDuo,
   kiro,
   "amazon-q": kiro,
@@ -50,14 +55,25 @@ export const PROVIDERS = {
   // type) — it is a separate catalog entry advertising the cline-pass/* (ClinePass
   // subscription) models. See registry/clinepass/index.ts.
   clinepass: cline,
-  windsurf,
-  // devin-cli shares the same token format as windsurf (WINDSURF_API_KEY / devin auth login)
-  "devin-cli": windsurf,
+  "devin-desktop": devinDesktop,
+  // Devin CLI shares the same imported token format and upstream credential contract.
+  "devin-cli": devinDesktop,
+  // grok-cli carries BOTH the browser PKCE flow and the paste-token import flow
+  // under this one entry (#7013) — see grok-cli.ts's mapTokens for the dispatch.
   "grok-cli": grokCli,
+  "xai-oauth": xaiOauth,
+  openference,
   "codebuddy-cn": codebuddyCn,
+  "codebuddy-intl": codebuddyIntl,
+  // WorkBuddy is a separate Tencent product from CodeBuddy CN (own host, own
+  // account system, own catalog). It shares the plugin-auth protocol shape, so
+  // it deliberately gets its OWN module rather than aliasing codebuddyCn —
+  // aliasing would point the state request at copilot.tencent.com.
+  workbuddy,
   // Zed IDE credential bridge — uses keychain import, not standard OAuth
   zed,
   "zed-hosted": zedHosted,
+  "muse-code": museCode,
 };
 
 export default PROVIDERS;

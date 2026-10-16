@@ -1,86 +1,301 @@
-# CLI Tools Setup Guide — OmniRoute (中文 (簡體))
+# CLI Tools — OmniRoute (中文 (繁體))
 
-🌐 **Languages:** 🇺🇸 [English](../../../../docs/CLI-TOOLS.md) · 🇸🇦 [ar](../../ar/docs/CLI-TOOLS.md) · 🇧🇬 [bg](../../bg/docs/CLI-TOOLS.md) · 🇧🇩 [bn](../../bn/docs/CLI-TOOLS.md) · 🇨🇿 [cs](../../cs/docs/CLI-TOOLS.md) · 🇩🇰 [da](../../da/docs/CLI-TOOLS.md) · 🇩🇪 [de](../../de/docs/CLI-TOOLS.md) · 🇪🇸 [es](../../es/docs/CLI-TOOLS.md) · 🇮🇷 [fa](../../fa/docs/CLI-TOOLS.md) · 🇫🇮 [fi](../../fi/docs/CLI-TOOLS.md) · 🇫🇷 [fr](../../fr/docs/CLI-TOOLS.md) · 🇮🇳 [gu](../../gu/docs/CLI-TOOLS.md) · 🇮🇱 [he](../../he/docs/CLI-TOOLS.md) · 🇮🇳 [hi](../../hi/docs/CLI-TOOLS.md) · 🇭🇺 [hu](../../hu/docs/CLI-TOOLS.md) · 🇮🇩 [id](../../id/docs/CLI-TOOLS.md) · 🇮🇹 [it](../../it/docs/CLI-TOOLS.md) · 🇯🇵 [ja](../../ja/docs/CLI-TOOLS.md) · 🇰🇷 [ko](../../ko/docs/CLI-TOOLS.md) · 🇮🇳 [mr](../../mr/docs/CLI-TOOLS.md) · 🇲🇾 [ms](../../ms/docs/CLI-TOOLS.md) · 🇳🇱 [nl](../../nl/docs/CLI-TOOLS.md) · 🇳🇴 [no](../../no/docs/CLI-TOOLS.md) · 🇵🇭 [phi](../../phi/docs/CLI-TOOLS.md) · 🇵🇱 [pl](../../pl/docs/CLI-TOOLS.md) · 🇵🇹 [pt](../../pt/docs/CLI-TOOLS.md) · 🇧🇷 [pt-BR](../../pt-BR/docs/CLI-TOOLS.md) · 🇷🇴 [ro](../../ro/docs/CLI-TOOLS.md) · 🇷🇺 [ru](../../ru/docs/CLI-TOOLS.md) · 🇸🇰 [sk](../../sk/docs/CLI-TOOLS.md) · 🇸🇪 [sv](../../sv/docs/CLI-TOOLS.md) · 🇰🇪 [sw](../../sw/docs/CLI-TOOLS.md) · 🇮🇳 [ta](../../ta/docs/CLI-TOOLS.md) · 🇮🇳 [te](../../te/docs/CLI-TOOLS.md) · 🇹🇭 [th](../../th/docs/CLI-TOOLS.md) · 🇹🇷 [tr](../../tr/docs/CLI-TOOLS.md) · 🇺🇦 [uk-UA](../../uk-UA/docs/CLI-TOOLS.md) · 🇵🇰 [ur](../../ur/docs/CLI-TOOLS.md) · 🇻🇳 [vi](../../vi/docs/CLI-TOOLS.md) · 🇨🇳 [zh-CN](../../zh-CN/docs/CLI-TOOLS.md)
-
----
-
-This guide explains how to install and configure all supported AI coding CLI tools
-to use **OmniRoute** as the unified backend, giving you centralized key management,
-cost tracking, model switching, and request logging across every tool.
+🌐 **Languages:** 🇺🇸 [English](../../../../reference/CLI-TOOLS.md) · 🇪🇹 [am](../../../am/docs/reference/CLI-TOOLS.md) · 🇸🇦 [ar](../../../ar/docs/reference/CLI-TOOLS.md) · 🇦🇿 [az](../../../az/docs/reference/CLI-TOOLS.md) · 🇧🇬 [bg](../../../bg/docs/reference/CLI-TOOLS.md) · 🇧🇩 [bn](../../../bn/docs/reference/CLI-TOOLS.md) · 🇧🇦 [bs](../../../bs/docs/reference/CLI-TOOLS.md) · 🇨🇿 [cs](../../../cs/docs/reference/CLI-TOOLS.md) · 🇩🇰 [da](../../../da/docs/reference/CLI-TOOLS.md) · 🇩🇪 [de](../../../de/docs/reference/CLI-TOOLS.md) · 🇬🇷 [el](../../../el/docs/reference/CLI-TOOLS.md) · 🇪🇸 [es](../../../es/docs/reference/CLI-TOOLS.md) · 🇪🇪 [et](../../../et/docs/reference/CLI-TOOLS.md) · 🇮🇷 [fa](../../../fa/docs/reference/CLI-TOOLS.md) · 🇫🇮 [fi](../../../fi/docs/reference/CLI-TOOLS.md) · 🇫🇷 [fr](../../../fr/docs/reference/CLI-TOOLS.md) · 🇮🇪 [ga](../../../ga/docs/reference/CLI-TOOLS.md) · 🇮🇳 [gu](../../../gu/docs/reference/CLI-TOOLS.md) · 🇳🇬 [ha](../../../ha/docs/reference/CLI-TOOLS.md) · 🇮🇱 [he](../../../he/docs/reference/CLI-TOOLS.md) · 🇮🇳 [hi](../../../hi/docs/reference/CLI-TOOLS.md) · 🇭🇷 [hr](../../../hr/docs/reference/CLI-TOOLS.md) · 🇭🇺 [hu](../../../hu/docs/reference/CLI-TOOLS.md) · 🇦🇲 [hy](../../../hy/docs/reference/CLI-TOOLS.md) · 🇮🇩 [id](../../../id/docs/reference/CLI-TOOLS.md) · 🇳🇬 [ig](../../../ig/docs/reference/CLI-TOOLS.md) · 🇮🇹 [it](../../../it/docs/reference/CLI-TOOLS.md) · 🇯🇵 [ja](../../../ja/docs/reference/CLI-TOOLS.md) · 🇬🇪 [ka](../../../ka/docs/reference/CLI-TOOLS.md) · 🇰🇭 [km](../../../km/docs/reference/CLI-TOOLS.md) · 🇮🇳 [kn](../../../kn/docs/reference/CLI-TOOLS.md) · 🇰🇷 [ko](../../../ko/docs/reference/CLI-TOOLS.md) · 🇱🇹 [lt](../../../lt/docs/reference/CLI-TOOLS.md) · 🇱🇻 [lv](../../../lv/docs/reference/CLI-TOOLS.md) · 🇮🇳 [ml](../../../ml/docs/reference/CLI-TOOLS.md) · 🇮🇳 [mr](../../../mr/docs/reference/CLI-TOOLS.md) · 🇲🇾 [ms](../../../ms/docs/reference/CLI-TOOLS.md) · 🇲🇹 [mt](../../../mt/docs/reference/CLI-TOOLS.md) · 🇲🇲 [my](../../../my/docs/reference/CLI-TOOLS.md) · 🇳🇵 [ne](../../../ne/docs/reference/CLI-TOOLS.md) · 🇳🇱 [nl](../../../nl/docs/reference/CLI-TOOLS.md) · 🇳🇴 [no](../../../no/docs/reference/CLI-TOOLS.md) · 🇮🇳 [or](../../../or/docs/reference/CLI-TOOLS.md) · 🇮🇳 [pa](../../../pa/docs/reference/CLI-TOOLS.md) · 🇵🇭 [phi](../../../phi/docs/reference/CLI-TOOLS.md) · 🇵🇱 [pl](../../../pl/docs/reference/CLI-TOOLS.md) · 🇵🇹 [pt](../../../pt/docs/reference/CLI-TOOLS.md) · 🇧🇷 [pt-BR](../../../pt-BR/docs/reference/CLI-TOOLS.md) · 🇷🇴 [ro](../../../ro/docs/reference/CLI-TOOLS.md) · 🇷🇺 [ru](../../../ru/docs/reference/CLI-TOOLS.md) · 🇱🇰 [si](../../../si/docs/reference/CLI-TOOLS.md) · 🇸🇰 [sk](../../../sk/docs/reference/CLI-TOOLS.md) · 🇸🇮 [sl](../../../sl/docs/reference/CLI-TOOLS.md) · 🇷🇸 [sr](../../../sr/docs/reference/CLI-TOOLS.md) · 🇸🇪 [sv](../../../sv/docs/reference/CLI-TOOLS.md) · 🇰🇪 [sw](../../../sw/docs/reference/CLI-TOOLS.md) · 🇮🇳 [ta](../../../ta/docs/reference/CLI-TOOLS.md) · 🇮🇳 [te](../../../te/docs/reference/CLI-TOOLS.md) · 🇹🇭 [th](../../../th/docs/reference/CLI-TOOLS.md) · 🇹🇷 [tr](../../../tr/docs/reference/CLI-TOOLS.md) · 🇺🇦 [uk-UA](../../../uk-UA/docs/reference/CLI-TOOLS.md) · 🇵🇰 [ur](../../../ur/docs/reference/CLI-TOOLS.md) · 🇺🇿 [uz](../../../uz/docs/reference/CLI-TOOLS.md) · 🇻🇳 [vi](../../../vi/docs/reference/CLI-TOOLS.md) · 🇳🇬 [yo](../../../yo/docs/reference/CLI-TOOLS.md) · 🇨🇳 [zh-CN](../../../zh-CN/docs/reference/CLI-TOOLS.md)
 
 ---
 
-## How It Works
+最後更新：2026-08-23
+
+OmniRoute 整合了三類 CLI 工具，分布於三個專屬的儀表板頁面：
+
+| 頁面           | 路由                    | 概念                                                               | 數量       |
+| -------------- | ----------------------- | ------------------------------------------------------------------ | ---------- |
+| **CLI Code's** | `/dashboard/cli-code`   | 指向 OmniRoute 的程式設計工具（用戶端 → CLI → OmniRoute → 提供者） | 26         |
+| **CLI Agents** | `/dashboard/cli-agents` | 指向 OmniRoute 的自主代理（流程相同，但涵蓋範圍更廣）              | 10         |
+| **ACP Agents** | `/dashboard/acp-agents` | OmniRoute 透過 stdio/ACP 產生並作為後端使用的 CLI（反向流程）      | 請參閱登錄 |
+
+舊版路由會透過 308 重新導向：`/dashboard/cli-tools` → `/dashboard/cli-code`、`/dashboard/agents` → `/dashboard/acp-agents`。
+
+---
+
+## 工作原理
 
 ```
-Claude / Codex / OpenCode / Cline / KiloCode / Continue / Kiro / Cursor / Copilot
+CLI 代碼 / CLI 代理 (消費流程):
+Claude / Codex / OpenCode / Cline / KiloCode / Continue / Hermes Agent / Goose / ...
            │
-           ▼  (all point to OmniRoute)
+           ▼  (全部指向 OmniRoute)
     http://YOUR_SERVER:20128/v1
            │
-           ▼  (OmniRoute routes to the right provider)
+           ▼  (OmniRoute 將請求路由到正確的提供者)
     Anthropic / OpenAI / Gemini / DeepSeek / Groq / Mistral / ...
+
+ACP 代理 (反向生成流程):
+    客戶端請求 → OmniRoute → 通過 stdio/ACP 生成 CLI → 回應
 ```
 
-**Benefits:**
+**好處：**
 
-- One API key to manage all tools
-- Cost tracking across all CLIs in the dashboard
-- Model switching without reconfiguring every tool
-- Works locally and on remote servers (VPS)
-
----
-
-## Supported Tools (Dashboard Source of Truth)
-
-The dashboard cards in `/dashboard/cli-tools` are generated from `src/shared/constants/cliTools.ts`.
-Current list (v3.0.0-rc.16):
-
-| Tool               | ID            | Command    | Setup Mode | Install Method |
-| ------------------ | ------------- | ---------- | ---------- | -------------- |
-| **Claude Code**    | `claude`      | `claude`   | env        | npm            |
-| **OpenAI Codex**   | `codex`       | `codex`    | custom     | npm            |
-| **Factory Droid**  | `droid`       | `droid`    | custom     | bundled/CLI    |
-| **OpenClaw**       | `openclaw`    | `openclaw` | custom     | bundled/CLI    |
-| **Cursor**         | `cursor`      | app        | guide      | desktop app    |
-| **Cline**          | `cline`       | `cline`    | custom     | npm            |
-| **Kilo Code**      | `kilo`        | `kilocode` | custom     | npm            |
-| **Continue**       | `continue`    | extension  | guide      | VS Code        |
-| **Antigravity**    | `antigravity` | internal   | mitm       | OmniRoute      |
-| **GitHub Copilot** | `copilot`     | extension  | custom     | VS Code        |
-| **OpenCode**       | `opencode`    | `opencode` | guide      | npm            |
-| **Kiro AI**        | `kiro`        | app/cli    | mitm       | desktop/CLI    |
-| **Qwen Code**      | `qwen`        | `qwen`     | custom     | npm            |
-
-### CLI fingerprint sync (Agents + Settings)
-
-`/dashboard/agents` and `Settings > CLI Fingerprint` use `src/shared/constants/cliCompatProviders.ts`.
-This keeps provider IDs aligned with CLI cards and legacy IDs.
-
-| CLI ID                                                                                               | Fingerprint Provider ID |
-| ---------------------------------------------------------------------------------------------------- | ----------------------- |
-| `kilo`                                                                                               | `kilocode`              |
-| `copilot`                                                                                            | `github`                |
-| `claude` / `codex` / `antigravity` / `kiro` / `cursor` / `cline` / `opencode` / `droid` / `openclaw` | same ID                 |
-
-Legacy IDs still accepted for compatibility: `copilot`, `kimi-coding`, `qwen`.
+- 一個 API 金鑰管理所有工具
+- 儀表板中所有 CLI 的成本追蹤
+- 模型切換無需重新配置每個工具
+- 在本地和遠程伺服器上運行 (VPS、Docker、Akamai、Cloudflare Tunnel)
 
 ---
 
-## Step 1 — Get an OmniRoute API Key
+## 使用 `setup-*` 進行自動配置
 
-1. Open the OmniRoute dashboard → **API Manager** (`/dashboard/api-manager`)
-2. Click **Create API Key**
-3. Give it a name (e.g. `cli-tools`) and select all permissions
-4. Copy the key — you'll need it for every CLI below
+您無需手動編寫每個工具的配置。OmniRoute 為每個支援的 CLI 提供一個 `setup-*` 命令，該命令會從正在運行的 OmniRoute（本地或遠端）讀取**即時**模型目錄，並將工具自身的配置寫入您的機器上：
 
-> Your key looks like: `sk-xxxxxxxxxxxxxxxx-xxxxxxxxx`
+```bash
+omniroute setup-codex        omniroute setup-claude       omniroute setup-opencode
+omniroute setup-cline        omniroute setup-kilo         omniroute setup-continue
+omniroute setup-cursor       omniroute setup-roo          omniroute setup-crush
+omniroute setup-goose        omniroute setup-qwen         omniroute setup-aider
+omniroute setup-5dive
+```
+
+每個命令都接受 `--remote <url> --api-key <key>`（針對遠端 OmniRoute 配置本地工具）、`--dry-run`（預覽而不寫入）和 `--port`。不具備模型自動發現功能的工具（Cline、Kilo、Roo、Goose、Aider、Qwen、5dive）需要 `--model <id>`（以及用於非互動式運行的 `--yes`）。`setup-5dive` 是唯一一個不寫入 `$HOME` 的配置方式：它透過在機群主機上寫入一個根擁有的身份驗證設定檔來配置 5dive 代理機群，因此它會透過 `sudo` 重新執行，並且沒有自己的遠端模式。要啟動一個注入了正確環境且完全沒有寫入配置的 CLI，請使用通用的 `omniroute run <target>` 啟動器（claude、codex、aider、goose、opencode、qwen、gemini — 目標和別名來自 `bin/cli/cli-manifest.mjs`）；傳統的每個工具啟動器 `omniroute launch` (Claude Code) 和 `omniroute launch-codex` (Codex) 仍然可用。Gemini CLI 僅限啟動：它是一個 `omniroute run` 目標，但沒有 `setup-*`/`configure` 配置方式。
+
+> **完整參考：** 每個命令寫入的內容、每個旗標、本地與遠端、以及哪些工具需要 `/v1` 後綴的總表，請參閱 **[CLI 整合](../guides/CLI-INTEGRATIONS.md)**。
+
+### 在容器內運行這些命令
+
+在 OmniRoute 容器內執行的 `setup-*` 命令會寫入容器自己的主目錄，而主機 CLI 無法讀取該目錄，且該目錄會隨容器消失。OmniRoute 會檢測到這一點，並以 `2` 退出並提供指示，而不是進行寫入。有兩種支援的解決方案 — 在主機上安裝 CLI 並 `omniroute connect` 到容器，或者綁定掛載配置目錄並設定 `CLI_CONFIG_HOME`（compose `host` 設定檔）。每個 `setup-*` 命令，以及 `omniroute configure` 和 `omniroute config set`，在您確實打算配置容器自己的 CLI 時，都接受 `--allow-container-write`；`OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE=true` 對伺服器也起同樣作用。請參閱 [Docker 指南 → 配置主機 CLI 工具](../guides/DOCKER_GUIDE.md#configuring-host-cli-tools-when-omniroute-runs-in-docker)。
+
+儀表板的 **應用端點** (`POST /api/cli-tools/apply`) 強制執行相同的防護：在容器中，如果寫入的目標未從主機綁定掛載，則會以 **`422`** 回應，並帶有 `containerEphemeralTarget: true`、安全的錯誤文字，以及 — 對於具有主機配置方式的工具（claude、codex、opencode、cline、kilo、continue） — 一個 `hostSetupCommand`（例如 `omniroute setup-opencode`）來代替在主機上運行；不會寫入任何內容。`dryRun: true` 在容器模式下仍然有效，並返回一個經過編輯的預覽 + 目標路徑，而不會觸及磁碟。預覽內容不是包含憑證的配置，不能複製或導入。請在主機上使用原始工具/基本 URL/API 金鑰/模型輸入進行應用，或使用指示的主機端設定命令。有關預覽標頭和請求契約，請參閱 [CLI 配置安全性](../security/CLI-CONFIGURATION.md)。此行為是故意的，並由 `tests/unit/api/cli-tools/apply-container-guard.test.ts` 進行回歸防護 — 絕不要透過移除防護來「修復」422 錯誤。
 
 ---
 
-## Step 2 — Install CLI Tools
+## 真實來源
 
-All npm-based tools require Node.js 18+:
+統一目錄位於 `src/shared/constants/cliTools.ts` 中，作為 `CLI_TOOLS: Record<string, CliCatalogEntry>`。
+
+每個條目都有以下字段（在 `src/shared/schemas/cliCatalog.ts` 中定義）：
+
+| 字段                                            | 類型                                                         | 描述                                         |
+| ----------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------- |
+| `category`                                      | `"code" \| "agent"`                                          | 工具出現的頁面                               |
+| `vendor`                                        | `string`                                                     | 工具來源（"Anthropic", "OSS (P. Gauthier)"） |
+| `acpSpawnable`                                  | `boolean`                                                    | 也可用作 ACP Agent（顯示徽章）               |
+| `baseUrlSupport`                                | `"full" \| "partial" \| "none"`                              | 自定義端點支持級別。`"none"` = MITM 待辦事項 |
+| `configType`                                    | `"env" \| "custom" \| "guide" \| "custom-builder" \| "mitm"` | 配置機制                                     |
+| `id`, `name`, `color`, `description`, `docsUrl` | 標準                                                         | 核心顯示字段                                 |
+
+具有 `baseUrlSupport: "none"` 的條目在儀表板頁面中**不顯示** — 它們在 MITM 待辦事項中註冊，計劃 11（見 `_tasks/features-v3.8.6/refactorpages/_orchestration/_plan11-mitm-backlog.md`）。
+
+### 能力層級（已編目 × 可檢測 × 可配置 × 可啟動）
+
+並非每個已編目的工具都是可檢測的、可配置的或可啟動的。每個層級都有一個
+聲明來源，並且漂移測試保持它們的一致性：
+
+| 層級       | 意義                                                     | 聲明於                                                       |
+| ---------- | -------------------------------------------------------- | ------------------------------------------------------------ |
+| **已編目** | 出現在儀表板目錄中（名稱、提供者、文件、配置類型）       | `src/shared/constants/cliTools.ts` (`CLI_TOOLS`)             |
+| **可檢測** | 二進制/配置檢測、健康檢查、配置路徑                      | `src/shared/services/cliRuntime.ts` (`CLI_TOOLS` 運行時目錄) |
+| **可配置** | 由 `omniroute configure <cli>` 支持（存在設置食譜）      | `bin/cli/cli-manifest.mjs` (`configure: true`)               |
+| **可啟動** | 由 `omniroute run <target>` 支持（定義了 env/args 注入） | `bin/cli/cli-manifest.mjs` (`run: true`)                     |
+
+`bin/cli/cli-manifest.mjs` 是 CLI 命令的標準可執行清單：
+`run`、`configure` 和 shell 完成生成器都從中派生其
+目標列表、別名解析（例如 `kilocode`/`kilo-code`/`kilo_cli` → `kilo`）
+和 `--model` 標誌接線。漂移保護
+`tests/unit/cli/cli-manifest-drift.test.ts` 斷言清單、運行時
+目錄、UI 目錄和每個消費者表面保持同步 — 一個表面添加的目標
+而其他表面未添加將使測試失敗，而不是靜默漂移。
+
+## 1. CLI 代碼目錄 (26 種工具)
+
+所有出現在 `/dashboard/cli-code` 的工具。那些 `baseUrlSupport: none` 的工具是通過 MITM 或手動指南連接，而不是自定義基本 URL：
+
+| id           | name                 | vendor               | baseUrlSupport | configType     | acpSpawnable |
+| ------------ | -------------------- | -------------------- | -------------- | -------------- | ------------ |
+| claude       | Claude 代碼          | Anthropic            | full           | env            | true         |
+| codex        | OpenAI Codex CLI     | OpenAI               | full           | custom         | true         |
+| zcode        | ZCode (GLM 編碼計劃) | Z.ai                 | none           | custom         | false        |
+| cline        | Cline                | OSS (前 Claude 開發) | full           | custom         | true         |
+| kilo         | Kilo 代碼            | Kilo-Org             | full           | custom         | false        |
+| roo          | Roo 代碼             | Roo (OSS)            | full           | guide          | false        |
+| continue     | Continue             | continue.dev         | full           | guide          | false        |
+| aider        | Aider                | OSS (P. Gauthier)    | full           | guide          | true         |
+| forge        | ForgeCode            | Antinomy HQ          | full           | custom         | true         |
+| jcode        | jcode                | 1jehuang (OSS)       | full           | custom         | false        |
+| deepseek-tui | DeepSeek TUI         | Hunter Bown (OSS)    | full           | custom         | false        |
+| codewhale    | CodeWhale            | Hmbown (OSS)         | full           | custom         | false        |
+| opencode     | OpenCode             | Anomaly (前 SST)     | full           | guide          | true         |
+| droid        | Factory Droid        | Factory AI           | partial        | guide          | false        |
+| copilot      | GitHub Copilot CLI   | GitHub/MS            | full           | custom         | false        |
+| cursor-cli   | Cursor CLI           | Anysphere            | partial        | guide          | true         |
+| smelt        | Smelt                | leonardcser (OSS)    | full           | custom         | false        |
+| pi           | Pi (pi-coding-agent) | M. Zechner (OSS)     | full           | custom         | false        |
+| grok-build   | Grok Build           | xAI                  | full           | custom         | false        |
+| crush        | Crush                | OSS (Charm)          | full           | custom         | false        |
+| qwen         | Qwen 代碼            | Alibaba              | full           | guide          | true         |
+| cursor       | Cursor               | Anysphere            | none           | guide          | false        |
+| antigravity  | Antigravity          | Google               | none           | mitm           | false        |
+| hermes       | Hermes               | Nous Research        | none           | guide          | false        |
+| kiro         | Kiro AI              | Amazon               | none           | mitm           | false        |
+| custom       | 自定義 CLI           | —                    | full           | custom-builder | false        |
+
+具有 `baseUrlSupport: "partial"` 的工具在儀表板卡片上顯示徽章 "⚠ 基本 URL 部分"。
+
+## 2. CLI 代理程式目錄（10 個工具）
+
+出現在 `/dashboard/cli-agents` 中的自主代理程式：
+
+| id           | 名稱             | 提供者                   | baseUrl 支援 | 可由 ACP 產生 |
+| ------------ | ---------------- | ------------------------ | ------------ | ------------- |
+| hermes-agent | Hermes Agent     | Nous Research            | 完整         | 否            |
+| openclaw     | OpenClaw         | OSS（P. Steinberger）    | 完整         | 是            |
+| goose        | Goose            | Block / Linux Foundation | 完整         | 是            |
+| interpreter  | Open Interpreter | OSS                      | 完整         | 是            |
+| warp         | Warp AI          | Warp Inc.                | 部分         | 是            |
+| agent-deck   | Agent Deck       | asheshgoplani（OSS）     | 完整         | 否            |
+| omp          | Oh My Pi         | OSS                      | 完整         | 是            |
+| letta        | Letta CLI        | Letta                    | 完整         | 否            |
+| prime-agent  | Prime Agent      | Prime Intellect（OSS）   | 完整         | 否            |
+| 5dive        | 5dive            | OSS（5dive-ai）          | 完整         | 否            |
+
+---
+
+## 3. ACP 代理 (/dashboard/acp-agents)
+
+此頁面（從 `/dashboard/agents` 重新命名）顯示 OmniRoute 可以通過 stdio/ACP 協議 **生成** 的後端執行引擎 CLI。目錄在 `src/lib/acp/registry.ts` 中單獨維護，並且 **不** 與 `CLI_TOOLS` 相同。
+
+---
+
+## 4. MITM 待辦事項 (未在儀表板中顯示)
+
+以下 CLI 原生不支持自定義基本 URL，並且 **未列出** 在 CLI 代碼或 CLI 代理頁面中。它們是計劃 11 中 MITM 攔截的候選者：
+
+| CLI                 | 理由                                           |
+| ------------------- | ---------------------------------------------- |
+| windsurf            | BYOK 限制於選定的 Claude 模型 + 企業 URL/token |
+| amp                 | 封閉生態系統 (Sourcegraph)                     |
+| amazon-q / kiro-cli | AWS SSO 認證，無自定義 URL                     |
+| cowork              | Anthropic Desktop，無可配置的端點              |
+
+請參見 `_tasks/features-v3.8.6/refactorpages/_orchestration/_plan11-mitm-backlog.md` 以獲取完整的交叉參考。
+
+---
+
+## 5. 批量檢測 API
+
+所有工具檢測通過單一端點聚合：
+
+**`GET /api/cli-tools/all-statuses`**
+
+- 認證: `requireCliToolsAuth(request)`（與其他 `/api/cli-tools/` 路由相同）
+- 返回: `Record<toolId, ToolBatchStatus>`（類型: `src/shared/types/cliBatchStatus.ts`）
+- 策略: 對所有工具使用 `Promise.all`，每個工具 5 秒超時
+- 快取: 記憶體 LRU，按配置文件 `mtime` 索引。當 mtime 更改時，快取失效。伺服器重啟時重置。
+
+每個工具的回應形狀：
+
+```ts
+interface ToolBatchStatus {
+  detection: {
+    installed: boolean;
+    runnable: boolean;
+    version?: string;
+    command?: string;
+    commandPath?: string;
+    reason?: string;
+  };
+  config: {
+    status: "configured" | "not_configured" | "not_installed" | "unknown" | "other";
+    endpoint?: string | null;
+    lastConfiguredAt?: string | null;
+  };
+  error?: string; // 已清理，無堆棧跟蹤
+}
+```
+
+## 6. 新工具的設定處理器
+
+具有 `configType: "custom"` 的新工具擁有專用的設定 API 路徑：
+
+| 路徑                                        | 工具                                                             |
+| ------------------------------------------- | ---------------------------------------------------------------- |
+| `POST /api/cli-tools/forge-settings`        | ForgeCode (.forge.toml)                                          |
+| `POST /api/cli-tools/jcode-settings`        | jcode (--base-url flag)                                          |
+| `POST /api/cli-tools/deepseek-tui-settings` | DeepSeek TUI (OPENAI_BASE_URL, legacy)                           |
+| `POST /api/cli-tools/codewhale-settings`    | CodeWhale (OPENAI_BASE_URL, primary + legacy `~/.deepseek` sync) |
+| `POST /api/cli-tools/smelt-settings`        | Smelt                                                            |
+| `POST /api/cli-tools/pi-settings`           | Pi coding agent                                                  |
+| `POST /api/cli-tools/grok-build-settings`   | Grok Build (~/.grok/config.toml, `[model.omniroute]`)            |
+| `POST /api/cli-tools/qwen-settings`         | Qwen Code (`~/.qwen/settings.json` + dedicated `.env` key)       |
+
+所有路徑都使用 `sanitizeErrorMessage()` 來處理錯誤回應（硬性規則 #12）。
+
+---
+
+## 7. 儀表板頁面架構
+
+### CLI 代碼 (`/dashboard/cli-code`)
+
+- `src/app/(dashboard)/dashboard/cli-code/page.tsx` — 伺服器組件
+- `src/app/(dashboard)/dashboard/cli-code/CliCodePageClient.tsx` — 客戶端網格
+- `src/app/(dashboard)/dashboard/cli-code/[id]/page.tsx` — 工具詳細頁面
+- `src/app/(dashboard)/dashboard/cli-code/components/` — 12 個專用工具卡片 + `ToolDetailClient.tsx`
+
+### CLI 代理 (`/dashboard/cli-agents`)
+
+- `src/app/(dashboard)/dashboard/cli-agents/page.tsx` — 伺服器組件
+- `src/app/(dashboard)/dashboard/cli-agents/CliAgentsPageClient.tsx` — 客戶端網格
+- `src/app/(dashboard)/dashboard/cli-agents/[id]/page.tsx` — 重用 `ToolDetailClient`
+
+### ACP 代理 (`/dashboard/acp-agents`)
+
+- `src/app/(dashboard)/dashboard/acp-agents/page.tsx` — 伺服器組件（從 `agents/` 移動過來）
+
+### 共享 UI 組件 (`src/shared/components/cli/`)
+
+| 檔案                    | 目的                               |
+| ----------------------- | ---------------------------------- |
+| `CliToolCard.tsx`       | 智能狀態卡片（檢測 + 設定 + 端點） |
+| `CliConceptCard.tsx`    | 每頁概念解釋卡片                   |
+| `CliComparisonCard.tsx` | 三欄比較不同 CLI 類型              |
+| `BaseUrlSelect.tsx`     | 端點下拉選單（本地/雲端/自定義）   |
+| `ApiKeySelect.tsx`      | API 金鑰選擇器                     |
+| `ManualConfigModal.tsx` | 可複製的設定片段模態               |
+
+### 共享 Hook (`src/shared/hooks/cli/`)
+
+| 檔案                      | 目的                                                  |
+| ------------------------- | ----------------------------------------------------- |
+| `useToolBatchStatuses.ts` | 獲取 `/api/cli-tools/all-statuses`，管理加載/刷新狀態 |
+
+## 8. i18n
+
+在計劃 14 F9 中新增的命名空間：
+
+| 命名空間    | 目的                                              |
+| ----------- | ------------------------------------------------- |
+| `cliCommon` | 共享字串（卡片標籤、概念/比較文本、詳細頁面標籤） |
+| `cliCode`   | CLI 代碼的頁面字串                                |
+| `cliAgents` | CLI 代理頁面字串                                  |
+| `acpAgents` | ACP 代理頁面字串                                  |
+
+提供完整的 PT-BR 和 EN 翻譯。其他 39 種語言通過 `src/i18n/request.ts` 中的命名空間級合併自動回退到 EN。
+
+---
+
+## 9. 快速開始
+
+### 步驟 1 — 獲取 OmniRoute API 金鑰
+
+1. 打開 `/dashboard/api-manager` → **創建 API 金鑰**
+2. 給它命名（例如 `cli-tools`）並選擇所有權限
+3. 複製金鑰 — 您將在下面的每個 CLI 中需要它
+
+> 您的金鑰看起來像：`sk-xxxxxxxxxxxxxxxx-xxxxxxxxx`
+
+---
+
+### 步驟 2 — 安裝 CLI 工具
+
+所有基於 npm 的工具需要 Node.js 22.22.2+ 或 24.x：
 
 ```bash
 # Claude Code (Anthropic)
@@ -98,96 +313,138 @@ npm install -g cline
 # KiloCode
 npm install -g kilocode
 
-# Kiro CLI (Amazon — requires curl + unzip)
-apt-get install -y unzip   # on Debian/Ubuntu
-curl -fsSL https://cli.kiro.dev/install | bash
-export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc
-```
+# Qwen Code
+npm install -g @qwen-code/qwen-code
 
-**Verify:**
+# Google Gemini CLI (可通過 `omniroute run gemini` 啟動 → /v1beta surface)
+npm install -g @google/gemini-cli
 
-```bash
-claude --version     # 2.x.x
-codex --version      # 0.x.x
-opencode --version   # x.x.x
-cline --version      # 2.x.x
-kilocode --version   # x.x.x (or: kilo --version)
-kiro-cli --version   # 1.x.x
+# Aider
+pip install aider-chat
+
+# Smelt
+cargo install smelt  # 基於 Rust
+
+# Pi coding agent
+# 請參見 https://github.com/zechnerj/pi-coding-agent 以獲取安裝信息
+
+# jcode
+# 請參見 https://github.com/1jehuang/jcode 以獲取安裝信息
 ```
 
 ---
 
-## Step 3 — Set Global Environment Variables
+### 步驟 3 — 通過儀表板配置
 
-Add to `~/.bashrc` (or `~/.zshrc`), then run `source ~/.bashrc`:
+1. 前往 `http://localhost:20128/dashboard/cli-code`
+2. 在網格中找到您的工具
+3. 點擊卡片以打開工具詳細頁面
+4. 選擇您的 API 金鑰和基本 URL
+5. 點擊 **應用配置** 或複製手動配置片段
+
+---
+
+### 步驟 4 — 設置全域環境變量
 
 ```bash
-# OmniRoute Universal Endpoint
+# OmniRoute 通用端點
 export OPENAI_BASE_URL="http://localhost:20128/v1"
 export OPENAI_API_KEY="sk-your-omniroute-key"
-export ANTHROPIC_BASE_URL="http://localhost:20128/v1"
-export ANTHROPIC_API_KEY="sk-your-omniroute-key"
-export GEMINI_BASE_URL="http://localhost:20128/v1"
+export ANTHROPIC_BASE_URL="http://localhost:20128"
+export ANTHROPIC_AUTH_TOKEN="sk-your-omniroute-key"
+# Gemini CLI 在根目錄讀取 GOOGLE_GEMINI_BASE_URL（其 SDK 自行附加 /v1beta/...）
+export GOOGLE_GEMINI_BASE_URL="http://localhost:20128"
 export GEMINI_API_KEY="sk-your-omniroute-key"
 ```
 
-> For a **remote server** replace `localhost:20128` with the server IP or domain,
-> e.g. `http://192.168.0.15:20128`.
+> 對於 **遠程伺服器**，將 `localhost:20128` 替換為伺服器 IP 或域名，
+> 例如 `http://<your-server-ip>:20128`。
 
 ---
 
-## Step 4 — Configure Each Tool
+### 步驟 5 — 配置每個工具
 
-### Claude Code
+#### Claude Code
 
 ```bash
-# Via CLI:
-claude config set --global api-base-url http://localhost:20128/v1
-
-# Or create ~/.claude/settings.json:
+# 創建 ~/.claude/settings.json：
 mkdir -p ~/.claude && cat > ~/.claude/settings.json << EOF
 {
-  "apiBaseUrl": "http://localhost:20128/v1",
-  "apiKey": "sk-your-omniroute-key"
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:20128",
+    "ANTHROPIC_AUTH_TOKEN": "sk-your-omniroute-key"
+  }
 }
 EOF
 ```
 
-**Test:** `claude "say hello"`
+使用統一的 Anthropic 閘道根目錄來配置 Claude Code。此處不要附加 `/v1`。
+
+**測試：** `claude "say hello"`
 
 ---
 
-### OpenAI Codex
+#### OpenAI Codex
+
+現代 Codex (v0.137+) 僅讀取 `~/.codex/config.toml` — 舊的
+`config.yaml` 屬於遺留的 npm CLI，並被靜默忽略。API
+金鑰保留在 `OMNIROUTE_API_KEY` 環境變量中（`env_key`），永遠
+不應放在文件內：
 
 ```bash
-mkdir -p ~/.codex && cat > ~/.codex/config.yaml << EOF
-model: auto
-apiKey: sk-your-omniroute-key
-apiBaseUrl: http://localhost:20128/v1
+mkdir -p ~/.codex && cat > ~/.codex/config.toml << EOF
+model_provider = "omniroute"
+
+[model_providers.omniroute]
+name                 = "OmniRoute"
+base_url             = "http://localhost:20128/v1"
+env_key              = "OMNIROUTE_API_KEY"
+requires_openai_auth = false
+EOF
+export OMNIROUTE_API_KEY="sk-your-omniroute-key"
+```
+
+完整參考（配置文件、`wire_api`、上下文窗口）： [CODEX-CLI-CONFIGURATION.md](../guides/CODEX-CLI-CONFIGURATION.md)。
+
+**測試：** `codex "what is 2+2?"`
+
+---
+
+#### OpenCode
+
+```bash
+mkdir -p ~/.config/opencode && cat > ~/.config/opencode/opencode.json << EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "omniroute": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OmniRoute",
+      "options": {
+        "baseURL": "http://localhost:20128/v1",
+        "apiKey": "sk-your-omniroute-key"
+      },
+      "models": {
+        "claude-sonnet-4-5": { "name": "claude-sonnet-4-5" },
+        "claude-sonnet-4-5-thinking": { "name": "claude-sonnet-4-5-thinking" },
+        "gemini-3-flash": { "name": "gemini-3-flash" }
+      }
+    }
+  }
+}
 EOF
 ```
 
-**Test:** `codex "what is 2+2?"`
+**測試：** `opencode`
+
+> 使用 `opencode run "your prompt" --model omniroute/claude-sonnet-4-5-thinking --variant high`
+> 來發送思考變體。
 
 ---
 
-### OpenCode
+#### Cline (CLI 或 VS Code)
 
-```bash
-mkdir -p ~/.config/opencode && cat > ~/.config/opencode/config.toml << EOF
-[provider.openai]
-base_url = "http://localhost:20128/v1"
-api_key = "sk-your-omniroute-key"
-EOF
-```
-
-**Test:** `opencode`
-
----
-
-### Cline (CLI or VS Code)
-
-**CLI mode:**
+**CLI 模式：**
 
 ```bash
 mkdir -p ~/.cline/data && cat > ~/.cline/data/globalState.json << EOF
@@ -199,22 +456,22 @@ mkdir -p ~/.cline/data && cat > ~/.cline/data/globalState.json << EOF
 EOF
 ```
 
-**VS Code mode:**
-Cline extension settings → API Provider: `OpenAI Compatible` → Base URL: `http://localhost:20128/v1`
+**VS Code 模式：**
+Cline 擴展設置 → API 提供者：`OpenAI Compatible` → 基本 URL：`http://localhost:20128/v1`
 
-Or use the OmniRoute dashboard → **CLI Tools → Cline → Apply Config**.
+或者使用 OmniRoute 儀表板 → **CLI 工具 → Cline → 應用配置**。
 
 ---
 
-### KiloCode (CLI or VS Code)
+#### KiloCode (CLI 或 VS Code)
 
-**CLI mode:**
+**CLI 模式：**
 
 ```bash
 kilocode --api-base http://localhost:20128/v1 --api-key sk-your-omniroute-key
 ```
 
-**VS Code settings:**
+**VS Code 設置：**
 
 ```json
 {
@@ -223,13 +480,13 @@ kilocode --api-base http://localhost:20128/v1 --api-key sk-your-omniroute-key
 }
 ```
 
-Or use the OmniRoute dashboard → **CLI Tools → KiloCode → Apply Config**.
+或者使用 OmniRoute 儀表板 → **CLI 工具 → KiloCode → 應用配置**。
 
 ---
 
-### Continue (VS Code Extension)
+#### Continue (VS Code 擴展)
 
-Edit `~/.continue/config.yaml`:
+編輯 `~/.continue/config.yaml`：
 
 ```yaml
 models:
@@ -241,158 +498,268 @@ models:
     default: true
 ```
 
-Restart VS Code after editing.
+編輯後重新啟動 VS Code。
 
 ---
 
-### Kiro CLI (Amazon)
+#### VS Code Insiders (`chatLanguageModels.json`)
+
+當 VS Code Insiders 配置為自定義端點模型時，使用此配置以便 OmniRoute 在沒有自定義標頭字段的情況下工作。
+
+**推薦位置：**
+
+- Linux: `~/.config/Code - Insiders/User/chatLanguageModels.json`
+- Windows: `%APPDATA%/Code - Insiders/User/chatLanguageModels.json`
+
+**使用標記的 OmniRoute 別名的示例：**
+
+```json
+[
+  {
+    "vendor": "customendpoint",
+    "id": "auto",
+    "name": "OmniRoute Auto",
+    "family": "gpt-4",
+    "version": "1.0.0",
+    "url": "http://localhost:20128/api/v1/vscode/sk-your-omniroute-key/chat/completions",
+    "modelsUrl": "http://localhost:20128/api/v1/vscode/sk-your-omniroute-key/models",
+    "requestFormat": "openai-chat-completions",
+    "contextWindow": 256000,
+    "maxOutputTokens": 32768,
+    "auth": {
+      "type": "none"
+    }
+  }
+]
+```
+
+**注意：**
+
+- 將 `sk-your-omniroute-key` 替換為在 OmniRoute 中創建的 API 金鑰。
+- `url` 字段應指向 `/api/v1/vscode/{token}/chat/completions`。
+- `modelsUrl` 字段應指向 `/api/v1/vscode/{token}/models`。
+- 當客戶端支持自定義標頭時，優先使用正常的 `/v1` + Bearer 標頭流。
+- 嵌入 URL 的令牌是兼容性回退，可能會出現在編輯器日誌或代理歷史中。
+
+---
+
+#### Kiro CLI (Amazon)
 
 ```bash
-# Login to your AWS/Kiro account:
+# 登錄到您的 AWS/Kiro 帳戶：
 kiro-cli login
 
-# The CLI uses its own auth — OmniRoute is not needed as backend for Kiro CLI itself.
-# Use kiro-cli alongside OmniRoute for other tools.
+# CLI 使用其自己的身份驗證 — OmniRoute 不需要作為 Kiro CLI 本身的後端。
+# 將 kiro-cli 與 OmniRoute 一起使用以支持其他工具。
 kiro-cli status
 ```
 
+對於 **Kiro IDE** 桌面應用程序，使用 OmniRoute 在 `/dashboard/cli-tools → Kiro` 下暴露的 MITM 端點。
+
 ---
 
-### Qwen Code (Alibaba)
+## 10. 內部 OmniRoute CLI
 
-Qwen Code supports OpenAI-compatible API endpoints via environment variables or `settings.json`.
-
-**Option 1: Environment variables (`~/.qwen/.env`)**
+`omniroute` 二進位檔提供伺服器生命週期、設定、診斷及提供者管理相關命令。進入點：`bin/omniroute.mjs`。
 
 ```bash
-mkdir -p ~/.qwen && cat > ~/.qwen/.env << EOF
-OPENAI_API_KEY="sk-your-omniroute-key"
-OPENAI_BASE_URL="http://localhost:20128/v1"
-OPENAI_MODEL="auto"
-EOF
+omniroute                              # 啟動伺服器（預設連接埠 20128）
+omniroute setup                        # 互動式設定精靈
+omniroute doctor                       # 檢查設定、資料庫、連接埠、執行階段
+omniroute providers list               # 已設定的提供者連線
+omniroute providers test-all           # 測試每個作用中的連線
+omniroute reset-password               # 重設管理員密碼
+omniroute logs                         # 串流顯示請求日誌
+omniroute health                       # 詳細健康狀態（斷路器、快取、記憶體）
+omniroute --version                    # 顯示版本
+omniroute --help                       # 顯示所有命令
 ```
 
-**Option 2: `settings.json` with model providers**
-
-```json
-// ~/.qwen/settings.json
-{
-  "env": {
-    "OPENAI_API_KEY": "sk-your-omniroute-key",
-    "OPENAI_BASE_URL": "http://localhost:20128/v1"
-  },
-  "modelProviders": {
-    "openai": [
-      {
-        "id": "omniroute-default",
-        "name": "OmniRoute (Auto)",
-        "envKey": "OPENAI_API_KEY",
-        "baseUrl": "http://localhost:20128/v1"
-      }
-    ]
-  }
-}
-```
-
-**Option 3: Inline CLI flags**
+### 設定與初始化
 
 ```bash
-OPENAI_BASE_URL="http://localhost:20128/v1" \
-OPENAI_API_KEY="sk-your-omniroute-key" \
-OPENAI_MODEL="auto" \
-qwen
+omniroute setup                        # 互動式設定精靈
+omniroute setup --non-interactive      # CI／自動化模式（讀取環境變數與旗標）
+omniroute setup --password '<value>'   # 直接設定管理員密碼
+omniroute setup --add-provider \
+  --provider openai \
+  --api-key '<value>' \
+  --test-provider                      # 一次完成新增與測試提供者
 ```
 
-> For a **remote server** replace `localhost:20128` with the server IP or domain.
+非互動式設定可辨識的環境變數：
 
-**Test:** `qwen "say hello"`
+| 變數                | 用途                                                          |
+| ------------------- | ------------------------------------------------------------- |
+| `OMNIROUTE_API_KEY` | 提供者 API 金鑰（透過 Commander `.env()` 繫結至 `--api-key`） |
+| `DATA_DIR`          | 覆寫 OmniRoute 資料目錄                                       |
 
-### Cursor (Desktop App)
+其他所有非互動式輸入皆以旗標傳遞，而非環境變數：
+`--password`、`--provider`、`--provider-name`、`--provider-base-url`、`--default-model`
+（請參閱上方的 `omniroute setup` 選項）。
 
-> **Note:** Cursor routes requests through its cloud. For OmniRoute integration,
-> enable **Cloud Endpoint** in OmniRoute Settings and use your public domain URL.
-
-Via GUI: **Settings → Models → OpenAI API Key**
-
-- Base URL: `https://your-domain.com/v1`
-- API Key: your OmniRoute key
-
----
-
-## Dashboard Auto-Configuration
-
-The OmniRoute dashboard automates configuration for most tools:
-
-1. Go to `http://localhost:20128/dashboard/cli-tools`
-2. Expand any tool card
-3. Select your API key from the dropdown
-4. Click **Apply Config** (if tool is detected as installed)
-5. Or copy the generated config snippet manually
-
----
-
-## Built-in Agents: Droid & OpenClaw
-
-**Droid** and **OpenClaw** are AI agents built directly into OmniRoute — no installation needed.
-They run as internal routes and use OmniRoute's model routing automatically.
-
-- Access: `http://localhost:20128/dashboard/agents`
-- Configure: same combos and providers as all other tools
-- No API key or CLI install required
-
----
-
-## Available API Endpoints
-
-| Endpoint                   | Description                   | Use For                     |
-| -------------------------- | ----------------------------- | --------------------------- |
-| `/v1/chat/completions`     | Standard chat (all providers) | All modern tools            |
-| `/v1/responses`            | Responses API (OpenAI format) | Codex, agentic workflows    |
-| `/v1/completions`          | Legacy text completions       | Older tools using `prompt:` |
-| `/v1/embeddings`           | Text embeddings               | RAG, search                 |
-| `/v1/images/generations`   | Image generation              | GPT-Image, Flux, etc.       |
-| `/v1/audio/speech`         | Text-to-speech                | ElevenLabs, OpenAI TTS      |
-| `/v1/audio/transcriptions` | Speech-to-text                | Deepgram, AssemblyAI        |
-
----
-
-## 故障排除
-
-| Error                     | Cause                   | Fix                                        |
-| ------------------------- | ----------------------- | ------------------------------------------ |
-| `Connection refused`      | OmniRoute not running   | `pm2 start omniroute`                      |
-| `401 Unauthorized`        | Wrong API key           | Check in `/dashboard/api-manager`          |
-| `No combo configured`     | No active routing combo | Set up in `/dashboard/combos`              |
-| `invalid model`           | Model not in catalog    | Use `auto` or check `/dashboard/providers` |
-| CLI shows "not installed" | Binary not in PATH      | Check `which <command>`                    |
-| `kiro-cli: not found`     | Not in PATH             | `export PATH="$HOME/.local/bin:$PATH"`     |
-
----
-
-## Quick Setup Script (One Command)
+### 診斷
 
 ```bash
-# Install all CLIs and configure for OmniRoute (replace with your key and server URL)
-OMNIROUTE_URL="http://localhost:20128/v1"
-OMNIROUTE_KEY="sk-your-omniroute-key"
-
-npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai cline kilocode @qwen-code/qwen-code
-
-# Kiro CLI
-apt-get install -y unzip 2>/dev/null; curl -fsSL https://cli.kiro.dev/install | bash
-
-# Write configs
-mkdir -p ~/.claude ~/.codex ~/.config/opencode ~/.continue
-
-cat > ~/.claude/settings.json   <<< "{\"apiBaseUrl\":\"$OMNIROUTE_URL\",\"apiKey\":\"$OMNIROUTE_KEY\"}"
-cat > ~/.codex/config.yaml      <<< "model: auto\napiKey: $OMNIROUTE_KEY\napiBaseUrl: $OMNIROUTE_URL"
-cat >> ~/.bashrc << EOF
-export OPENAI_BASE_URL="$OMNIROUTE_URL"
-export OPENAI_API_KEY="$OMNIROUTE_KEY"
-export ANTHROPIC_BASE_URL="$OMNIROUTE_URL"
-export ANTHROPIC_API_KEY="$OMNIROUTE_KEY"
-EOF
-
-source ~/.bashrc
-echo "✅ All CLIs installed and configured for OmniRoute"
+omniroute doctor                       # 檢查設定、資料庫、連接埠、執行階段、記憶體、存活狀態
+omniroute doctor --json                # 機器可讀的 JSON
+omniroute doctor --no-liveness         # 略過 HTTP 健康狀態探測
+omniroute doctor --host 0.0.0.0        # 覆寫存活狀態主機
+omniroute doctor --liveness-url <url>  # 覆寫完整健康狀態端點 URL
 ```
+
+doctor 會執行下列檢查：`設定`、`資料庫`、`儲存空間／加密`、
+`連接埠可用性`、`Node 執行階段`、`原生二進位檔`（better-sqlite3）、
+`記憶體`及`伺服器存活狀態`。如果任何檢查為 `fail`，便會以非零狀態碼結束。
+
+### 提供者管理
+
+```bash
+omniroute providers available                       # OmniRoute 提供者目錄
+omniroute providers available --search openai       # 依 id／名稱／別名／類別篩選目錄
+omniroute providers available --category api-key    # 依類別篩選（api-key、oauth、free，……）
+omniroute providers available --json                # 機器可讀的 JSON
+
+omniroute providers list                            # 已設定的提供者連線
+omniroute providers list --json
+
+omniroute providers test <id|name>                  # 測試一個已設定的連線
+omniroute providers test-all                        # 測試每個作用中的連線
+omniroute providers validate                        # 僅在本機進行結構驗證
+omniroute providers add <provider> --credential-env PROVIDER_KEY
+omniroute providers import ./providers.json --dry-run --json
+omniroute providers auth <provider>                 # 現有的 OAuth 流程
+omniroute providers edit <id|name> --default-model <model>
+omniroute providers remove <id|name> --yes
+```
+
+`providers add/import/auth/edit/remove` 以 API 為優先，因此會針對
+作用中的本機或遠端上下文運作。憑證輸入應使用
+`--credential-stdin` 或 `--credential-env`；`--dry-run --json` 僅會回報
+經遮蔽處理的存在狀態／形態。`providers available` 會讀取 OmniRoute 目錄；
+`providers list/test/test-all/validate` 會保留其本機 SQLite 行為，且
+不要求伺服器處於執行狀態。
+
+若是自訂的 OpenAI 相容或 Anthropic 相容節點，請使用 `omniroute nodes add`
+傳回的節點 ID，透過 `omniroute keys add "$NODE_ID" --stdin` 將憑證附加至該節點。
+這需要執行中的伺服器，以及作用中上下文的管理驗證。
+CLI 使用 `POST /api/providers`，此端點會驗證節點，並將其端點
+設定複製至連線。若節點不存在、授權失敗或伺服器無法使用，
+則會傳回錯誤，而不會建立本機備援憑證。
+
+`nodes add --base-url` 會設定節點端點；此端點不同於
+`OMNIROUTE_BASE_URL` 中的伺服器位址。若要處理 OpenAPI 檔案，請使用
+`omniroute openapi dump --format json --out ./openapi.json`；全域 `--output`
+用於選取 CLI 顯示格式，而非指定目的地檔名。
+
+### 復原與重設
+
+```bash
+omniroute reset-password                # 重設管理員密碼（亦可使用：omniroute-reset-password）
+omniroute reset-encrypted-columns       # 顯示警告並試執行加密憑證重設
+omniroute reset-encrypted-columns --force  # 實際將 SQLite 中的加密憑證設為 null
+```
+
+### 憑證匯出（⚠ 請謹慎處理）
+
+```bash
+omniroute auth export                                 # 顯示警告與確認關卡——不存取資料庫
+omniroute auth export --force                          # 將所有連線解密後的憑證以 JSON 匯出至標準輸出
+omniroute auth export --force --id <id>                 # 僅匯出相符的連線
+omniroute auth export --force --format env               # 輸出 OMNIROUTE_<PROVIDER>_<FIELD>=<value> 格式的行
+omniroute auth export --force --out creds.json           # 寫入檔案（以 0600 權限建立）
+```
+
+`auth export` **僅限本機執行**（直接讀取 SQLite，不使用 HTTP 路由），並且會刻意列印／寫入
+**明文** `apiKey`/`accessToken`/`refreshToken`/`idToken` 值——這是功能，而不是
+錯誤。若未指定 `--force`，則不會從資料庫讀取任何內容，也不會解密任何內容。在輸出任何明文之前，一律會先將
+警告橫幅列印至 stderr。必須設定 `STORAGE_ENCRYPTION_KEY`。
+若欄位解密失敗（金鑰過期、密文損毀），將回報為
+`<field>DecryptFailed: true`，而不會中止整個匯出作業或洩漏底層錯誤。
+
+### 其他子命令
+
+除非另有註明，否則這些命令皆假設 OmniRoute 伺服器正在執行：
+
+```bash
+omniroute status                       # 完整的執行階段狀態
+omniroute logs                         # 串流顯示請求日誌（--json、--search、--follow）
+omniroute config list                  # 顯示已設定的 CLI 工具
+
+omniroute provider list                # 列出可用的提供者（providers list 的別名）
+omniroute provider add                 # 將 OmniRoute 註冊為工具的提供者
+omniroute keys add | list | remove     # 管理 API 金鑰
+omniroute models [provider]            # 列出模型（--json、--search）
+omniroute combo list | switch | create | delete
+
+omniroute backup                       # 建立設定與資料庫的快照
+omniroute restore                      # 從先前的快照還原
+
+omniroute health                       # 詳細健康狀態（斷路器、快取、記憶體）
+omniroute quota                        # 提供者配額使用量
+omniroute cache                        # 快取狀態
+omniroute cache clear                  # 清除語意與簽章快取
+
+omniroute mcp status | restart         # MCP 伺服器狀態／重新啟動
+omniroute a2a status | card            # A2A 伺服器狀態／代理程式卡片
+
+omniroute tunnel list | create | stop  # 管理通道（cloudflare/tailscale/ngrok）
+omniroute env show | get <k> | set <k> <v>  # 檢視／設定環境變數（暫時）
+
+omniroute test                         # 提供者連線能力冒煙測試
+omniroute update                       # 檢查更新
+omniroute completion                   # 產生 shell 自動補全
+```
+
+### 常用旗標
+
+| 旗標                | 說明                                          |
+| ------------------- | --------------------------------------------- |
+| `--no-open`         | 啟動時不要自動開啟瀏覽器                      |
+| `--port <n>`        | 覆寫 API 連接埠（預設為 20128）               |
+| `--mcp`             | 透過 stdio 作為 MCP 伺服器執行（供 IDE 使用） |
+| `--non-interactive` | CI 模式（不顯示提示；從環境變數／旗標讀取）   |
+| `--json`            | 機器可讀的 JSON 輸出（doctor、providers 等）  |
+| `--help`, `-h`      | 顯示特定命令的說明                            |
+| `--version`, `-v`   | 列印已安裝的版本                              |
+
+---
+
+## 可用的 API 端點
+
+| 端點                       | 描述                    | 用途                    |
+| -------------------------- | ----------------------- | ----------------------- |
+| `/v1/chat/completions`     | 標準聊天（所有提供者）  | 所有現代工具            |
+| `/v1/responses`            | 回應 API（OpenAI 格式） | Codex，代理工作流程     |
+| `/v1/completions`          | 過時的文本補全          | 使用 `prompt:` 的舊工具 |
+| `/v1/embeddings`           | 文本嵌入                | RAG，搜索               |
+| `/v1/images/generations`   | 圖像生成                | GPT-Image，Flux 等      |
+| `/v1/audio/speech`         | 文本轉語音              | ElevenLabs，OpenAI TTS  |
+| `/v1/audio/transcriptions` | 語音轉文本              | Deepgram，AssemblyAI    |
+
+準備好粘貼的示例，帶有標記的 OmniRoute URL：
+
+```txt
+Token example: sk-a3ab3c080beaee3a-69f4a4-070d71af
+
+標準 OpenAI 基礎： http://localhost:20128/v1
+VS Code 模型： http://localhost:20128/api/v1/vscode/sk-a3ab3c080beaee3a-69f4a4-070d71af/models
+VS Code 聊天： http://localhost:20128/api/v1/vscode/sk-a3ab3c080beaee3a-69f4a4-070d71af/chat/completions
+VS Code 回應： http://localhost:20128/api/v1/vscode/sk-a3ab3c080beaee3a-69f4a4-070d71af/responses
+Ollama 標籤： http://localhost:20128/api/v1/vscode/sk-a3ab3c080beaee3a-69f4a4-070d71af/api/tags
+Ollama 聊天： http://localhost:20128/api/v1/vscode/sk-a3ab3c080beaee3a-69f4a4-070d71af/api/chat
+```
+
+---
+
+## 疑難排解
+
+| 錯誤                            | 原因               | 修復                                       |
+| ------------------------------- | ------------------ | ------------------------------------------ |
+| `Connection refused`            | OmniRoute 未運行   | `omniroute serve`                          |
+| `401 Unauthorized`              | 錯誤的 API 金鑰    | 在 `/dashboard/api-manager` 中檢查         |
+| `No combo configured`           | 沒有活動的路由組合 | 在 `/dashboard/combos` 中設置              |
+| CLI 顯示 "not installed"        | 二進制不在 PATH 中 | 檢查 `which <command>`                     |
+| 儀表板安裝後顯示 "not detected" | 快取過期           | 在儀表板中點擊 "⟳ 刷新檢測"                |
+| 舊連結 `/dashboard/cli-tools`   | v3.8.6 之前的書籤  | 自動重定向到 `/dashboard/cli-code` (308)   |
+| 舊連結 `/dashboard/agents`      | v3.8.6 之前的書籤  | 自動重定向到 `/dashboard/acp-agents` (308) |

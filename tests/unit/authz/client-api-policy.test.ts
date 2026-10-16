@@ -21,7 +21,7 @@ const ORIGINAL_REQUIRE_API_KEY = process.env.REQUIRE_API_KEY;
 function resetStorage() {
   core.resetDbInstance();
   apiKeysDb.resetApiKeyState();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   delete process.env.OMNIROUTE_API_KEY;
   delete process.env.ROUTER_API_KEY;
@@ -34,7 +34,7 @@ test.beforeEach(() => {
 });
 
 test.after(() => {
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   if (ORIGINAL_OMNIROUTE_API_KEY === undefined) delete process.env.OMNIROUTE_API_KEY;
   else process.env.OMNIROUTE_API_KEY = ORIGINAL_OMNIROUTE_API_KEY;
   if (ORIGINAL_ROUTER_API_KEY === undefined) delete process.env.ROUTER_API_KEY;
@@ -234,6 +234,65 @@ test("clientApiPolicy: x-api-key header is accepted as client_api_key subject", 
   if (out.allow) {
     assert.equal(out.subject.kind, "client_api_key");
     assert.match(out.subject.id, /^key_/);
+  }
+});
+
+test("clientApiPolicy: x-goog-api-key header is accepted as client_api_key subject (#7034)", async () => {
+  const created = await apiKeysDb.createApiKey("policy-test-googkey", "machine-googkey-1234");
+  assert.ok(created?.key, "createApiKey must return a key");
+
+  const policy = await loadPolicy();
+  const headers = new Headers({ "x-goog-api-key": created.key });
+  const out = await policy.evaluate(ctx(headers));
+  assert.equal(out.allow, true);
+  if (out.allow) {
+    assert.equal(out.subject.kind, "client_api_key");
+    assert.match(out.subject.id, /^key_/);
+  }
+});
+
+test("clientApiPolicy: Authorization Bearer wins over x-goog-api-key when both present (#7034)", async () => {
+  const created = await apiKeysDb.createApiKey("policy-test-goog-precedence", "machine-goog-2345");
+  assert.ok(created?.key, "createApiKey must return a key");
+
+  const policy = await loadPolicy();
+  const headers = new Headers({
+    authorization: `Bearer ${created.key}`,
+    "x-goog-api-key": "sk-goog-should-lose",
+  });
+  const out = await policy.evaluate(ctx(headers));
+  assert.equal(out.allow, true);
+  if (out.allow) {
+    assert.equal(out.subject.kind, "client_api_key");
+    assert.match(out.subject.id, /^key_/);
+  }
+});
+
+test("clientApiPolicy: existing x-api-key still wins over x-goog-api-key when both present (#7034)", async () => {
+  const created = await apiKeysDb.createApiKey("policy-test-xkey-precedence", "machine-xkey-2345");
+  assert.ok(created?.key, "createApiKey must return a key");
+
+  const policy = await loadPolicy();
+  const headers = new Headers({
+    "x-api-key": created.key,
+    "x-goog-api-key": "sk-goog-should-lose",
+  });
+  const out = await policy.evaluate(ctx(headers));
+  assert.equal(out.allow, true);
+  if (out.allow) {
+    assert.equal(out.subject.kind, "client_api_key");
+    assert.match(out.subject.id, /^key_/);
+  }
+});
+
+test("clientApiPolicy: invalid x-goog-api-key is rejected with 401 AUTH_002 (#7034)", async () => {
+  const policy = await loadPolicy();
+  const headers = new Headers({ "x-goog-api-key": "sk-invalid-goog-key" });
+  const out = await policy.evaluate(ctx(headers));
+  assert.equal(out.allow, false);
+  if (!out.allow) {
+    assert.equal(out.status, 401);
+    assert.equal(out.code, "AUTH_002");
   }
 });
 

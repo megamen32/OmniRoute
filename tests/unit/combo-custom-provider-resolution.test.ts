@@ -160,7 +160,7 @@ test("#2778 matching logic: node with prefix=flymux and id=UUID-id still matches
 
 test("custom provider auth lookup search pool maps alias prefixes to internal provider ids", async () => {
   const authSrc = fs.readFileSync(
-    path.resolve(__dirname, "../../src/sse/services/auth.ts"),
+    path.resolve(__dirname, "../../open-sse/services/providerConnectionPool.ts"),
     "utf8"
   );
 
@@ -171,8 +171,8 @@ test("custom provider auth lookup search pool maps alias prefixes to internal pr
   );
   assert.match(
     authSrc,
-    /getProviderNodes\(/,
-    "auth lookup should read provider_nodes to map custom prefixes like 78code/micu back to internal provider ids"
+    /getCachedProviderNodes\(/,
+    "auth lookup should read cached provider_nodes to map custom prefixes like 78code/micu back to internal provider ids"
   );
   assert.match(
     authSrc,

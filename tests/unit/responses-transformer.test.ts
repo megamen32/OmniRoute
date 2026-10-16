@@ -10,8 +10,8 @@ const { createResponsesApiTransformStream, createResponsesLogger } =
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-async function runTransformStream(chunks, logger = null) {
-  const stream = createResponsesApiTransformStream(logger);
+async function runTransformStream(chunks, logger = null, options = {}) {
+  const stream = createResponsesApiTransformStream(logger, 3000, options);
   const writer = stream.writable.getWriter();
   const reader = stream.readable.getReader();
 
@@ -72,12 +72,27 @@ test("createResponsesApiTransformStream converts plain chat deltas into Response
   );
   assert.ok(types.includes("response.created"));
   assert.ok(types.includes("response.in_progress"));
+
+  const inProgress = JSON.parse(
+    events.find((event) => event.event === "response.in_progress").data
+  ).response;
+  assert.ok(Array.isArray(inProgress.output), "response.in_progress must include an output array");
+  assert.deepEqual(inProgress.output, []);
+
   assert.ok(types.includes("response.output_item.added"));
+  const addedItem = JSON.parse(
+    events.find((event) => event.event === "response.output_item.added").data
+  ).item;
+  assert.equal(addedItem.status, "in_progress");
+
   assert.ok(types.includes("response.output_text.done"));
   assert.equal(completed.output[0].content[0].text, "Hello");
+  assert.equal(completed.output[0].status, "completed");
   assert.deepEqual(completed.usage, {
-    prompt_tokens: 1,
-    completion_tokens: 2,
+    input_tokens: 1,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens: 2,
+    output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: 3,
   });
   assert.equal(doneMarker.data, "[DONE]");
@@ -175,6 +190,166 @@ test("createResponsesApiTransformStream handles native reasoning content and too
   );
 });
 
+test("createResponsesApiTransformStream converts OpenAI-compatible reasoning aliases", async () => {
+  const output = await runTransformStream([
+    'data: {"id":"chatcmpl_1","model":"gpt-oss:20b","choices":[{"index":0,"delta":{"reasoning":"plan "}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"reasoning":"carefully","content":"answer"}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const reasoningDeltas = events
+    .filter((event) => event.event === "response.reasoning_summary_text.delta")
+    .map((event) => JSON.parse(event.data).delta);
+  const addedItems = events
+    .filter((event) => event.event === "response.output_item.added")
+    .map((event) => JSON.parse(event.data).item);
+  const completed = JSON.parse(
+    events.find((event) => event.event === "response.completed").data
+  ).response;
+
+  assert.deepEqual(reasoningDeltas, ["plan ", "carefully"]);
+  assert.deepEqual(
+    addedItems.map((item) => item.type),
+    ["reasoning", "message"]
+  );
+  assert.equal(completed.output[0].type, "reasoning");
+  assert.equal(completed.output[0].summary[0].text, "plan carefully");
+  assert.equal(completed.output[1].content[0].text, "answer");
+});
+
+test("createResponsesApiTransformStream prefers reasoning_content without duplicating aliases", async () => {
+  const output = await runTransformStream([
+    'data: {"choices":[{"index":0,"delta":{"reasoning_content":"canonical","reasoning":"alias"}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const reasoningDeltas = events
+    .filter((event) => event.event === "response.reasoning_summary_text.delta")
+    .map((event) => JSON.parse(event.data).delta);
+
+  assert.deepEqual(reasoningDeltas, ["canonical"]);
+});
+
+test("createResponsesApiTransformStream hides the internal reasoning replay placeholder", async () => {
+  const output = await runTransformStream([
+    'data: {"choices":[{"index":0,"delta":{"reasoning_content":"(prior reasoning summary unavailable)"}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"content":"Visible answer"},"finish_reason":null}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  assert.equal(
+    events.some((event) => event.event === "response.reasoning_summary_text.delta"),
+    false
+  );
+  assert.equal(output.includes("prior reasoning summary unavailable"), false);
+  assert.equal(output.includes("Visible answer"), true);
+});
+test("createResponsesApiTransformStream restores declared custom tools without changing functions", async () => {
+  const output = await runTransformStream(
+    [
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec","function":{"name":"exec","arguments":"{\\"input\\":\\"text(\\\\\\"pong\\\\\\")\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_search","function":{"name":"search","arguments":"{\\"q\\":\\"pong\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    ],
+    null,
+    { customToolNames: new Set(["exec"]) }
+  );
+
+  const events = parseSseOutput(output);
+  const added = events
+    .filter((event) => event.event === "response.output_item.added")
+    .map((event) => JSON.parse(event.data).item);
+  const completed = JSON.parse(
+    events.find((event) => event.event === "response.completed").data
+  ).response;
+
+  assert.equal(added.find((item) => item.name === "exec").type, "custom_tool_call");
+  assert.equal(added.find((item) => item.name === "search").type, "function_call");
+  assert.ok(events.some((event) => event.event === "response.custom_tool_call_input.delta"));
+  assert.ok(events.some((event) => event.event === "response.custom_tool_call_input.done"));
+  assert.equal(completed.output.find((item) => item.name === "exec").input, 'text("pong")');
+  assert.equal(completed.output.find((item) => item.name === "search").arguments, '{"q":"pong"}');
+});
+
+test("createResponsesApiTransformStream preserves empty custom-tool input", async () => {
+  const output = await runTransformStream(
+    [
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_empty","function":{"name":"exec","arguments":"{\\"input\\":\\"\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    ],
+    null,
+    { customToolNames: new Set(["exec"]) }
+  );
+  const events = parseSseOutput(output);
+  const done = events
+    .filter((event) => event.event === "response.output_item.done")
+    .map((event) => JSON.parse(event.data).item)
+    .find((item) => item.name === "exec");
+  assert.equal(done.type, "custom_tool_call");
+  assert.equal(done.input, "");
+});
+
+test("createResponsesApiTransformStream defers custom item creation until the tool name arrives", async () => {
+  const output = await runTransformStream(
+    [
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec"}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"exec","arguments":"{\\"input\\":\\"pong\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    ],
+    null,
+    { customToolNames: new Set(["exec"]) }
+  );
+
+  const events = parseSseOutput(output);
+  const added = events
+    .filter((event) => event.event === "response.output_item.added")
+    .map((event) => JSON.parse(event.data).item)
+    .filter((item) => item.call_id === "call_exec");
+
+  assert.deepEqual(added, [
+    {
+      id: "fc_call_exec",
+      type: "custom_tool_call",
+      input: "",
+      call_id: "call_exec",
+      name: "exec",
+      status: "in_progress",
+    },
+  ]);
+  assert.equal(events.filter((event) => event.event === "response.output_item.done").length, 1);
+});
+
+test("createResponsesApiTransformStream replays buffered function arguments after the name arrives", async () => {
+  const output = await runTransformStream([
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_search","function":{"arguments":"{\\"q\\":\\"pong\\"}"}}]}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"search"}}]},"finish_reason":"tool_calls"}]}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const argumentDeltas = events
+    .filter((event) => event.event === "response.function_call_arguments.delta")
+    .map((event) => JSON.parse(event.data).delta);
+
+  assert.deepEqual(argumentDeltas, ['{"q":"pong"}']);
+});
+
+test("createResponsesApiTransformStream preserves empty custom-tool input", async () => {
+  const output = await runTransformStream(
+    [
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec","function":{"name":"exec","arguments":"{\\"input\\":\\"\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+    ],
+    null,
+    { customToolNames: new Set(["exec"]) }
+  );
+
+  const events = parseSseOutput(output);
+  const completed = JSON.parse(
+    events.find((event) => event.event === "response.completed").data
+  ).response;
+
+  assert.equal(completed.output.find((item) => item.name === "exec").input, "");
+});
+
 test("createResponsesLogger persists input and output event logs on flush", async () => {
   const logsDir = mkdtempSync(join(tmpdir(), "responses-transformer-"));
   const logger = createResponsesLogger("gpt-4o", logsDir);
@@ -214,8 +389,10 @@ test("createResponsesApiTransformStream ignores malformed events and preserves u
   assert.equal(completed.id, "resp_chatcmpl_edge");
   assert.equal(completed.output[0].content[0].text, "ok");
   assert.deepEqual(completed.usage, {
-    prompt_tokens: 2,
-    completion_tokens: 1,
+    input_tokens: 2,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens: 1,
+    output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: 3,
   });
 });
@@ -240,7 +417,12 @@ test("createResponsesLogger returns null for invalid base paths and swallows flu
   logger.logOutput("output");
 
   const sessionDir = readdirSync(join(logsDir, "logs"))[0];
-  rmSync(join(logsDir, "logs", sessionDir), { recursive: true, force: true });
+  rmSync(join(logsDir, "logs", sessionDir), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
   console.log = (...args) => capturedLogs.push(args.join(" "));
 
   try {
@@ -377,4 +559,125 @@ test("createResponsesApiTransformStream keepalive self-clears when enqueue fails
     globalThis.setInterval = realSetInterval;
     globalThis.clearInterval = realClearInterval;
   }
+});
+
+// Regression: providers (e.g. Kimi-K2.6) emit content deltas that carry an empty
+// `tool_calls:[]` array in the SAME chunk when tools are defined. The empty array is
+// truthy, so the old `if (delta.tool_calls)` guard entered the tool-call branch and
+// called closeMessage() immediately — closing the message item after only the first
+// content delta. Subsequent content deltas arrived on a done item, and Codex
+// (which clears `active_item` on `output_item.done`) dropped them with
+// "OutputTextDelta without active item", producing a one-character response.
+// The guard must ignore an empty tool_calls array so the message stays open.
+test("createResponsesApiTransformStream does not close the message on an empty tool_calls array paired with content (Kimi-K2.6 pattern)", async () => {
+  const output = await runTransformStream([
+    'data: {"id":"chatcmpl_1","choices":[{"index":0,"delta":{"content":"H","tool_calls":[]}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"content":"ello","tool_calls":[]}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"content":" world","tool_calls":[]}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const textDeltas = events
+    .filter((event) => event.event === "response.output_text.delta")
+    .map((event) => JSON.parse(event.data).delta);
+  const completed = JSON.parse(
+    events.find((event) => event.event === "response.completed").data
+  ).response;
+
+  // All three content deltas must be emitted — not just the first one.
+  assert.deepEqual(textDeltas, ["H", "ello", " world"]);
+  // Exactly ONE assistant message item, carrying the full concatenated text.
+  const messageItems = completed.output.filter((item) => item.type === "message");
+  assert.equal(messageItems.length, 1, "empty tool_calls must not split/close the message");
+  assert.equal(messageItems[0].content[0].text, "Hello world");
+  // No function_call items should be synthesized from the empty arrays.
+  const functionCallItems = completed.output.filter((item) => item.type === "function_call");
+  assert.deepEqual(functionCallItems, []);
+});
+
+// The same fix must not regress the real tool-call path: when tool_calls carries an
+// actual entry, the preceding content message must still close so the tool call is its
+// own output item.
+test("createResponsesApiTransformStream still closes the message and emits a real tool call when tool_calls is non-empty", async () => {
+  const output = await runTransformStream([
+    'data: {"id":"chatcmpl_1","choices":[{"index":0,"delta":{"content":"let me search","tool_calls":[]}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"search","arguments":"{\\"q\\":\\"hi\\"}"}}]}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const completed = JSON.parse(
+    events.find((event) => event.event === "response.completed").data
+  ).response;
+
+  const messageItems = completed.output.filter((item) => item.type === "message");
+  const functionCallItems = completed.output.filter((item) => item.type === "function_call");
+
+  // The text message closed with its full content, and the tool call is a separate item.
+  assert.equal(messageItems.length, 1);
+  assert.equal(messageItems[0].content[0].text, "let me search");
+  assert.equal(functionCallItems.length, 1);
+  assert.equal(functionCallItems[0].call_id, "call_1");
+  assert.equal(functionCallItems[0].arguments, '{"q":"hi"}');
+});
+
+test("createResponsesApiTransformStream: finish_reason:length surfaces as response.incomplete with incomplete_details.reason:max_output_tokens", async () => {
+  const output = await runTransformStream([
+    'data: {"id":"chatcmpl_len","choices":[{"index":0,"delta":{"content":"cut off mid"}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":100,"completion_tokens":8192,"total_tokens":8292}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const types = events.map((event) => event.event);
+
+  assert.ok(
+    !types.includes("response.completed"),
+    "must not emit response.completed for a truncated generation"
+  );
+  assert.ok(types.includes("response.incomplete"), "must emit response.incomplete instead");
+
+  const incomplete = JSON.parse(
+    events.find((event) => event.event === "response.incomplete").data
+  ).response;
+  assert.equal(incomplete.status, "incomplete");
+  assert.deepEqual(incomplete.incomplete_details, { reason: "max_output_tokens" });
+});
+
+test("createResponsesApiTransformStream: finish_reason:content_filter surfaces as response.incomplete with incomplete_details.reason:content_filter", async () => {
+  const output = await runTransformStream([
+    'data: {"id":"chatcmpl_cf","choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const types = events.map((event) => event.event);
+
+  assert.ok(!types.includes("response.completed"));
+  assert.ok(types.includes("response.incomplete"));
+
+  const incomplete = JSON.parse(
+    events.find((event) => event.event === "response.incomplete").data
+  ).response;
+  assert.equal(incomplete.status, "incomplete");
+  assert.deepEqual(incomplete.incomplete_details, { reason: "content_filter" });
+});
+
+test("createResponsesApiTransformStream: finish_reason:stop is unaffected by the incomplete-status handling", async () => {
+  const output = await runTransformStream([
+    'data: {"id":"chatcmpl_ok","choices":[{"index":0,"delta":{"content":"done"}}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+  ]);
+
+  const events = parseSseOutput(output);
+  const types = events.map((event) => event.event);
+
+  assert.ok(!types.includes("response.incomplete"));
+  assert.ok(types.includes("response.completed"));
+
+  const completed = JSON.parse(
+    events.find((event) => event.event === "response.completed").data
+  ).response;
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.incomplete_details, undefined);
 });

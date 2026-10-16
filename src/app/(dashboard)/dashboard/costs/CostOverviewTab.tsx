@@ -9,20 +9,20 @@ import {
   getServiceTierDisplayLabel,
   type TranslationFn as CostTranslationFn,
 } from "@/shared/utils/serviceTierLabels";
-import {
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Tooltip,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  BarChart,
-  Bar,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+const CostTrendCard = dynamic(
+  () => import("./components/CostCharts").then((m) => ({ default: m.CostTrendCard })),
+  { ssr: false }
+);
+const ProviderSpendCard = dynamic(
+  () => import("./components/CostCharts").then((m) => ({ default: m.ProviderSpendCard })),
+  { ssr: false }
+);
+const WeeklyPatternCard = dynamic(
+  () => import("./components/CostCharts").then((m) => ({ default: m.WeeklyPatternCard })),
+  { ssr: false }
+);
 
 import {
   buildCostExplorerRows,
@@ -40,6 +40,7 @@ import {
 } from "./costExplorerParams";
 import { ApiKeyUsageLimitCard } from "./components/ApiKeyUsageLimitCard";
 import { MetricCard } from "./components/MetricCard";
+import { TopListCard } from "./components/TopListCard";
 import { useApiKeyUsageLimits } from "./useApiKeyUsageLimits";
 
 interface UsageAnalyticsSummary {
@@ -121,12 +122,18 @@ interface UsageAnalyticsPayload {
   weeklyPattern: Array<{ day: string; avgTokens: number; totalTokens: number }>;
   activityMap: Record<string, number>;
   presetSummaries?: Record<string, { totalCost: number }>;
+  // The API reports whether the returned cost figures include token-price
+  // equivalents for flat-rate subscriptions (route.ts). Billed-cost mode omits
+  // it, so treat anything but an explicit `true` as billed money.
+  includesFlatRateEstimates?: boolean;
 }
 
 const RANGE_OPTIONS: Array<{ value: CostRange; labelKey: string }> = [
   { value: "7d", labelKey: "range7d" },
   { value: "30d", labelKey: "range30d" },
   { value: "90d", labelKey: "range90d" },
+  { value: "180d", labelKey: "range180d" },
+  { value: "365d", labelKey: "range365d" },
   { value: "all", labelKey: "rangeAll" },
 ];
 
@@ -152,7 +159,25 @@ const CHART_COLORS = [
   "#ec4899",
 ];
 
-function createCurrencyFormatter(locale: string) {
+const SHORT_WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+function formatWeekdayLabel(day: string, locale: string): string {
+  const index = SHORT_WEEKDAY_INDEX[day.slice(0, 3)];
+  if (index === undefined) return day;
+  return new Intl.DateTimeFormat(locale, { weekday: "short" }).format(
+    new Date(Date.UTC(2024, 0, 7 + index))
+  );
+}
+
+export function createCurrencyFormatter(locale: string) {
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency: "USD",
@@ -187,16 +212,30 @@ function csvCell(value: string | number): string {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+// The exports are consumed outside the app, where no i18n runtime is available
+// and the header/summary keys are already English literals, so the estimate
+// disclosure ships as an English marker alongside them.
+const FLAT_RATE_ESTIMATE_CSV_NOTE =
+  "Includes token-price estimates for flat-rate subscriptions; not billed cost.";
+
 function generateCSV(analytics: UsageAnalyticsPayload, locale: string): string {
   const currencyFormatter = createCurrencyFormatter(locale);
   const lines: string[] = [];
+  // Only an explicit `true` means estimate mode; omitted/false/malformed stays
+  // billed-cost, which is what the API itself does with the query parameter.
+  const includesEstimates = analytics.includesFlatRateEstimates === true;
 
   lines.push("# OmniRoute Cost Report");
   lines.push(`# Generated: ${new Date().toISOString()}`);
+  if (includesEstimates) {
+    lines.push(`# ${FLAT_RATE_ESTIMATE_CSV_NOTE}`);
+  }
   lines.push("");
   lines.push("## Summary");
   lines.push("Metric,Value");
-  lines.push(`Total Cost,${csvCell(currencyFormatter.format(analytics.summary.totalCost))}`);
+  lines.push(
+    `${csvCell(includesEstimates ? "Total Cost (includes flat-rate estimates)" : "Total Cost")},${csvCell(currencyFormatter.format(analytics.summary.totalCost))}`
+  );
   lines.push(`Total Requests,${analytics.summary.totalRequests}`);
   lines.push(`Unique Models,${analytics.summary.uniqueModels}`);
   lines.push(`Unique Accounts,${analytics.summary.uniqueAccounts}`);
@@ -254,6 +293,7 @@ function generateJSON(analytics: UsageAnalyticsPayload): string {
   return JSON.stringify(
     {
       generatedAt: new Date().toISOString(),
+      includesFlatRateEstimates: analytics.includesFlatRateEstimates === true,
       summary: analytics.summary,
       dailyTrend: analytics.dailyTrend,
       weeklyPattern: analytics.weeklyPattern,
@@ -323,6 +363,7 @@ export default function CostOverviewTab() {
         const params = new URLSearchParams({
           range,
           presets: "1d,7d,30d",
+          includeFlatRateEstimates: "true",
         });
         if (apiKeyFilter) params.set("apiKeyIds", apiKeyFilter);
         const response = await fetch(`/api/usage/analytics?${params.toString()}`);
@@ -376,6 +417,12 @@ export default function CostOverviewTab() {
     streak: 0,
   };
   const hasCostData = summary.totalCost > 0;
+  // The API opts this page into token-price equivalents for flat-rate
+  // subscriptions (includeFlatRateEstimates=true above) and reports back whether
+  // the figures actually carry them. Only an explicit `true` switches the page
+  // to estimate wording — omitted, false, malformed or unknown values keep the
+  // billed-cost presentation, matching the API's own default.
+  const includesFlatRateEstimates = analytics?.includesFlatRateEstimates === true;
 
   const providersByCost = [...(analytics?.byProvider || [])]
     .filter((provider) => (hasCostData ? provider.cost > 0 : provider.requests > 0))
@@ -549,6 +596,13 @@ export default function CostOverviewTab() {
         />
       </div>
 
+      {includesFlatRateEstimates && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+          <span className="material-symbols-outlined text-amber-400 text-base leading-5">info</span>
+          <p className="text-xs text-amber-300/90">{t("flatRateEstimateNotice")}</p>
+        </div>
+      )}
+
       {selectedApiKeyId && (
         <ApiKeyUsageLimitCard
           payload={apiKeyUsageLimits}
@@ -717,6 +771,9 @@ export default function CostOverviewTab() {
               <span>/</span>
               <span>{t("daysRemaining", { days: daysRemainingInMonth })}</span>
             </div>
+            {includesFlatRateEstimates && (
+              <p className="mt-2 text-xs text-amber-300/90">{t("flatRateEstimateForecast")}</p>
+            )}
           </Card>
 
           <Card className="p-5">
@@ -810,6 +867,7 @@ export default function CostOverviewTab() {
               rows={providersByCost}
               locale={locale}
               hasCostData={hasCostData}
+              legacyFreeLabel={t("legacyFreeLabel")}
             />
             <TopListCard
               title={t("topModels")}
@@ -820,6 +878,7 @@ export default function CostOverviewTab() {
               rows={modelsByCost}
               locale={locale}
               hasCostData={hasCostData}
+              legacyFreeLabel={t("legacyFreeLabel")}
             />
           </div>
 
@@ -870,14 +929,19 @@ export default function CostOverviewTab() {
             <div className="grid grid-cols-1 xl:grid-cols-[1fr_1.5fr] gap-4">
               <WeeklyPatternCard
                 title={t("weeklyUsagePattern")}
-                rows={analytics?.weeklyPattern || []}
+                rows={(analytics?.weeklyPattern || []).map((row) => ({
+                  ...row,
+                  day: formatWeekdayLabel(row.day, locale),
+                }))}
                 locale={locale}
+                tokensLabel={t("tokens")}
               />
               <ActivityHeatmap
                 title={t("activityHeatmap")}
                 activityMap={analytics?.activityMap || {}}
                 lessLabel={t("less")}
                 moreLabel={t("more")}
+                tokensLabel={t("tokens")}
                 locale={locale}
               />
             </div>
@@ -1092,202 +1156,19 @@ function CompactMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ProviderSpendCard({
-  title,
-  rows,
-  locale,
-}: {
-  title: string;
-  rows: UsageAnalyticsProviderRow[];
-  locale: string;
-}) {
-  const currencyFormatter = createCurrencyFormatter(locale);
-  const chartRows = rows.slice(0, 6).map((row, index) => ({
-    name: row.provider,
-    value: row.cost,
-    fill: CHART_COLORS[index % CHART_COLORS.length],
-  }));
-
-  return (
-    <Card className="p-5">
-      <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wide mb-4">
-        {title}
-      </h3>
-      <div className="flex flex-col gap-4 md:flex-row md:items-center">
-        <div className="w-full md:w-45 h-45">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={chartRows}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={45}
-                outerRadius={72}
-                paddingAngle={2}
-              >
-                {chartRows.map((entry) => (
-                  <Cell key={entry.name} fill={entry.fill} stroke="none" />
-                ))}
-              </Pie>
-              <Tooltip
-                formatter={(value: number) => currencyFormatter.format(value || 0)}
-                contentStyle={{
-                  background: "var(--surface)",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  borderRadius: "12px",
-                }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="flex-1 space-y-2">
-          {chartRows.map((row) => (
-            <div key={row.name} className="flex items-center justify-between gap-3 text-sm">
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: row.fill }}
-                />
-                <span className="truncate text-text-main">{row.name}</span>
-              </div>
-              <span className="font-mono text-text-muted">
-                {currencyFormatter.format(row.value)}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function CostTrendCard({
-  title,
-  rows,
-  locale,
-}: {
-  title: string;
-  rows: UsageAnalyticsTrendRow[];
-  locale: string;
-}) {
-  const currencyFormatter = createCurrencyFormatter(locale);
-  const chartRows = rows.map((row) => ({
-    date: row.date.slice(5),
-    cost: row.cost || 0,
-  }));
-
-  return (
-    <Card className="p-5">
-      <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wide mb-4">
-        {title}
-      </h3>
-      <div className="h-55">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartRows} margin={{ top: 5, right: 12, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-            <XAxis
-              dataKey="date"
-              tick={{ fontSize: 10, fill: "var(--text-muted)" }}
-              axisLine={false}
-              tickLine={false}
-              interval={Math.max(Math.floor(chartRows.length / 8), 0)}
-            />
-            <YAxis
-              tick={{ fontSize: 10, fill: "var(--text-muted)" }}
-              axisLine={false}
-              tickLine={false}
-              tickFormatter={(value) => currencyFormatter.format(value).replace(".00", "")}
-              width={48}
-            />
-            <Tooltip
-              formatter={(value: number) => currencyFormatter.format(value || 0)}
-              contentStyle={{
-                background: "var(--surface)",
-                border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: "12px",
-              }}
-            />
-            <Line
-              type="monotone"
-              dataKey="cost"
-              stroke="#10b981"
-              strokeWidth={2.5}
-              dot={false}
-              activeDot={{ r: 4 }}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </Card>
-  );
-}
-
-function WeeklyPatternCard({
-  title,
-  rows,
-  locale,
-}: {
-  title: string;
-  rows: Array<{ day: string; avgTokens: number; totalTokens: number }>;
-  locale: string;
-}) {
-  const chartData = rows.map((row) => ({
-    day: row.day,
-    tokens: row.avgTokens || 0,
-  }));
-
-  return (
-    <Card className="p-5">
-      <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wide mb-4">
-        {title}
-      </h3>
-      <div className="h-40">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
-            <XAxis
-              dataKey="day"
-              tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-              axisLine={false}
-              tickLine={false}
-            />
-            <YAxis
-              tick={{ fontSize: 10, fill: "var(--text-muted)" }}
-              axisLine={false}
-              tickLine={false}
-              tickFormatter={(value) =>
-                new Intl.NumberFormat(locale, { notation: "compact" }).format(Number(value || 0))
-              }
-              width={40}
-            />
-            <Tooltip
-              formatter={(value: number) =>
-                `${new Intl.NumberFormat(locale).format(value || 0)} tokens`
-              }
-              contentStyle={{
-                background: "var(--surface)",
-                border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: "12px",
-              }}
-            />
-            <Bar dataKey="tokens" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </Card>
-  );
-}
-
 function ActivityHeatmap({
   title,
   activityMap,
   lessLabel,
   moreLabel,
+  tokensLabel,
   locale,
 }: {
   title: string;
   activityMap: Record<string, number>;
   lessLabel: string;
   moreLabel: string;
+  tokensLabel: string;
   locale: string;
 }) {
   const days: Array<{ date: string; value: number }> = [];
@@ -1331,7 +1212,7 @@ function ActivityHeatmap({
                   className={`w-2.75 h-2.75 rounded-xs ${getIntensity(day.value)}`}
                   title={`${day.date}: ${
                     day.value > 0
-                      ? `${new Intl.NumberFormat(locale).format(day.value)} tokens`
+                      ? `${new Intl.NumberFormat(locale).format(day.value)} ${tokensLabel}`
                       : "No activity"
                   }`}
                 />
@@ -1350,63 +1231,6 @@ function ActivityHeatmap({
           <div className="w-2.5 h-2.5 rounded-xs bg-emerald-400" />
         </div>
         <span>{moreLabel}</span>
-      </div>
-    </Card>
-  );
-}
-
-function TopListCard({
-  title,
-  rows,
-  nameKey,
-  valueKey,
-  secondaryKey,
-  secondaryLabel,
-  locale,
-  hasCostData,
-}: {
-  title: string;
-  rows: Array<Record<string, any>>;
-  nameKey: string;
-  valueKey: string;
-  secondaryKey?: string;
-  secondaryLabel?: string;
-  locale: string;
-  hasCostData?: boolean;
-}) {
-  const currencyFormatter = createCurrencyFormatter(locale);
-
-  return (
-    <Card className="p-5">
-      <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wide mb-4">
-        {title}
-      </h3>
-      <div className="space-y-2">
-        {rows.slice(0, 6).map((row) => (
-          <div
-            key={String(row[nameKey])}
-            className="flex items-center justify-between gap-3 rounded-lg border border-border/20 bg-surface/20 px-4 py-3"
-          >
-            <span className="text-sm text-text-main truncate">{String(row[nameKey])}</span>
-            <div className="flex items-center gap-3 shrink-0">
-              {secondaryKey ? (
-                <span className="text-xs text-text-muted">
-                  {new Intl.NumberFormat(locale, { notation: "compact" }).format(
-                    Number(row[secondaryKey] || 0)
-                  )}{" "}
-                  {secondaryLabel}
-                </span>
-              ) : null}
-              <span className="text-sm font-mono text-text-muted">
-                {hasCostData || Number(row[valueKey] || 0) > 0 ? (
-                  currencyFormatter.format(Number(row[valueKey] || 0))
-                ) : (
-                  <span className="text-xs italic opacity-70">{t("legacyFreeLabel")}</span>
-                )}
-              </span>
-            </div>
-          </div>
-        ))}
       </div>
     </Card>
   );

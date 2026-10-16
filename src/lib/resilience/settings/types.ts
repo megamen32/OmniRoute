@@ -16,7 +16,45 @@ export interface RequestQueueSettings {
   requestsPerMinute: number;
   minTimeBetweenRequestsMs: number;
   concurrentRequests: number;
+  /** Whole-process upstream concurrency cap. Zero disables the global gate. */
+  globalConcurrentRequests: number;
+  /**
+   * Queue-wait budget: how long a request may wait for a rate-limit slot
+   * (gates + limiter queue) before being dropped. Does NOT bound execution.
+   */
   maxWaitMs: number;
+  /**
+   * Limiter-managed execution backstop (Bottleneck `expiration`, which starts
+   * only after a job leaves QUEUED). Kept separate from `maxWaitMs` because
+   * non-incremental gateways legitimately take minutes before first bytes;
+   * the backstop must never undercut the upstream fetch-start timeout.
+   * Per-connection `rateLimitOverrides.executionMaxWaitMs` can override this
+   * global default (bounded 0..600000 via provider schema; 0 falls through).
+   */
+  executionMaxWaitMs: number;
+  /**
+   * Issue #6593: opt-in admission cap on the local rate-limit queue. When the
+   * queue already holds `maxQueueDepth` requests, a new request is
+   * fast-rejected (429 `queue_full`) instead of joining the queue. Default 0
+   * = disabled, preserving the unbounded-queue behavior. Bounded 0-100000.
+   */
+  maxQueueDepth: number;
+}
+
+/**
+ * Global default cadence (minutes) for the background credential health check
+ * sweep (src/lib/credentialHealth/scheduler.ts). Applies to every active
+ * connection that does NOT carry its own per-connection override. Bounded
+ * 0-1440: 0 disables the sweep entirely, 1440 = 24 hours.
+ *
+ * The per-connection `provider_connections.healthCheckInterval` (minutes)
+ * ALWAYS wins when set — including its 0 = "never test this connection"
+ * opt-out — so an operator can globally slow the sweep and still fast-probe
+ * (or fully exclude) a single connection.
+ */
+export interface CredentialHealthCheckSettings {
+  /** Sweep interval in minutes. 0 = disabled. Max 1440 (24h). */
+  intervalMinutes: number;
 }
 
 export interface ConnectionCooldownProfileSettings {
@@ -36,6 +74,22 @@ export interface ConnectionCooldownProfileSettings {
   maxBackoffSteps: number;
 }
 
+/**
+ * Scope of the token-refresh breaker. `provider` keeps the current
+ * provider-wide behavior; `connection` isolates failures per connection so
+ * one dead account does not block healthy accounts on the same provider.
+ */
+export type TokenRefreshBreakerScope = "provider" | "connection";
+
+export interface TokenRefreshBreakerSettings {
+  /** Breaker scope. Default "provider" (current behavior). */
+  scope: TokenRefreshBreakerScope;
+  /** Consecutive failures before tripping. Default 5. Bounded 1-100. */
+  failureThreshold: number;
+  /** Pause after tripping, in ms. Default 1800000 (30 min). Bounded 60000-86400000. */
+  cooldownMs: number;
+}
+
 export interface ProviderBreakerProfileSettings {
   failureThreshold: number;
   degradationThreshold: number;
@@ -47,15 +101,23 @@ export interface WaitForCooldownSettings {
   maxRetries: number;
   maxRetryWaitSec: number;
   maxRetryWaitMs: number;
+  /**
+   * Cumulative cap (ms) across all retry waits for one request — mirrors
+   * ComboCooldownWaitSettings.budgetMs (#7360 follow-up). Without this a
+   * request could re-wait maxRetries times at up to maxRetryWaitMs each,
+   * with no overall ceiling; budgetMs bounds the total regardless of how
+   * many individual waits fire.
+   */
+  budgetMs: number;
 }
 
 /**
- * Quota-share combo cooldown-aware retry (Variante A). A quota-share (`qtSd/…`)
- * combo that would crystallize a 429 `model_cooldown` for a SHORT transient
- * cooldown waits it out and re-dispatches instead. Guards (gating + the
- * `quota_exhausted`/auth/not-found exclusions) live in
- * open-sse/services/combo/comboCooldownRetry.ts; `maxWaitMs`/`maxAttempts`/
- * `budgetMs` bound a single wait, the retry cycles, and the total wait time.
+ * Combo cooldown-aware retry. When enabled, any combo strategy that would
+ * crystallize a 429 `model_cooldown` for a SHORT transient cooldown waits it
+ * out and re-dispatches instead. Guards (gating + the `quota_exhausted`/auth/
+ * not-found exclusions) live in open-sse/services/combo/comboCooldownRetry.ts;
+ * `maxWaitMs`/`maxAttempts`/`budgetMs` bound a single wait, the retry cycles,
+ * and the total wait time.
  */
 export interface ComboCooldownWaitSettings {
   enabled: boolean;
@@ -76,6 +138,16 @@ export interface ComboCooldownWaitSettings {
  * open-sse/services/combo/quotaShareConcurrency.ts.
  */
 export interface QuotaShareConcurrencyLimitSettings {
+  enabled: boolean;
+}
+
+/**
+ * Whether a stream content stall (the watchdog giving up on a stream that sent no
+ * model output in time) cools down the account that served it. Off by default: the
+ * stall is about one request — most often a long reasoning turn that had not produced
+ * output yet — so cooling the account took healthy capacity out of routing.
+ */
+export interface StreamStallCooldownSettings {
   enabled: boolean;
 }
 
@@ -136,6 +208,24 @@ export interface QuotaPreflightSettings {
   providerWindowDefaults: Record<string, Record<string, number>>;
 }
 
+/**
+ * #6846 Phase 1: per-provider operator overrides for the header-less "provider
+ * default" static budget (`open-sse/services/providerDefaultRateLimit.ts`) and its
+ * companion per-connection concurrency cap (`rateLimitSemaphore.ts`). Keyed by
+ * provider id (e.g. `"nvidia"`). A missing/0 field falls back to that provider's
+ * static default — this is a ceiling override, not a new rate-limit mechanism.
+ * Empty by default; only providers with a registered static default (currently
+ * only `nvidia`) read from this map.
+ */
+export interface ProviderQuotaOverrideSettings {
+  /** Overrides the static sliding-window requests-per-minute budget. */
+  rpm?: number;
+  /** Overrides the static per-connection concurrency cap. */
+  concurrency?: number;
+  /** Shared concurrency cap across every connection for this provider. */
+  providerConcurrency?: number;
+}
+
 export interface StreamRecoverySettings {
   /**
    * Opt-in transparent recovery of truncated upstream streams (free-claude-code port).
@@ -155,28 +245,50 @@ export interface StreamRecoverySettings {
    * STREAM_RECOVERY_MIDSTREAM_ENABLED feature flag / env var.
    */
   continueMidStream: boolean;
+  throughputWatchdog: StreamThroughputWatchdogSettings;
+}
+
+export interface StreamThroughputWatchdogSettings {
+  /** Opt-in; false preserves the existing stream byte path. */
+  enabled: boolean;
+  /** Grace period before the rolling window starts participating in decisions. */
+  warmupMs: number;
+  /** Full rolling window required before a slow-stream abort is possible. */
+  windowMs: number;
+  /** Minimum useful assistant-output byte rate. */
+  minUsefulBytesPerSecond: number;
+  /** Minimum amount required before a non-zero sample is considered measurable. */
+  minUsefulBytes: number;
 }
 
 export interface ResilienceSettings {
   requestQueue: RequestQueueSettings;
   connectionCooldown: Record<AuthCategory, ConnectionCooldownProfileSettings>;
   providerBreaker: Record<AuthCategory, ProviderBreakerProfileSettings>;
+  tokenRefreshBreaker: TokenRefreshBreakerSettings;
   waitForCooldown: WaitForCooldownSettings;
   comboCooldownWait: ComboCooldownWaitSettings;
   quotaShareConcurrencyLimit: QuotaShareConcurrencyLimitSettings;
+  streamStallCooldown: StreamStallCooldownSettings;
   providerCooldown: ProviderCooldownSettings;
   quotaPreflight: QuotaPreflightSettings;
   streamRecovery: StreamRecoverySettings;
+  providerQuotaOverrides: Record<string, ProviderQuotaOverrideSettings>;
+  credentialHealthCheck: CredentialHealthCheckSettings;
 }
 
 export interface ResilienceSettingsPatch {
   requestQueue?: Partial<RequestQueueSettings>;
   connectionCooldown?: Partial<Record<AuthCategory, Partial<ConnectionCooldownProfileSettings>>>;
   providerBreaker?: Partial<Record<AuthCategory, Partial<ProviderBreakerProfileSettings>>>;
+  tokenRefreshBreaker?: Partial<TokenRefreshBreakerSettings>;
   waitForCooldown?: Partial<WaitForCooldownSettings>;
   comboCooldownWait?: Partial<ComboCooldownWaitSettings>;
   quotaShareConcurrencyLimit?: Partial<QuotaShareConcurrencyLimitSettings>;
+  streamStallCooldown?: Partial<StreamStallCooldownSettings>;
   providerCooldown?: Partial<ProviderCooldownSettings>;
   quotaPreflight?: Partial<QuotaPreflightSettings>;
   streamRecovery?: Partial<StreamRecoverySettings>;
+  providerQuotaOverrides?: Record<string, Partial<ProviderQuotaOverrideSettings>>;
+  credentialHealthCheck?: Partial<CredentialHealthCheckSettings>;
 }

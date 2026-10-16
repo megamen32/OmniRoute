@@ -1,22 +1,27 @@
 ---
 title: "API Reference"
-version: 3.8.40
-lastUpdated: 2026-06-28
+version: 3.8.52
+lastUpdated: 2026-10-05
 ---
 
 # API Reference
 
-🌐 **Languages:** 🇺🇸 [English](./API_REFERENCE.md) | 🇧🇷 [Português (Brasil)](../i18n/pt-BR/docs/reference/API_REFERENCE.md) | 🇪🇸 [Español](../i18n/es/docs/reference/API_REFERENCE.md) | 🇫🇷 [Français](../i18n/fr/docs/reference/API_REFERENCE.md) | 🇮🇹 [Italiano](../i18n/it/docs/reference/API_REFERENCE.md) | 🇷🇺 [Русский](../i18n/ru/docs/reference/API_REFERENCE.md) | 🇨🇳 [中文 (简体)](../i18n/zh-CN/docs/reference/API_REFERENCE.md) | 🇩🇪 [Deutsch](../i18n/de/docs/reference/API_REFERENCE.md) | 🇮🇳 [हिन्दी](../i18n/in/docs/reference/API_REFERENCE.md) | 🇹🇭 [ไทย](../i18n/th/docs/reference/API_REFERENCE.md) | 🇺🇦 [Українська](../i18n/uk-UA/docs/reference/API_REFERENCE.md) | 🇸🇦 [العربية](../i18n/ar/docs/reference/API_REFERENCE.md) | 🇯🇵 [日本語](../i18n/ja/docs/reference/API_REFERENCE.md) | 🇻🇳 [Tiếng Việt](../i18n/vi/docs/reference/API_REFERENCE.md) | 🇧🇬 [Български](../i18n/bg/docs/reference/API_REFERENCE.md) | 🇩🇰 [Dansk](../i18n/da/docs/reference/API_REFERENCE.md) | 🇫🇮 [Suomi](../i18n/fi/docs/reference/API_REFERENCE.md) | 🇮🇱 [עברית](../i18n/he/docs/reference/API_REFERENCE.md) | 🇭🇺 [Magyar](../i18n/hu/docs/reference/API_REFERENCE.md) | 🇮🇩 [Bahasa Indonesia](../i18n/id/docs/reference/API_REFERENCE.md) | 🇰🇷 [한국어](../i18n/ko/docs/reference/API_REFERENCE.md) | 🇲🇾 [Bahasa Melayu](../i18n/ms/docs/reference/API_REFERENCE.md) | 🇳🇱 [Nederlands](../i18n/nl/docs/reference/API_REFERENCE.md) | 🇳🇴 [Norsk](../i18n/no/docs/reference/API_REFERENCE.md) | 🇵🇹 [Português (Portugal)](../i18n/pt/docs/reference/API_REFERENCE.md) | 🇷🇴 [Română](../i18n/ro/docs/reference/API_REFERENCE.md) | 🇵🇱 [Polski](../i18n/pl/docs/reference/API_REFERENCE.md) | 🇸🇰 [Slovenčina](../i18n/sk/docs/reference/API_REFERENCE.md) | 🇸🇪 [Svenska](../i18n/sv/docs/reference/API_REFERENCE.md) | 🇵🇭 [Filipino](../i18n/phi/docs/reference/API_REFERENCE.md) | 🇨🇿 [Čeština](../i18n/cs/docs/reference/API_REFERENCE.md)
+🌐 **Languages:** 🇺🇸 [English](./API_REFERENCE.md) | 🇪🇹 [አማርኛ](../i18n/am/docs/reference/API_REFERENCE.md) | 🇸🇦 [العربية](../i18n/ar/docs/reference/API_REFERENCE.md) | 🇦🇿 [Azərbaycan dili](../i18n/az/docs/reference/API_REFERENCE.md) | 🇧🇬 [Български](../i18n/bg/docs/reference/API_REFERENCE.md) | 🇧🇩 [বাংলা](../i18n/bn/docs/reference/API_REFERENCE.md) | 🇧🇦 [Bosanski](../i18n/bs/docs/reference/API_REFERENCE.md) | 🇨🇿 [Čeština](../i18n/cs/docs/reference/API_REFERENCE.md) | 🇩🇰 [Dansk](../i18n/da/docs/reference/API_REFERENCE.md) | 🇩🇪 [Deutsch](../i18n/de/docs/reference/API_REFERENCE.md) | 🇬🇷 [Ελληνικά](../i18n/el/docs/reference/API_REFERENCE.md) | 🇪🇸 [Español](../i18n/es/docs/reference/API_REFERENCE.md) | 🇪🇪 [Eesti](../i18n/et/docs/reference/API_REFERENCE.md) | 🇮🇷 [فارسی](../i18n/fa/docs/reference/API_REFERENCE.md) | 🇫🇮 [Suomi](../i18n/fi/docs/reference/API_REFERENCE.md) | 🇫🇷 [Français](../i18n/fr/docs/reference/API_REFERENCE.md) | 🇮🇪 [Gaeilge](../i18n/ga/docs/reference/API_REFERENCE.md) | 🇮🇳 [ગુજરાતી](../i18n/gu/docs/reference/API_REFERENCE.md) | 🇳🇬 [Hausa](../i18n/ha/docs/reference/API_REFERENCE.md) | 🇮🇱 [עברית](../i18n/he/docs/reference/API_REFERENCE.md) | 🇮🇳 [हिन्दी](../i18n/hi/docs/reference/API_REFERENCE.md) | 🇭🇷 [Hrvatski](../i18n/hr/docs/reference/API_REFERENCE.md) | 🇭🇺 [Magyar](../i18n/hu/docs/reference/API_REFERENCE.md) | 🇦🇲 [Հայերեն](../i18n/hy/docs/reference/API_REFERENCE.md) | 🇮🇩 [Bahasa Indonesia](../i18n/id/docs/reference/API_REFERENCE.md) | 🇳🇬 [Igbo](../i18n/ig/docs/reference/API_REFERENCE.md) | 🇮🇹 [Italiano](../i18n/it/docs/reference/API_REFERENCE.md) | 🇯🇵 [日本語](../i18n/ja/docs/reference/API_REFERENCE.md) | 🇬🇪 [ქართული](../i18n/ka/docs/reference/API_REFERENCE.md) | 🇰🇭 [ខ្មែរ](../i18n/km/docs/reference/API_REFERENCE.md) | 🇮🇳 [ಕನ್ನಡ](../i18n/kn/docs/reference/API_REFERENCE.md) | 🇰🇷 [한국어](../i18n/ko/docs/reference/API_REFERENCE.md) | 🇱🇹 [Lietuvių](../i18n/lt/docs/reference/API_REFERENCE.md) | 🇱🇻 [Latviešu](../i18n/lv/docs/reference/API_REFERENCE.md) | 🇮🇳 [മലയാളം](../i18n/ml/docs/reference/API_REFERENCE.md) | 🇮🇳 [मराठी](../i18n/mr/docs/reference/API_REFERENCE.md) | 🇲🇾 [Bahasa Melayu](../i18n/ms/docs/reference/API_REFERENCE.md) | 🇲🇹 [Malti](../i18n/mt/docs/reference/API_REFERENCE.md) | 🇲🇲 [မြန်မာ](../i18n/my/docs/reference/API_REFERENCE.md) | 🇳🇵 [नेपाली](../i18n/ne/docs/reference/API_REFERENCE.md) | 🇳🇱 [Nederlands](../i18n/nl/docs/reference/API_REFERENCE.md) | 🇳🇴 [Norsk](../i18n/no/docs/reference/API_REFERENCE.md) | 🇮🇳 [ଓଡ଼ିଆ](../i18n/or/docs/reference/API_REFERENCE.md) | 🇮🇳 [ਪੰਜਾਬੀ](../i18n/pa/docs/reference/API_REFERENCE.md) | 🇵🇭 [Filipino](../i18n/phi/docs/reference/API_REFERENCE.md) | 🇵🇱 [Polski](../i18n/pl/docs/reference/API_REFERENCE.md) | 🇵🇹 [Português (Portugal)](../i18n/pt/docs/reference/API_REFERENCE.md) | 🇧🇷 [Português (Brasil)](../i18n/pt-BR/docs/reference/API_REFERENCE.md) | 🇷🇴 [Română](../i18n/ro/docs/reference/API_REFERENCE.md) | 🇷🇺 [Русский](../i18n/ru/docs/reference/API_REFERENCE.md) | 🇱🇰 [සිංහල](../i18n/si/docs/reference/API_REFERENCE.md) | 🇸🇰 [Slovenčina](../i18n/sk/docs/reference/API_REFERENCE.md) | 🇸🇮 [Slovenščina](../i18n/sl/docs/reference/API_REFERENCE.md) | 🇷🇸 [Српски](../i18n/sr/docs/reference/API_REFERENCE.md) | 🇸🇪 [Svenska](../i18n/sv/docs/reference/API_REFERENCE.md) | 🇰🇪 [Kiswahili](../i18n/sw/docs/reference/API_REFERENCE.md) | 🇮🇳 [தமிழ்](../i18n/ta/docs/reference/API_REFERENCE.md) | 🇮🇳 [తెలుగు](../i18n/te/docs/reference/API_REFERENCE.md) | 🇹🇭 [ไทย](../i18n/th/docs/reference/API_REFERENCE.md) | 🇹🇷 [Türkçe](../i18n/tr/docs/reference/API_REFERENCE.md) | 🇺🇦 [Українська](../i18n/uk-UA/docs/reference/API_REFERENCE.md) | 🇵🇰 [اردو](../i18n/ur/docs/reference/API_REFERENCE.md) | 🇺🇿 [Oʻzbekcha](../i18n/uz/docs/reference/API_REFERENCE.md) | 🇻🇳 [Tiếng Việt](../i18n/vi/docs/reference/API_REFERENCE.md) | 🇳🇬 [Yorùbá](../i18n/yo/docs/reference/API_REFERENCE.md) | 🇨🇳 [中文 (简体)](../i18n/zh-CN/docs/reference/API_REFERENCE.md) | 🇹🇼 [中文 (繁體)](../i18n/zh-TW/docs/reference/API_REFERENCE.md)
 
-Complete reference for all OmniRoute API endpoints.
+Core reference for the OmniRoute API. It covers the public `/v1` surface and the most-used management endpoints; the machine-readable [`docs/openapi.yaml`](../openapi.yaml) and the route tree under `src/app/api/` are the exhaustive sources.
+
+For the focused OpenAI-compatible protocol and provider capability matrix, see
+[`OPENAI_COMPATIBILITY.md`](./OPENAI_COMPATIBILITY.md).
 
 ---
 
 ## Table of Contents
 
 - [Chat Completions](#chat-completions)
+- [Exclusive Managed Session Leases](#exclusive-managed-session-leases)
 - [Embeddings](#embeddings)
 - [Image Generation](#image-generation)
+- [Document OCR](#document-ocr)
 - [List Models](#list-models)
 - [Provider Plugin Manifest](#provider-plugin-manifest)
 - [Compatibility Endpoints](#compatibility-endpoints)
@@ -61,22 +66,24 @@ Content-Type: application/json
 
 ### Custom Headers
 
-| Header                   | Direction | Description                                                                                                                  |
-| ------------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `X-OmniRoute-No-Cache`   | Request   | Set to `true` to bypass cache                                                                                                |
-| `x-omniroute-no-memory`  | Request   | Set to `true` to skip memory + skills injection for this request (mirrors no-cache; avoids the per-call token/cost overhead) |
-| `X-OmniRoute-Progress`   | Request   | Set to `true` for progress events                                                                                            |
-| `X-Session-Id`           | Request   | Sticky session key for external session affinity                                                                             |
-| `x_session_id`           | Request   | Underscore variant also accepted (direct HTTP)                                                                               |
-| `Idempotency-Key`        | Request   | Dedup key (5s window)                                                                                                        |
-| `X-Request-Id`           | Request   | Alternative dedup key                                                                                                        |
-| `X-OmniRoute-Cache`      | Response  | `HIT` or `MISS` (non-streaming)                                                                                              |
-| `X-OmniRoute-Idempotent` | Response  | `true` if deduplicated                                                                                                       |
-| `X-OmniRoute-Progress`   | Response  | `enabled` if progress tracking on                                                                                            |
-| `X-OmniRoute-Session-Id` | Response  | Effective session ID used by OmniRoute                                                                                       |
-| `X-OmniRoute-Request-Id` | Response  | Request correlation id (when known)                                                                                          |
-| `X-OmniRoute-Version`    | Response  | OmniRoute build version (always present)                                                                                     |
-| `X-OmniRoute-Cost-Saved` | Response  | USD the cache avoided on a HIT (cache hits only)                                                                             |
+| Header                   | Direction | Description                                                                                                                                                                                        |
+| ------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X-OmniRoute-No-Cache`   | Request   | Set to `true` to bypass cache                                                                                                                                                                      |
+| `x-omniroute-no-memory`  | Request   | Set to `true` to skip memory + skills injection for this request (mirrors no-cache; avoids the per-call token/cost overhead)                                                                       |
+| `X-OmniRoute-Progress`   | Request   | Set to `true` for progress events                                                                                                                                                                  |
+| `X-Session-Id`           | Request   | Sticky session key for external session affinity                                                                                                                                                   |
+| `x_session_id`           | Request   | Underscore variant also accepted (direct HTTP)                                                                                                                                                     |
+| `X-OmniRoute-Session-Id` | Request   | Caller-supplied session/conversation tag (also feeds memory). When present, persisted verbatim to `call_logs.session_tag` for per-session cost attribution (#8249) — never synthesized when absent |
+| `Idempotency-Key`        | Request   | Dedup key (5s window)                                                                                                                                                                              |
+| `X-Request-Id`           | Request   | Alternative dedup key                                                                                                                                                                              |
+| `X-OmniRoute-Cache`      | Response  | `HIT` or `MISS` (non-streaming)                                                                                                                                                                    |
+| `X-OmniRoute-Idempotent` | Response  | `true` if deduplicated                                                                                                                                                                             |
+| `X-OmniRoute-Progress`   | Response  | `enabled` if progress tracking on                                                                                                                                                                  |
+| `X-OmniRoute-Session-Id` | Response  | Effective session ID used by OmniRoute                                                                                                                                                             |
+| `X-OmniRoute-Request-Id` | Response  | Request correlation id (when known)                                                                                                                                                                |
+| `X-OmniRoute-Version`    | Response  | OmniRoute build version (always present)                                                                                                                                                           |
+| `X-OmniRoute-Cost-Saved` | Response  | USD the cache avoided on a HIT (cache hits only)                                                                                                                                                   |
+| `X-OmniRoute-Decision`   | Response  | Routing trace: `strategy=<name>; provider=<alias>; latency_ms=<n>` (`<name>` is the combo strategy, or `single` for a non-combo request) — always present on completion responses                  |
 
 > Nginx note: if you rely on underscore headers (for example `x_session_id`), enable `underscores_in_headers on;`.
 
@@ -84,17 +91,115 @@ Content-Type: application/json
 
 > **Cache-hit cost semantics:** on a semantic-cache HIT (`X-OmniRoute-Cache-Hit: true`) no upstream call is made, so `X-OmniRoute-Response-Cost` is `0.0000000000` (the **incremental** cost of serving the hit). The original/would-have-been cost is reported separately in `X-OmniRoute-Cost-Saved`. Billing consumers should sum `X-OmniRoute-Response-Cost` (hits cost nothing); cache analytics can aggregate `X-OmniRoute-Cost-Saved`.
 
+## Exclusive Managed Session Leases
+
+Exclusive managed session leasing is an opt-in, client-neutral routing contract: one active owner
+holds one eligible OmniRoute connection. It does not lease a model, require OAuth, identify a
+particular client, or require a particular provider.
+
+The authenticating API key must have scope `lease:exclusive` and an explicit non-empty
+`allowedConnections` list. The database mutation boundary enforces both fields together on key
+creation and partial updates.
+
+```http
+POST /api/v1/session-leases
+Authorization: Bearer <managed-api-key>
+Content-Type: application/json
+X-OmniRoute-Lease-Owner: vlo_<43-base64url-characters>
+
+{"action":"acquire","model":"glm/glm-4.6"}
+```
+
+Successful acquire, renew, and release responses expose timestamps, `state`, and the exact positive
+`generation`, but never the selected connection or credentials. Renew and release supply the
+generation in the JSON body:
+
+```json
+{ "action": "renew", "generation": 1 }
+```
+
+```json
+{ "action": "release", "generation": 1, "reason": "OWNER_EXIT" }
+```
+
+An active lease owner can explicitly request privacy-safe display metadata for its current binding:
+
+```json
+{ "action": "status", "generation": 1 }
+```
+
+```json
+{
+  "state": "ACTIVE",
+  "generation": 1,
+  "acquiredAt": "2026-08-28T12:00:00.000Z",
+  "renewedAt": "2026-08-28T12:00:30.000Z",
+  "expiresAt": "2026-08-28T12:02:30.000Z",
+  "connection": {
+    "displayName": "Primary Codex",
+    "provider": "codex"
+  }
+}
+```
+
+This opt-in status action is fenced by the opaque owner, authenticated managed API key, and exact
+active generation in one database transaction. `displayName` is only the trimmed configured
+connection name; it is `null` when no safe configured name exists. OmniRoute never substitutes an
+email or generated account identity. The provider value is a non-sensitive display label and never
+a generated compatible-provider identifier. Credentials, tokens, cookies, raw connection or API
+key ids, owner hashes, fencing secrets, and internal routing data are excluded.
+
+Wrong-key, wrong-owner, stale-generation, missing, expired, released, and invalidated lookups all
+return the same `409 LEASE_FENCE_STALE` error without connection metadata. A client that received the capacity-wait response has no active binding to inspect. When routing transitions an active lease,
+the same generation remains valid and status atomically returns the new binding, never the old one.
+Existing clients remain unchanged because acquire, renew, release, and waiting responses retain
+their previous shapes.
+
+This server contract does not change stock OpenAI Codex `/status`. Stock Codex currently reports its
+model provider and built-in authentication/account state but does not render arbitrary custom
+provider account metadata; a later client integration must call this action and decide how to
+display `connection.displayName`.
+
+Every managed inference request then supplies both control headers:
+
+```http
+X-OmniRoute-Lease-Owner: vlo_<43-base64url-characters>
+X-OmniRoute-Lease-Generation: 1
+```
+
+The exact owner, generation, active connection, and authenticated API key are fenced immediately
+before each supported upstream attempt. Replaying owner and generation with another key fails even
+when that key permits the same connection. Raw owners are not persisted, logged, retained in the
+request snapshot, or forwarded upstream.
+
+Temporary contention returns HTTP `429` with `Retry-After` and:
+
+```json
+{
+  "state": "WAITING_FOR_CAPACITY",
+  "error": { "type": "lease_error", "code": "LEASE_CAPACITY_UNAVAILABLE" },
+  "reason": "NO_FREE_ELIGIBLE_CONNECTION",
+  "retryAfter": 30
+}
+```
+
+This response only means that the ordinary eligible set was non-empty and every free candidate was
+held by a foreign active lease. Unsupported models/providers, policy mismatch, cooldown, quota,
+health, and other ordinary eligibility failures retain their existing OmniRoute responses.
+
 ### `x-omniroute-compression`
 
 Per-request override of the compression plan. Highest precedence — beats the routing-combo
 override, the active profile, auto-trigger, and the panel Default. Values:
 
-| Value         | Effect                                                               |
-| ------------- | -------------------------------------------------------------------- |
-| `off`         | No compression for this request.                                     |
-| `default`     | The panel-derived Default profile (ignores the active profile).      |
-| `engine:<id>` | A single engine when enabled, e.g. `engine:rtk`.                     |
-| `<combo>`     | A named combo, matched by name (case-insensitive) first, then by id. |
+| Value         | Effect                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `off`         | No compression for this request.                                                            |
+| `default`     | The panel-derived Default profile (ignores the active profile). Lossy engines are left off. |
+| `safe`        | Dedup and whitespace folding only.                                                          |
+| `allow-lossy` | Keep the operator plan for this request, including summaries and style rewrites.            |
+| `engine:<id>` | A single engine when enabled, e.g. `engine:rtk`. Per-request opt-in for that engine.        |
+| `<combo>`     | A named combo, matched by name (case-insensitive) first, then by id.                        |
 
 Notes:
 
@@ -126,7 +231,77 @@ Content-Type: application/json
 }
 ```
 
-Available providers: Nebius, OpenAI, Mistral, Together AI, Fireworks, NVIDIA, **OpenRouter**, **GitHub Models**.
+Available providers: Nebius, OpenAI, Mistral, Together AI, Fireworks, NVIDIA, **OpenRouter**, Jina AI.
+
+Catalog ids are `provider/model` (example: `jina-ai/jina-embeddings-v5-omni-small`). Bare Jina model ids that appear in the registry (for example `jina-embeddings-v5-text-small`, `jina-reranker-v3.5`) also resolve. Jina embed/rerank/classify/segment use dashboard `jina-ai` credentials first; `JINA_AI_API_KEY` is a fallback only when no dashboard key exists. The `jina-reader` card is Reader / `r.jina.ai` only (`POST /v1/web/fetch`) and never serves embeddings or rerank.
+
+Registry models that advertise multimodal support also accept up to 32 provider-neutral structured
+items. Media item types are `text`, `image`, `audio`, `video`, and `document`. Their media `source`
+is either `{"type":"url","url":"https://..."}` or
+`{"type":"base64","data":"...","media_type":"..."}`.
+
+Jina v5 Omni (`jina-ai/jina-embeddings-v5-omni-small`, `jina-ai/jina-embeddings-v5-omni-nano`,
+and the family alias `jina-ai/jina-embeddings-v5-omni` → omni-small) also accepts Jina's native
+EmbeddingsV5Request docs and **forwards them intact** to `https://api.jina.ai/v1/embeddings`:
+
+```json
+{
+  "model": "jina-ai/jina-embeddings-v5-omni-small",
+  "task": "retrieval.query",
+  "normalized": true,
+  "input": [
+    { "text": "a red bicycle" },
+    { "image": "https://example.com/bike.png" },
+    { "content": [{ "text": "caption" }, { "image": "data:image/png;base64,..." }] }
+  ]
+}
+```
+
+Native `{ image | audio | video | pdf }` values may be a public HTTPS URL, a `data:` URI, or raw
+base64. OmniRoute does not stringify those objects or fetch native image URLs — Jina retrieves
+public media itself. Extra Jina fields (`task`, `normalized`, `truncate`, `embedding_type`) are
+forwarded. Text-only Jina SKUs still reject non-text docs.
+
+Security and transport bounds:
+
+- Remote media URLs must be public HTTPS. Canonical `{type,source:url}` items are fetched
+  server-side (redirect revalidation, timeout, size limits, public DNS, connection pinning) and
+  inlined before the provider call. Jina-native `{image:"https://..."}` items are forwarded as-is
+  after the same public-HTTPS check; Jina fetches the URL.
+- Inline base64 media is limited to 8 MiB decoded per item and 16 MiB decoded across the request.
+
+Provider translation (canonical items are never forwarded unchanged):
+
+- Jina multimodal models: each top-level item becomes one modality-keyed object
+  (`text` / `image` / `audio` / `video` / `pdf`) using data URIs for inline media; one vector per
+  top-level item.
+- Gemini Embedding 2 family: one top-level array becomes a single native
+  `models/{model}:embedContent` request with `content.parts` (`text` or `inline_data`).
+- llama.cpp (`llama-cpp/<model>`, any model the local server loaded): canonical `text` items
+  become plain strings, and `image` / `audio` / `video` become one
+  `{"content": [part]}` object each, using llama-server's chat content parts (`image_url`,
+  `input_audio` with format `wav` / `mp3` / `flac`, `input_video`) with inline data; one vector
+  per top-level item. The server must run with `--embedding --mmproj …`; without a projector it
+  rejects media itself. `document` is not supported.
+- Unknown/dynamic models without explicit modality metadata reject structured input with HTTP 400.
+
+```json
+{
+  "model": "jina-ai/jina-embeddings-v5-omni-small",
+  "input": [
+    { "type": "text", "text": "A red bicycle" },
+    {
+      "type": "image",
+      "source": { "type": "url", "url": "https://example.com/bicycle.png" }
+    }
+  ],
+  "dimensions": 512,
+  "encoding_format": "float"
+}
+```
+
+Unsupported model/modality combinations return HTTP 400 rather than coercing the item. Non-input
+extension fields on legacy string/token requests continue to pass through unchanged.
 
 ```bash
 # List all embedding models
@@ -149,12 +324,100 @@ Content-Type: application/json
 }
 ```
 
-Available providers: OpenAI (GPT Image 2), xAI (Grok Image), Together AI (FLUX), Fireworks AI, Nebius (FLUX), Hyperbolic, NanoBanana, **OpenRouter**, SD WebUI (local), ComfyUI (local).
+Available providers include OpenAI (GPT Image 2), xAI (Grok Image), Together AI (FLUX), Fireworks AI, Nebius (FLUX), Hyperbolic, NanoBanana, **OpenRouter**, **ZenMux**, SD WebUI (local), ComfyUI (local).
+
+`n` returns `n` images in `data[]`. Providers whose upstream API returns one image per call
+(Black Forest Labs, Stability AI, Leonardo, Ideogram, Haiper, Hyperbolic, Magnific/Freepik,
+NVIDIA NIM, Cloudflare Workers AI) get `n` separate upstream calls, at most 4 in flight. A
+fixed `seed` is offset by call index (`seed`, `seed + 1`, …), so the images differ but stay
+reproducible. `n` is capped at 10. The request fails as a whole if any call fails. The list
+of fan-out formats is `SINGLE_IMAGE_FANOUT_FORMATS` in
+`open-sse/handlers/imageGeneration/fanOut.ts`.
+
+ZenMux reuses the existing API-key connection and accepts `zenmux/` or `zm/` prefixes:
+
+- `zenmux/openai/gpt-image-2` uses ZenMux's OpenAI Images API. Options include `size`,
+  `quality`, `n`, `output_format`, `output_compression`, `background`, and `response_format`.
+- Other publishers, such as `zm/meta/muse-image-1.0`, use ZenMux's Vertex AI `:predict`
+  endpoint. `n` maps to `sampleCount`, `aspect_ratio` to `aspectRatio`, and `image_size`
+  (`1K`, `2K`, `4K`) to `sampleImageSize`. A pixel `size` supplies only an aspect ratio,
+  not guaranteed pixel dimensions. Supported ratios, resolutions, and counts vary by model.
+- `zm/inclusionai/ming-image-0.1-design` chooses its own dimensions. Omit `size`,
+  `aspect_ratio`, and `image_size`; explicit values return HTTP 400. PNG, JPEG, and WebP
+  can be requested with `output_format`.
+
+This integration supports text-to-image generation, not reference-image editing. Vertex
+output is normalized to `data[].b64_json`; `response_format: "url"` returns an upstream
+HTTPS URL or a base64 data URL when only image bytes are available. Empty/filtered outputs
+return an error rather than an empty success. Model access depends on the ZenMux account.
+See [ZenMux's Vertex API](https://docs.zenmux.ai/api/vertexai/generate-images) and
+[OpenAI Images API](https://docs.zenmux.ai/api/openai/generate-an-image).
 
 ```bash
 # List all image models
 GET /v1/images/generations
 ```
+
+---
+
+## Document OCR
+
+```bash
+POST /v1/ocr
+Authorization: Bearer your-api-key
+Content-Type: application/json
+
+{
+  "model": "mistral/mistral-ocr-latest",
+  "document": {
+    "type": "document_url",
+    "document_url": "https://example.com/invoice.pdf"
+  }
+}
+```
+
+`model` selects the OCR provider via a `provider/model` prefix; a bare model id (e.g.
+`mistral-ocr-latest`) resolves to its registered provider, and an omitted `model` defaults to
+Mistral (`mistral-ocr-latest`). Registered providers (`open-sse/config/ocrRegistry.ts`):
+
+| Provider id                   | Model id             | `model` value                                               | Notes                                                                                              |
+| ----------------------------- | -------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `mistral`                     | `mistral-ocr-latest` | `mistral/mistral-ocr-latest` (or bare `mistral-ocr-latest`) | Synchronous — the response is returned directly from the single upstream call.                     |
+| `azure-document-intelligence` | `prebuilt-read`      | `azure-document-intelligence/prebuilt-read`                 | Asynchronous upstream (`analyze` + poll) — see below.                                              |
+| `vertex-deepseek-ocr`         | `deepseek-ocr-maas`  | `vertex-deepseek-ocr/deepseek-ocr-maas`                     | Synchronous, via Vertex AI's `openapi/chat/completions` partner endpoint — see below for auth/URL. |
+
+All three providers respond in the same Mistral-shaped body:
+
+```json
+{
+  "pages": [{ "index": 0, "markdown": "# Extracted text..." }],
+  "model": "mistral-ocr-latest",
+  "usage_info": { "pages_processed": 1 }
+}
+```
+
+### Azure Document Intelligence poll flow
+
+Azure Document Intelligence's `analyze` API is asynchronous: the initial request returns an
+`Operation-Location` header instead of a body, and the result must be polled for. The handler
+(`open-sse/handlers/ocr.ts`) polls that URL every second for up to 30 attempts, fails fast (does
+not keep polling) on a non-`ok` poll response or a `"failed"` status, and returns `504` if the
+operation is still running after the attempt budget is exhausted. The final Azure response is
+normalized into the same `pages`/`markdown` shape used by Mistral before being returned to the
+caller, so client code does not need to special-case the provider.
+
+### Vertex AI DeepSeek OCR auth and endpoint resolution
+
+`vertex-deepseek-ocr` reuses the same Vertex AI authentication OmniRoute already supports for
+chat/image traffic (`open-sse/executors/vertex.ts`): the connection's API key is either a
+Service Account JSON credential (exchanged for a short-lived OAuth access token via the JWT-bearer
+flow) or an already-minted OAuth access token used as-is. The upstream endpoint URL is Vertex's
+generic `openapi/chat/completions` partner endpoint, built from the connection's project and
+region — an explicit `providerSpecificData.project`/`providerSpecificData.region` always wins;
+otherwise the project is derived from the Service Account JSON's `project_id` and the region
+defaults to `us-central1`. Both resolutions happen in `open-sse/handlers/ocr.ts`
+(`resolveVertexOcrAccessToken`, `resolveVertexOcrBaseUrl`), consumed by
+`src/app/api/v1/ocr/route.ts` before dispatching to `handleOcr`.
 
 ---
 
@@ -166,6 +429,45 @@ Authorization: Bearer your-api-key
 
 → Returns all chat, embedding, and image models + combos in OpenAI format
 ```
+
+### Model id prefixes (`?prefix=`)
+
+Most models are advertised under a **provider prefix**. Which prefix you get is controlled by
+the `MODELS_CATALOG_PREFIX_MODE` feature flag, and can be overridden **per request** with a
+query parameter — useful for a client that wants a clean list without changing the server-wide
+setting for everyone else:
+
+```bash
+GET /v1/models?prefix=alias        # one id per model — the short alias prefix
+GET /v1/models?prefix=dual         # both forms (server default)
+GET /v1/models?prefix=canonical    # only the full provider-id prefix
+```
+
+| Mode        | Emits                                                     | Notes                                                                                                                                                                        |
+| ----------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dual`      | `cc/claude-sonnet-4-6` **and** `claude/claude-sonnet-4-6` | **Default.** Both ids route to the same model; kept so client configs that hardcoded either form keep working. Roughly doubles the catalog.                                  |
+| `alias`     | `cc/claude-sonnet-4-6`                                    | One entry per model. Providers without a distinct alias still emit their entry, so nothing is lost.                                                                          |
+| `canonical` | `claude/claude-sonnet-4-6`                                | One entry per model under the full provider-id prefix. Providers without a distinct alias (e.g. `antigravity/…`, `agy/…`) emit their single id here too, so nothing is lost. |
+
+A `dual`-mode mirror can also be recognised without the query parameter: it carries a `parent`
+field pointing at the primary id.
+
+Clients that render a model picker should request `?prefix=alias` — this is what the
+[OmniCopilot VS Code extension](../guides/VSCODE-COPILOT.md) does.
+
+### Individually hidden chat models
+
+A model marked **Hidden** on its provider page is excluded from the catalog and rejected
+with HTTP `404` / `model_not_found` when requested explicitly. The check uses the resolved
+provider and model, including provider aliases, compatible-provider node prefixes, and
+connection defaults. A combo skips hidden targets and can use a visible sibling; when no
+executable target remains it returns the same error code. Unhiding takes effect on the next
+request. Image-only visibility overrides do not hide the chat model with the same ID.
+
+This individual model setting is separate from the
+[model exposure allow/deny lists](../routing/MODEL_EXPOSURE_LIST.md), which filter catalog
+advertisement and auto-routing candidates while retaining explicit dispatch. API-key model
+permissions continue to apply independently. The default catalog prefix mode remains `dual`.
 
 ### No-thinking model variants
 
@@ -197,39 +499,50 @@ Use this endpoint when a sidecar runs out-of-process and cannot import
 
 ## Compatibility Endpoints
 
-| Method | Path                                      | Format                           |
-| ------ | ----------------------------------------- | -------------------------------- |
-| POST   | `/v1/chat/completions`                    | OpenAI                           |
-| POST   | `/v1/messages`                            | Anthropic                        |
-| POST   | `/v1/responses`                           | OpenAI Responses                 |
-| POST   | `/v1/embeddings`                          | OpenAI                           |
-| POST   | `/v1/images/generations`                  | OpenAI Images                    |
-| POST   | `/v1/images/edits`                        | OpenAI Images (edit/inpaint)     |
-| POST   | `/v1/videos/generations`                  | OpenAI-style video generation    |
-| POST   | `/v1/music/generations`                   | OpenAI-style music generation    |
-| POST   | `/v1/audio/transcriptions`                | OpenAI Audio (STT)               |
-| POST   | `/v1/audio/speech`                        | OpenAI TTS (returns audio body)  |
-| POST   | `/v1/rerank`                              | Cohere/Voyage-style rerank       |
-| POST   | `/v1/moderations`                         | OpenAI Moderations               |
-| GET    | `/v1/models`                              | OpenAI                           |
-| POST   | `/v1/messages/count_tokens`               | Anthropic                        |
-| GET    | `/v1beta/models`                          | Gemini                           |
-| POST   | `/v1beta/models/{...path}`                | Gemini generateContent           |
-| POST   | `/v1/api/chat`                            | Ollama                           |
-| GET    | `/api/v1/vscode/{token}/`                 | OpenAI catalog alias             |
-| GET    | `/api/v1/vscode/{token}/models`           | OpenAI models alias              |
-| POST   | `/api/v1/vscode/{token}/chat/completions` | OpenAI tokenized alias           |
-| POST   | `/api/v1/vscode/{token}/responses`        | OpenAI Responses tokenized alias |
-| POST   | `/api/v1/vscode/{token}/api/chat`         | Ollama tokenized alias           |
-| GET    | `/api/v1/vscode/{token}/api/tags`         | Ollama tags tokenized alias      |
+| Method | Path                                      | Format                             |
+| ------ | ----------------------------------------- | ---------------------------------- |
+| POST   | `/v1/chat/completions`                    | OpenAI                             |
+| POST   | `/v1/messages`                            | Anthropic                          |
+| POST   | `/v1/responses`                           | OpenAI Responses                   |
+| POST   | `/v1/embeddings`                          | OpenAI                             |
+| POST   | `/v1/images/generations`                  | OpenAI Images                      |
+| POST   | `/v1/images/edits`                        | OpenAI Images (edit/inpaint)       |
+| POST   | `/v1/videos/generations`                  | OpenAI-style video generation      |
+| POST   | `/v1/music/generations`                   | OpenAI-style music generation      |
+| POST   | `/v1/audio/transcriptions`                | OpenAI Audio (STT)                 |
+| POST   | `/v1/audio/speech`                        | OpenAI TTS (returns audio body)    |
+| POST   | `/v1/rerank`                              | Cohere/Voyage-style rerank         |
+| POST   | `/v1/classify`                            | Jina classify (`api.jina.ai`)      |
+| POST   | `/v1/segment`                             | Jina segmenter (`segment.jina.ai`) |
+| POST   | `/v1/moderations`                         | OpenAI Moderations                 |
+| GET    | `/v1/models`                              | OpenAI                             |
+| POST   | `/v1/messages/count_tokens`               | Anthropic                          |
+| GET    | `/v1beta/models`                          | Gemini                             |
+| POST   | `/v1beta/models/{...path}`                | Gemini generateContent             |
+| POST   | `/v1/api/chat`                            | Ollama                             |
+| GET    | `/api/v1/vscode/{token}/`                 | OpenAI catalog alias               |
+| GET    | `/api/v1/vscode/{token}/models`           | OpenAI models alias                |
+| POST   | `/api/v1/vscode/{token}/chat/completions` | OpenAI tokenized alias             |
+| POST   | `/api/v1/vscode/{token}/responses`        | OpenAI Responses tokenized alias   |
+| POST   | `/api/v1/vscode/{token}/api/chat`         | Ollama tokenized alias             |
+| GET    | `/api/v1/vscode/{token}/api/tags`         | Ollama tags tokenized alias        |
 
 All POST routes follow the same shape: `Bearer your-api-key` + Zod-validated JSON body (`v1RerankSchema`, `v1ModerationSchema`, `v1AudioSpeechSchema`, etc., see `src/shared/validation/schemas.ts`). 4xx is returned on schema failure.
 
 For clients that cannot attach `Authorization: Bearer ...`, OmniRoute also accepts API keys in the URL via either query-string compatibility (`?token=...`, `?apiKey=...`, `?api_key=...`, `?key=...`) or the dedicated `/api/v1/vscode/{token}/...` endpoints documented below.
 
 ```bash
-# Rerank
-POST /v1/rerank      { "model": "cohere/rerank-3", "query": "...", "documents": ["..."] }
+# Rerank (cloud registry provider, or an OpenAI-compatible provider node as "<prefix>/<model>")
+POST /v1/rerank      { "model": "jina-ai/jina-reranker-v3.5", "query": "...", "documents": ["..."] }
+
+# Jina classify (Foundation API credentials)
+POST /v1/classify    { "model": "jina-embeddings-v5-text-small", "input": ["..."], "labels": ["a", "b"] }
+
+# Jina segmenter
+POST /v1/segment     { "content": "...", "return_chunks": true }
+
+# Jina search (s.jina.ai; provider aliases: jina-search, jina-ai, jina)
+POST /v1/search      { "query": "...", "provider": "jina-search" }
 
 # Moderations
 POST /v1/moderations { "model": "omni-moderation-latest", "input": "..." }
@@ -237,13 +550,42 @@ POST /v1/moderations { "model": "omni-moderation-latest", "input": "..." }
 # TTS — returns audio/mpeg (or requested format) body
 POST /v1/audio/speech { "model": "openai/tts-1", "input": "Hello", "voice": "alloy" }
 
+# Soniox TTS requires a language and a voice: `language` defaults to "en"; a missing
+# voice or an OpenAI stock voice name (alloy, nova, …) becomes "Adrian"
+POST /v1/audio/speech { "model": "soniox/tts-rt-v1", "input": "Xin chào", "voice": "Adrian", "language": "vi" }
+
 # Image edit (multipart)
 POST /v1/images/edits  -F image=@input.png -F prompt="..." -F mask=@mask.png
 
 # Video / music generation (provider-prefixed model id)
 POST /v1/videos/generations { "model": "runway/gen-3", "prompt": "..." }
-POST /v1/music/generations  { "model": "suno/v3.5",   "prompt": "..." }
+POST /v1/music/generations  { "model": "kie/suno-v4.0",   "prompt": "..." }
 ```
+
+> **Rerank provider nodes:** `POST /v1/rerank` also routes to OpenAI-compatible provider nodes
+> (oMLX, vLLM, Infinity, TEI behind a gateway, …) addressed as `<node-prefix>/<model>`. Loopback
+> nodes (`localhost`, `127.0.0.1`, `172.16.0.0/12`) are always eligible, and so are hostnames the
+> operator lists in `OMNIROUTE_LOCAL_PROVIDER_NODE_HOSTS` (e.g. a Docker/Compose service name such
+> as `http://reranker:8080/v1`; these are called directly, never through `HTTP(S)_PROXY` or a
+> connection's pinned proxy). Nodes on any other
+> host — a LAN box or Tailscale peer — are eligible only when the operator enables the
+> `RERANK_REMOTE_PROVIDER_NODES` feature flag **and** the node's base URL passes the provider
+> outbound URL policy (`OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS` / `OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS`).
+> The memory engine's rerank step calls this route over
+> loopback, so the same rule governs `rerankProviderModel` in the Memory settings.
+>
+> **Local server shapes:** the node is called at `<base>/v1/rerank` and, on 404, at `<base>/rerank`
+> (Infinity, TEI). The upstream body carries both the Cohere/OpenAI spelling (`documents`,
+> `return_documents`) and the TEI spelling (`texts`, `return_text`), and the upstream response is
+> normalized to the Cohere envelope: TEI's bare `[{index, score, text}]`, `{results: [{index, score}]}`
+> from thin gateways, and Voyage-style `{data: [...]}` all come back to the client as
+> `{results: [{index, relevance_score, document?}]}`, sorted by score and capped at `top_n`.
+
+> **Provider-node discovery:** models on an OpenAI-compatible provider node appear in `GET /v1/models`
+> under the node prefix. Rows that carry no endpoint metadata (typical for local `/v1/models` listings)
+> inherit the node's `apiType`, so an `embeddings` node's models are `type: "embedding"` and a
+> `rerank` node's models are `type: "rerank"` instead of defaulting to chat; an explicit
+> `supportedEndpoints` on a synced or manually added row still takes precedence.
 
 ### Dedicated Provider Routes
 
@@ -269,7 +611,12 @@ OpenAI-compatible files endpoint for batch input/output and file-purpose uploads
 | DELETE | `/v1/files/[id]`         | Delete a file                                                                                                 |
 | GET    | `/v1/files/[id]/content` | Stream the raw file body back                                                                                 |
 
-**Auth:** Bearer API key — files are scoped per-API-key via `getApiKeyRequestScope`.
+**Auth:** Bearer API key — files are scoped per-API-key via `getApiKeyRequestScope`. A key
+sees, downloads and deletes its own files only; a dashboard session without a key reads the
+whole instance; a file with no owner (anonymous or dashboard-session upload) is denied to every
+non-session caller. `GET /v1/files` rejects an anonymous caller — and a presented key that does
+not resolve — with `401` even when `REQUIRE_API_KEY=false`, instead of listing every tenant's
+files (GHSA-m3hp-hq9g-fpmv, GHSA-2jm2-mpx8-6523).
 
 ---
 
@@ -285,7 +632,10 @@ OpenAI-compatible batch processing.
 | DELETE | `/v1/batches/[id]`        | Delete a finished/failed batch                                                                            |
 | POST   | `/v1/batches/[id]/cancel` | Cancel an in-progress batch                                                                               |
 
-**Auth:** Bearer API key. Batches are scoped per-API-key.
+**Auth:** Bearer API key. Batches are scoped per-API-key under the same three-way rule as
+files: own key only, dashboard session instance-wide, null-owner records denied to every
+non-session caller (retrieve, delete, cancel, and the `input_file_id` check on create).
+`GET /v1/batches` rejects an anonymous caller with `401` even when `REQUIRE_API_KEY=false`.
 
 ---
 
@@ -300,6 +650,33 @@ Web/search provider abstraction (Tavily, Brave, Exa, Serper, etc.).
 | GET    | `/v1/search/analytics` | Per-provider hit/latency/cache stats                                                 |
 
 **Auth:** Bearer API key (`extractApiKey` + `isValidApiKey`). Search policy enforced via `enforceApiKeyPolicy`.
+
+---
+
+## Web Fetch API
+
+Extract content from a URL via a configured web-fetch provider (Firecrawl, Jina
+Reader, Tavily Extract, TinyFish Fetch, Nimble Extract).
+
+| Method | Path            | Description                                               |
+| ------ | --------------- | --------------------------------------------------------- |
+| POST   | `/v1/web/fetch` | Fetch/scrape a URL — body validated by `v1WebFetchSchema` |
+
+**Auth:** Bearer API key (`extractApiKey` + `isValidApiKey`). Policy enforced via `enforceApiKeyPolicy`.
+
+**Quota-aware fallback (#8297):** when no explicit `provider` is given, the pool
+(`firecrawl` → `jina-reader` → `tavily-search` → `tinyfish` → `nimble-search`) is
+walked in fixed
+priority order (fill-first) — a rate-limited-but-configured provider is skipped
+instead of short-circuiting the request, and a retryable/quota upstream failure
+(HTTP 429 always; 402/403 for Firecrawl/Tavily/TinyFish quota-style free tiers —
+not for Jina Reader, and never for a plain 400 bad request) falls through to the
+next untried credentialed provider at request time. When every provider in the
+pool is exhausted, the endpoint returns a single `429` (with a `Retry-After`
+header) instead of the previous generic `400`. When an explicit `provider` is
+requested, there is **no** silent fallback — a rate-limited or failing explicit
+provider surfaces its own error (`429` if rate-limited, otherwise the upstream
+status).
 
 ---
 
@@ -387,6 +764,110 @@ completion.
 
 ---
 
+## Self-service usage (`/api/usage/om-usage`)
+
+Any API key can read **its own** usage and quotas — no management auth. This is the endpoint a
+client (CLI, the OmniCopilot panel) uses to show a key holder their spend.
+
+```bash
+# Text form (the historical contract — plain text for a terminal)
+curl -H "Authorization: Bearer <your-api-key>" \
+  http://localhost:20128/api/usage/om-usage
+
+# Structured form — what a UI consumes
+curl -H "Authorization: Bearer <your-api-key>" \
+  "http://localhost:20128/api/usage/om-usage?format=json"
+```
+
+The key must have **`allowUsageCommand`** enabled (off by default — the dashboard's API-key
+manager toggles it per key). Without it the endpoint answers `403`.
+
+`?format=json` returns a discriminated shape so a caller never reads a data field off a
+refusal. On success:
+
+```jsonc
+{
+  "allowed": true,
+  // present only when the key opted into per-key usage limits (daily/weekly USD):
+  "personal": {
+    "dailySpentUsd": 1.25,
+    "dailyLimitUsd": 5,
+    "dailyResetAtIso": "…",
+    "weeklySpentUsd": 8,
+    "weeklyLimitUsd": 20,
+    "weeklyResetAtIso": "…" /* … */,
+  },
+  // the selected provider quota snapshot, or null when nothing is cached yet:
+  "provider": { "connectionId": "…", "provider": "claude", "plan": "…", "quotas": {/* … */} },
+  // every connection's snapshot, so a UI can render several providers side by side:
+  "providers": [
+    { "connectionId": "…", "provider": "claude" /* … */ },
+    { "provider": "codex" /* … */ },
+  ],
+}
+```
+
+On refusal (`401` bad key / `403` not allowed) the same route returns
+`{ "allowed": false, "error": { "message": "…" } }` — a present-but-empty `personal`/`provider`
+(key allowed, nothing learned yet) is a different state from a refusal, and only the JSON form
+distinguishes them.
+
+**Auth:** the caller's own Bearer API key, validated with `isValidApiKey` — this is _not_ the
+management surface (`/api/keys/…`), which stays behind `requireManagementAuth`.
+
+### Raw vs. Cutoff-Adjusted Quota Percentages
+
+When consuming `/api/usage/om-usage`, callers should note the distinction between the
+percentages presented by the **plain-text output** and the structured **JSON output**:
+
+| Aspect               | Plain-text format (`/api/usage/om-usage` / `@@om-usage`)                             | JSON format (`?format=json`)                                          |
+| :------------------- | :----------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
+| **Output field**     | `NN% left` (e.g., `20% left`)                                                        | `provider.quotas` / `providers[].quotas`                              |
+| **Measurement**      | **Cutoff-adjusted usable allowance**: remaining capacity above the cutoff threshold  | **Raw upstream quota**: unadjusted provider measurement               |
+| **Cutoff scaling**   | Scaled via `effectiveRemainingPercent()` so the protected reserve reads as `0% left` | None (raw snapshot values as reported by the provider)                |
+| **Threshold data**   | Incorporated into the displayed percentage                                           | Stored in `quotaWindowThresholds` per connection (or server defaults) |
+| **Primary consumer** | Interactive CLIs, terminal prompts, human operators                                  | Programmatic integrations, dashboards, analytics, billing trackers    |
+
+#### The Cutoff Adjustment Formula
+
+OmniRoute supports proactive quota cutoffs to prevent upstream exhaustion (configured via connection
+`quotaWindowThresholds`, provider defaults, or global resilience settings). When a cutoff threshold
+(e.g., `cutoff = 25%`) is active on a quota window, the text renderer calculates remaining allowance as:
+
+- If `remaining <= cutoff`: returns `0%`.
+- If `remaining > cutoff`: returns `((remaining - cutoff) / (100 - cutoff)) * 100`.
+
+The formatted text output rounds this to the nearest integer (`Math.round(...)`).
+
+#### Illustrative Example
+
+Consider a provider window with **60% raw usage** (hence **40% raw remaining quota**) and a configured
+**25% remaining-quota cutoff** threshold:
+
+| Representation                | Calculation                                        | Remaining |                Implied Used                |
+| :---------------------------- | :------------------------------------------------- | :-------: | :----------------------------------------: |
+| **Raw JSON (`?format=json`)** | Upstream snapshot (`quotas[window]`)               |  **40%**  |                  **60%**                   |
+| **Text format (`NN% left`)**  | `((40 - 25) / (100 - 25)) * 100 = (15 / 75) * 100` |  **20%**  | **80%** (if calculating `100 - remaining`) |
+
+- **Why text shows 20% left:** Out of the 40% physical quota left on the account, 25% is reserved by the
+  cutoff policy. The caller has only 15% out of 75% usable headroom remaining before the router stops
+  routing to this connection. Scaling ensures the connection signals exhaustion (`0% left`) exactly when
+  routing will cease.
+- **Why JSON preserves raw values:** The JSON payload returns the exact provider snapshot (`UsageSnapshot`)
+  so external tools have access to ground-truth upstream utilization and connection-level
+  `quotaWindowThresholds` without server-side lossy scaling.
+
+#### Consumer Migration Guidance
+
+If an external integration (such as an editor plugin or agent extension) previously scraped the text
+endpoint (`NN% left`) and computed used percentage as `100 - NN`, migrating to `?format=json` means:
+
+- Reading raw JSON values will reflect **actual upstream consumption** (60% used in the example above).
+- If the integration wishes to preserve the text endpoint's usable-allowance semantics, it can evaluate
+  the effective remaining formula client-side using `quotaWindowThresholds` for connection-level overrides.
+
+---
+
 ## Semantic Cache
 
 ```bash
@@ -414,9 +895,49 @@ Response example:
 }
 ```
 
+### Latency impact
+
+A semantic cache HIT serves the response from cache **without an upstream
+call**, so the reported `X-OmniRoute-Response-Latency` is near-zero
+(regardless of the original upstream latency). Latency-sensitive clients
+(benchmarking, p50/p99 monitoring) should check the
+`X-OmniRoute-Cache-Latency` response header:
+
+| Value       | Meaning                                                       |
+| ----------- | ------------------------------------------------------------- |
+| `synthetic` | Response served from cache; latency is not real upstream time |
+| _(absent)_  | Response from real upstream call                              |
+
+### Per-key cache bypass
+
+API keys can opt out of semantic cache reads via `cacheDefaultMode`:
+
+| Value    | Behavior                                        |
+| -------- | ----------------------------------------------- |
+| `legacy` | Normal cache behavior (default)                 |
+| `bypass` | Skip cache lookup entirely; always hit upstream |
+
+Set at key creation (`POST /api/keys`) or update (`PATCH /api/keys/[id]`):
+
+```json
+{ "cacheDefaultMode": "bypass" }
+```
+
+### Per-request bypass
+
+Any request can bypass the cache regardless of key settings:
+
+```
+X-OmniRoute-No-Cache: true
+```
+
 ---
 
 ## Dashboard & Management
+
+Management routes (`/api/*` except public auth/login) are **not** authorized by
+ordinary inference API keys. Credential families, scopes, and curl examples:
+[Management Authentication](../guides/MANAGEMENT-AUTH.md).
 
 ### Authentication
 
@@ -428,15 +949,59 @@ Response example:
 
 ### Provider Management
 
-| Endpoint                     | Method                | Description                                    |
-| ---------------------------- | --------------------- | ---------------------------------------------- |
-| `/api/providers`             | GET/POST              | List / create providers                        |
-| `/api/providers/[id]`        | GET/PUT/DELETE        | Manage a provider                              |
-| `/api/providers/[id]/test`   | POST                  | Test provider connection                       |
-| `/api/providers/[id]/models` | GET                   | List provider models                           |
-| `/api/providers/validate`    | POST                  | Validate provider config                       |
-| `/api/provider-nodes*`       | Various               | Provider node management                       |
-| `/api/provider-models`       | GET/POST/PATCH/DELETE | Custom models (add, update, hide/show, delete) |
+| Endpoint                                | Method                    | Description                                                                                                                                               |
+| --------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/providers`                        | GET/POST                  | List / create providers                                                                                                                                   |
+| `/api/providers/[id]`                   | GET/PUT/DELETE            | Manage a provider                                                                                                                                         |
+| `/api/providers/[id]/test`              | POST                      | Test provider connection                                                                                                                                  |
+| `/api/providers/[id]/models`            | GET                       | List provider models                                                                                                                                      |
+| `/api/providers/validate`               | POST                      | Validate provider config                                                                                                                                  |
+| `/api/providers/bulk`                   | POST                      | Bulk-add API keys for ONE provider                                                                                                                        |
+| `/api/providers/import`                 | POST                      | Import a heterogeneous provider LIST from a parsed CSV/JSON file (#6836); per-row partial-failure results                                                 |
+| `/api/provider-nodes*`                  | Various                   | Provider node management                                                                                                                                  |
+| `/api/provider-models`                  | GET/POST/PUT/PATCH/DELETE | Custom models and per-model overrides (add, update, hide/show, delete)                                                                                    |
+| `/api/provider-models/validate-and-add` | POST                      | Management-authenticated, opt-in strict-connection validation and atomic custom-model registration; see [Model validation](../guides/MODEL-VALIDATION.md) |
+
+For synced/imported models, `PUT /api/provider-models` accepts `provider`, `modelId`, and
+`maxOutputTokenOverride`: a positive integer sets the manual output-token cap, and `null`
+clears it to restore the default. `GET /api/provider-models?provider=<provider>` returns these
+values in `modelOutputOverrides`, including models without a custom-model row. The override
+uses the runtime `max_output_tokens` capability and survives a model re-sync. The OpenAI-compatible
+provider page offers the same edit/clear controls and marks models with explicit vision support.
+
+Custom Chat Completions nodes adapt explicit reasoning opt-outs to the upstream backend. A
+successful connection test automatically selects chat-template controls for each exact model ID
+whose `/models` entry proves a recognized `owned_by` value: `vllm`, `sglang`, or `llamacpp`.
+Transparent OpenAI-compatible wrappers may preserve the original model entry inside a nested
+`openai` object; detection follows up to three such envelopes. Models with missing, unknown, or
+conflicting ownership keep ordinary OpenAI behavior. Detection reuses the existing catalog request,
+generates no completion tokens, and is invalidated when the connection endpoint changes.
+
+To pin the behavior for a backend that does not expose that metadata, use the existing partial
+provider update API:
+
+```json
+{
+  "providerSpecificData": {
+    "reasoningControl": "chat-template"
+  }
+}
+```
+
+Send that body with `PUT /api/providers/<connection-id>`. On that connection, an explicit
+reasoning effort of `none` is sent as `chat_template_kwargs.thinking=false` and
+`chat_template_kwargs.enable_thinking=false`. Explicit native template values remain authoritative
+unless a server-side reasoning rule forces an effort. The setting applies only when a custom
+OpenAI-compatible connection dispatches a Chat Completions body; Responses requests and ordinary
+providers keep their native request shape. Set `reasoningControl` to `openai` to force ordinary OpenAI
+`reasoning_effort` passthrough, or omit it/set it to `null` to use automatic detection.
+
+Claude Code auto-mode classifier requests default native thinking to disabled when they contain
+no explicit reasoning controls. Detection uses the classifier's system marker in Claude-format
+requests, not model names or completion limits. Explicit body controls, supported effort/thinking
+headers, routing rules, and resolved model effort keep their existing priority. Both classifier
+stages retain their prompts, completion limits, stop sequences, and real upstream permission
+verdicts; the second stage can still produce its requested visible reasoning as ordinary text.
 
 ### OAuth Flows
 
@@ -456,26 +1021,69 @@ Response example:
 
 ### Usage & Analytics
 
-| Endpoint                    | Method          | Description                     |
-| --------------------------- | --------------- | ------------------------------- |
-| `/api/usage/history`        | GET             | Usage history                   |
-| `/api/usage/logs`           | GET             | Usage logs                      |
-| `/api/usage/request-logs`   | GET             | Request-level logs              |
-| `/api/usage/[connectionId]` | GET             | Per-connection usage            |
-| `/api/usage/token-limits`   | GET/POST/DELETE | Per-API-key token-limit budgets |
+| Endpoint                         | Method          | Description                                                                                                                                                                                                                                                                                          |
+| -------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/usage/history`             | GET             | Usage history                                                                                                                                                                                                                                                                                        |
+| `/api/usage/logs`                | GET             | Usage logs                                                                                                                                                                                                                                                                                           |
+| `/api/usage/request-logs`        | GET             | Request-level logs                                                                                                                                                                                                                                                                                   |
+| `/api/usage/[connectionId]`      | GET             | Per-connection usage                                                                                                                                                                                                                                                                                 |
+| `/api/usage/token-limits`        | GET/POST/DELETE | Per-API-key token-limit budgets                                                                                                                                                                                                                                                                      |
+| `/api/usage/model-latency-stats` | GET             | Rolling per-provider/model latency aggregate (avg/p50/p95/p99, success rate); filters: `windowHours`/`minSamples`/`maxRows`/`provider`/`model` (#6873)                                                                                                                                               |
+| `/api/usage/cache-health`        | GET             | Prompt-cache health summary over `call_logs` — write/read ratio, p50/p90/p99 write-size distribution, heavy-write concentration, per-model split, and a `healthy`/`degraded`/`thrash`/`no-data` verdict; query params `range` (`1h`\|`24h`\|`7d`\|`30d`, default `24h`) and optional `model` (#8827) |
+
+### API key permissions
+
+`PATCH /api/keys/{id}` updates an existing key's permissions. Like every `/api/keys*` route it needs management authorization (see [Management Authentication](../guides/MANAGEMENT-AUTH.md)), not an inference key. Send only the fields you want to change; a request with none of them is rejected with `No valid fields to update`. The accepted fields are defined by `updateKeyPermissionsSchema` in `src/shared/validation/schemas/keys.ts`.
+
+| Field                                       | Type                                                                 | Notes                                                                                                                  |
+| ------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `name`                                      | string, 1-200 chars                                                  |                                                                                                                        |
+| `isActive`                                  | boolean                                                              |                                                                                                                        |
+| `isBanned`                                  | boolean                                                              |                                                                                                                        |
+| `expiresAt`                                 | ISO 8601 datetime or `null`                                          | `null` clears the expiry                                                                                               |
+| `modelAccessMode`                           | `all` \| `restricted`                                                | `allowedModels` must be empty when the mode is `all`                                                                   |
+| `allowedModels`, `blockedModels`            | array of strings, up to 1000                                         |                                                                                                                        |
+| `allowedCombos`                             | array of strings, up to 500                                          | Gates which combos the key may call; direct models are governed by `modelAccessMode` / `allowedModels`                 |
+| `connectionAccessMode`                      | `all` \| `restricted`                                                | `allowedConnections` must be non-empty when `restricted` and empty when `all`                                          |
+| `allowedConnections`                        | array of UUIDs, up to 100                                            |                                                                                                                        |
+| `allowAutoCombos`                           | boolean                                                              | `false` rejects requests for `auto/*` models with this key; keys that never set it are allowed                         |
+| `catalogScope`                              | `all` \| `combos` \| `models`                                        | What `GET /v1/models` lists for this key (combos only, models only, or both); it does not change what the key may call |
+| `noLog`, `autoResolve`                      | boolean                                                              |                                                                                                                        |
+| `throttleDelayMs`                           | integer, 0-300000                                                    |                                                                                                                        |
+| `maxSessions`                               | integer, 0-10000                                                     |                                                                                                                        |
+| `rateLimits`                                | array of `{ limit, window }` (positive integers, up to 50) or `null` | `null` clears the limits                                                                                               |
+| `accessSchedule`                            | schedule object or `null`                                            | `null` clears the schedule                                                                                             |
+| `scopes`                                    | array of strings, up to 32                                           |                                                                                                                        |
+| `allowedEndpoints`                          | array of strings, up to 20                                           |                                                                                                                        |
+| `streamDefaultMode`                         | `legacy` \| `json`                                                   |                                                                                                                        |
+| `cacheDefaultMode`                          | `legacy` \| `bypass`                                                 | See [Per-key cache bypass](#per-key-cache-bypass)                                                                      |
+| `compressionEnabled`                        | boolean                                                              |                                                                                                                        |
+| `codexServiceMode`                          | one of the Codex service modes                                       |                                                                                                                        |
+| `disableNonPublicModels`                    | boolean                                                              |                                                                                                                        |
+| `allowUsageCommand`                         | boolean                                                              |                                                                                                                        |
+| `usageLimitEnabled`                         | boolean                                                              |                                                                                                                        |
+| `dailyUsageLimitUsd`, `weeklyUsageLimitUsd` | number >= 0 or `null`                                                |                                                                                                                        |
+| `chaosModeEnabled`                          | boolean                                                              |                                                                                                                        |
+
+```bash
+curl -X PATCH "$OMNIROUTE_URL/api/keys/$KEY_ID" \
+  -H "Authorization: Bearer <management-credential>" \
+  -H "Content-Type: application/json" \
+  -d '{ "allowAutoCombos": false, "catalogScope": "combos" }'
+```
 
 ### Settings
 
-| Endpoint                              | Method        | Description                                         |
-| ------------------------------------- | ------------- | --------------------------------------------------- |
-| `/api/settings`                       | GET/PUT/PATCH | General settings                                    |
-| `/api/settings/proxy`                 | GET/PUT       | Network proxy config                                |
-| `/api/settings/proxy/test`            | POST          | Test proxy connection                               |
-| `/api/settings/ip-filter`             | GET/PUT       | IP allowlist/blocklist                              |
-| `/api/settings/thinking-budget`       | GET/PUT       | Reasoning token budget                              |
-| `/api/settings/system-prompt`         | GET/PUT       | Global system prompt                                |
-| `/api/settings/compression`           | GET/PUT       | Global compression config                           |
-| `/api/settings/purge-request-history` | POST          | Clear request log rows and local call-log artifacts |
+| Endpoint                              | Method        | Description                                                                                                                                                                     |
+| ------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/settings`                       | GET/PUT/PATCH | General settings                                                                                                                                                                |
+| `/api/settings/proxy`                 | GET/PUT       | Network proxy config                                                                                                                                                            |
+| `/api/settings/proxy/test`            | POST          | Test proxy connection                                                                                                                                                           |
+| `/api/settings/ip-filter`             | GET/PUT       | IP allowlist/blocklist                                                                                                                                                          |
+| `/api/settings/thinking-budget`       | GET/PUT       | Thinking/reasoning **request** rewrite mode (passthrough / auto-strip / custom / adaptive). Independent of compression. See [THINKING_BUDGET.md](../guides/THINKING_BUDGET.md). |
+| `/api/settings/system-prompt`         | GET/PUT       | Global system prompt                                                                                                                                                            |
+| `/api/settings/compression`           | GET/PUT       | Global compression config                                                                                                                                                       |
+| `/api/settings/purge-request-history` | POST          | Clear request log rows and local call-log artifacts                                                                                                                             |
 
 ### Context & Compression
 
@@ -496,23 +1104,30 @@ Response example:
 
 ### Monitoring
 
-| Endpoint                 | Method     | Description                                                                                          |
-| ------------------------ | ---------- | ---------------------------------------------------------------------------------------------------- |
-| `/api/sessions`          | GET        | Active session tracking                                                                              |
-| `/api/rate-limits`       | GET        | Per-account rate limits                                                                              |
-| `/api/monitoring/health` | GET        | Health check + provider summary (`catalogCount`, `configuredCount`, `activeCount`, `monitoredCount`) |
-| `/api/cache/stats`       | GET/DELETE | Cache stats / clear                                                                                  |
+| Endpoint                             | Method     | Description                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/sessions`                      | GET        | Active session tracking                                                                                                                                                                                                                                                                                                                                                                      |
+| `/api/rate-limits`                   | GET        | Per-account rate limits                                                                                                                                                                                                                                                                                                                                                                      |
+| `/api/monitoring/health`             | GET        | Health check + provider summary (`catalogCount`, `configuredCount`, `activeCount`, `monitoredCount`). Management view includes `credentialHealth`: probe-cache scalars, `failedConnections` when `failed>0`, and `staleDbNonOkCount` (SQLite sticky `test_status`, not the gauge). See [MONITORING_GUIDE.md](../ops/MONITORING_GUIDE.md#credentialhealth-probe-cache-vs-sqlite-test_status). |
+| `/api/cache/stats`                   | GET/DELETE | Cache stats / clear                                                                                                                                                                                                                                                                                                                                                                          |
+| `/api/modality-bridge/stats`         | GET        | In-memory `attempts`, successes/`bridged`, failures, cache hits, `totalLatencyMs`, `latencySamples`, sample-denominated `averageLatencyMs`, and last-use time (reset on restart; management auth)                                                                                                                                                                                            |
+| `/api/modality-bridge/video/runtime` | GET        | Strict trusted-loopback check before management auth/probe; sanitized FFmpeg/ffprobe availability and versions (no-store)                                                                                                                                                                                                                                                                    |
+| `/api/modality-bridge/video/extract` | POST       | Internal authenticated trusted-loopback byte broker; 50 MiB input, bounded queue/32 MiB output, `503` capacity, `499` disconnect, `504` deadline; not a public upload API                                                                                                                                                                                                                    |
 
 ### Backup & Export/Import
 
-| Endpoint                    | Method | Description                             |
-| --------------------------- | ------ | --------------------------------------- |
-| `/api/db-backups`           | GET    | List available backups                  |
-| `/api/db-backups`           | PUT    | Create a manual backup                  |
-| `/api/db-backups`           | POST   | Restore from a specific backup          |
-| `/api/db-backups/export`    | GET    | Download database as .sqlite file       |
-| `/api/db-backups/import`    | POST   | Upload .sqlite file to replace database |
-| `/api/db-backups/exportAll` | GET    | Download full backup as .tar.gz archive |
+| Endpoint                    | Method | Description                                                             |
+| --------------------------- | ------ | ----------------------------------------------------------------------- |
+| `/api/db-backups`           | GET    | List available backups                                                  |
+| `/api/db-backups`           | PUT    | Create a manual backup                                                  |
+| `/api/db-backups`           | POST   | Restore from a specific backup                                          |
+| `/api/db-backups/export`    | GET    | Download database as .sqlite file                                       |
+| `/api/db-backups/import`    | POST   | Upload .sqlite file to replace database (`?dryRun=true` validates only) |
+| `/api/db-backups/exportAll` | GET    | Download full backup as .tar.gz archive                                 |
+
+`/api/db-backups/export`, `/api/db-backups/exportAll` and `/api/settings/export-json` hand out
+every stored credential, so they require the dashboard session or the local CLI (or login
+disabled). API keys of any scope and `oma_` access tokens get `403`.
 
 ### Cloud Sync
 
@@ -595,13 +1210,15 @@ These endpoints mirror Gemini's API format for clients that expect native Gemini
 
 ### Internal / System APIs
 
-| Endpoint                 | Method | Description                                          |
-| ------------------------ | ------ | ---------------------------------------------------- |
-| `/api/init`              | GET    | Application initialization check (used on first run) |
-| `/api/tags`              | GET    | Ollama-compatible model tags (for Ollama clients)    |
-| `/api/restart`           | POST   | Trigger graceful server restart                      |
-| `/api/shutdown`          | POST   | Trigger graceful server shutdown                     |
-| `/api/system/env/repair` | POST   | Repair OAuth provider environment variables          |
+| Endpoint                 | Method | Description                                            |
+| ------------------------ | ------ | ------------------------------------------------------ |
+| `/api/init`              | GET    | Application initialization check (used on first run)   |
+| `/api/tags`              | GET    | Ollama-compatible model tags (for Ollama clients)      |
+| `/api/restart`           | POST   | Trigger graceful server restart                        |
+| `/api/shutdown`          | POST   | Trigger graceful server shutdown                       |
+| `/api/system/env/repair` | POST   | Repair OAuth provider environment variables            |
+| `/api/system/version`    | GET    | Current/latest version, update status, release channel |
+| `/api/system/version`    | POST   | Start a deployment-aware update to the latest version  |
 
 > **Note:** These endpoints are used internally by the system or for Ollama client compatibility. They are not typically called by end users.
 
@@ -626,6 +1243,43 @@ Repairs missing or corrupted OAuth environment variables for a specific provider
 }
 ```
 
+### Version and Release Channel
+
+```bash
+GET /api/system/version
+```
+
+Loopback-only management route (admin auth). Returns the running version, the latest
+published version and the auto-update status. `releaseChannel` and `channels` are additive
+fields (rail 3.8.54); `channel` keeps its meaning — the deployment mode the dashboard updater
+uses (`npm`, `source` or `docker-compose`).
+
+```json
+{
+  "current": "3.8.52",
+  "latest": "3.8.52",
+  "updateAvailable": false,
+  "channel": "npm",
+  "autoUpdateSupported": true,
+  "autoUpdateError": null,
+  "news": null,
+  "releaseChannel": "latest",
+  "channels": { "latest": "3.8.52", "next": "3.8.53-rc.1" }
+}
+```
+
+- `releaseChannel` — npm channel of the running build: `nightly` for `-nightly.*` versions,
+  `next` for other pre-releases (`-rc.*`, `-beta.*`, `-alpha.*`), `lts` for a stable version of an
+  older major than `channels.latest`, otherwise `latest`. Same rules as
+  `scripts/release/dist-tag.mjs`, which picks the npm dist-tag at publish time.
+- `channels` — published head of each dist-tag, from `npm view omniroute dist-tags` (registry
+  HTTP fallback), cached with the same 10-minute TTL as `latest`. `latest` is always present
+  (falls back to the `latest` field, then `"unavailable"`); `next`, `nightly` and `lts` appear
+  only when that dist-tag exists. A `Cache-Control: no-cache` request refreshes both lookups.
+
+The channel model (`latest` = v3 until the 4.0 GA, `next` = rc, `nightly` = `develop` builds,
+`lts` = v3 patches after the 4.0 GA) is described in `docs/ops/RELEASE_STRATEGY.md`.
+
 ---
 
 ## Audio Transcription
@@ -636,7 +1290,10 @@ Authorization: Bearer your-api-key
 Content-Type: multipart/form-data
 ```
 
-Transcribe audio files using Deepgram or AssemblyAI.
+Transcribe audio files using any configured STT provider. The first path
+segment selects the native provider (`openai/…`, `deepgram/…`). Gateways that
+re-export another vendor's model use a qualified id
+(`openrouter/deepgram/nova-3`).
 
 **Request:**
 
@@ -644,7 +1301,7 @@ Transcribe audio files using Deepgram or AssemblyAI.
 curl -X POST http://localhost:20128/v1/audio/transcriptions \
   -H "Authorization: Bearer your-api-key" \
   -F "file=@recording.mp3" \
-  -F "model=deepgram/nova-3"
+  -F "model=openai/whisper-1"
 ```
 
 **Response:**
@@ -658,7 +1315,10 @@ curl -X POST http://localhost:20128/v1/audio/transcriptions \
 }
 ```
 
-**Supported providers:** `deepgram/nova-3`, `assemblyai/best`.
+**Example model ids:** `openai/whisper-1` (requires an OpenAI key),
+`openrouter/deepgram/nova-3` (requires an OpenRouter key),
+`deepgram/nova-3` (requires a native Deepgram key). A bare
+`deepgram/nova-3` request does **not** use OpenRouter.
 
 **Supported formats:** `mp3`, `wav`, `m4a`, `flac`, `ogg`, `webm`.
 
@@ -844,7 +1504,7 @@ Used by the auto-key management subsystem to issue and rotate API keys against a
 | DELETE | `/api/v1/registered-keys/[id]`        | Revoke a registered key                                                                                                                                                                     |
 | POST   | `/api/v1/registered-keys/[id]/revoke` | Explicit revoke endpoint (same effect as DELETE)                                                                                                                                            |
 
-**Auth:** Bearer API key (`isAuthenticated`). See also `/v1/quotas/check` and `/v1/issues/report`.
+**Auth:** management session/API key (`requireManagementAuth`) — the same guard as `/api/keys`: a dashboard session, the local CLI token, or an API key with `manage`/`admin` scope; inference-only API keys get `403`. See also `/v1/quotas/check` and `/v1/issues/report`.
 
 ---
 
@@ -964,17 +1624,17 @@ Persistent conversational/factual memory store, scoped per API key / session.
 
 OmniRoute ships an embedded Model Context Protocol server with 3 transports (stdio, SSE, streamable-http) and scoped tools. The dashboard endpoints below read status/audit data and proxy the HTTP transports.
 
-| Method | Path                   | Description                                                                                      |
+| Method | Path | Description |
 | ------ | ---------------------- | ------------------------------------------------------------------------------------------------ | -------------------- |
-| GET    | `/api/mcp/status`      | Heartbeat, transport, online state, last call, top tools, 24h success rate                       |
-| GET    | `/api/mcp/tools`       | List of MCP tools with `name`, `description`, `scopes`, `phase`, `auditLevel`, `sourceEndpoints` |
-| GET    | `/api/mcp/sse`         | Open SSE stream for the SSE transport (returns `503` if MCP disabled or transport mismatch)      |
-| POST   | `/api/mcp/sse`         | Send JSON-RPC frame on the SSE transport                                                         |
-| GET    | `/api/mcp/stream`      | Open SSE side of the Streamable HTTP transport (server-initiated messages)                       |
-| POST   | `/api/mcp/stream`      | Send JSON-RPC frame on the Streamable HTTP transport                                             |
-| DELETE | `/api/mcp/stream`      | End a Streamable HTTP session                                                                    |
-| GET    | `/api/mcp/audit`       | Query audit log — `?limit=`, `?offset=`, `?tool=`, `?success=true                                | false`, `?apiKeyId=` |
-| GET    | `/api/mcp/audit/stats` | Aggregate audit stats (totals, success rate, avg duration, top tools)                            |
+| GET | `/api/mcp/status` | Heartbeat, transport, online state, last call, top tools, 24h success rate |
+| GET | `/api/mcp/tools` | List of MCP tools with `name`, `description`, `scopes`, `phase`, `auditLevel`, `sourceEndpoints` |
+| GET | `/api/mcp/sse` | Open SSE stream for the SSE transport (returns `503` if MCP disabled or transport mismatch) |
+| POST | `/api/mcp/sse` | Send JSON-RPC frame on the SSE transport |
+| GET | `/api/mcp/stream` | Open SSE side of the Streamable HTTP transport (server-initiated messages) |
+| POST | `/api/mcp/stream` | Send JSON-RPC frame on the Streamable HTTP transport |
+| DELETE | `/api/mcp/stream` | End a Streamable HTTP session |
+| GET | `/api/mcp/audit` | Query audit log — `?limit=`, `?offset=`, `?tool=`, `?success=true                                | false`, `?apiKeyId=` |
+| GET | `/api/mcp/audit/stats` | Aggregate audit stats (totals, success rate, avg duration, top tools) |
 
 **Auth:** the `sse`/`stream` transports honor the MCP-specific auth surface (Bearer API key with `mcp` scope); the `status`/`tools`/`audit*` routes are readable from the dashboard (no extra auth required beyond reaching the dashboard host).
 
@@ -1039,20 +1699,20 @@ Returns the public A2A agent card (name, description, capabilities, skill catalo
 
 ## Cloud, Evals & Assess
 
-| Method | Path                            | Description                                                                                       |
+| Method | Path | Description |
 | ------ | ------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------- | ----------------------------------- |
-| POST   | `/api/cloud/auth`               | Verify a Bearer key and return masked provider connections + model aliases for cloud sync clients |
-| POST   | `/api/cloud/credentials/update` | Update encrypted credentials for a cloud-synced provider                                          |
-| POST   | `/api/cloud/model/resolve`      | Resolve a logical model id to a concrete provider/model using the local routing table             |
-| GET    | `/api/cloud/models/alias`       | List model aliases as exposed to cloud sync                                                       |
-| GET    | `/api/assess`                   | Read latest assessment categorizations (per-provider/model)                                       |
-| POST   | `/api/assess`                   | Run an assessment — body: `{scope: {type:"all"}                                                   | {type:"provider", providerId} | {type:"model", modelId}, trigger?}` |
-| GET    | `/api/evals`                    | List built-in eval suites + most recent runs                                                      |
-| POST   | `/api/evals`                    | Trigger an eval run                                                                               |
-| POST   | `/api/evals/suites`             | Create a custom eval suite — body validated by `evalSuiteSaveSchema`                              |
-| GET    | `/api/evals/suites/[id]`        | Retrieve a custom eval suite                                                                      |
+| POST | `/api/cloud/auth` | Verify a Bearer key and return masked provider connections + model aliases for cloud sync clients |
+| POST | `/api/cloud/credentials/update` | Update encrypted credentials for a cloud-synced provider |
+| POST | `/api/cloud/model/resolve` | Resolve a logical model id to a concrete provider/model using the local routing table |
+| GET | `/api/cloud/models/alias` | List model aliases as exposed to cloud sync |
+| GET | `/api/assess` | Read latest assessment categorizations (per-provider/model) |
+| POST | `/api/assess` | Run an assessment — body: `{scope: {type:"all"}                                                   | {type:"provider", providerId} | {type:"model", modelId}, trigger?}` |
+| GET | `/api/evals` | List built-in eval suites + most recent runs |
+| POST | `/api/evals` | Trigger an eval run |
+| POST | `/api/evals/suites` | Create a custom eval suite — body validated by `evalSuiteSaveSchema` |
+| GET | `/api/evals/suites/[id]` | Retrieve a custom eval suite |
 
-**Auth:** `/api/cloud/auth` validates a Bearer key directly; the other `/api/cloud/*`, `/api/evals/*`, and `/api/assess` routes require management session/API key. `/api/assess` POST uses `validateBody` with a discriminated-union scope schema.
+**Auth:** `/api/cloud/auth` validates a Bearer key directly and returns the masked key and `projectId` of each connection only for a key with the `manage` / `admin` scope; the other `/api/cloud/*`, `/api/evals/*`, and `/api/assess` routes require management session/API key. `/api/assess` POST uses `validateBody` with a discriminated-union scope schema.
 
 ---
 
@@ -1213,19 +1873,19 @@ Admin-only endpoints for operational management.
 
 ## CLI Tools Management
 
-Manage CLI tools that integrate with OmniRoute (antigravity, chipotle, commandCode,
+Manage CLI tools that integrate with OmniRoute (antigravity, commandCode,
 devin-cli, etc.). See [Provider Reference](./PROVIDER_REFERENCE.md) for the full list.
 
-| Method | Path                                    | Description                                                                                    |
-| ------ | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| GET    | `/api/cli-tools/all-statuses`           | Status of all CLI tools (installed, version, last seen)                                        |
-| GET    | `/api/cli-tools/[id]/status`            | Status of a specific CLI tool (id can be: antigravity, chipotle, commandCode, devin-cli, etc.) |
-| POST   | `/api/cli-tools/apply`                  | Apply a CLI tool configuration to a provider connection                                        |
-| GET    | `/api/cli-tools/backups`                | List CLI tool configuration backups                                                            |
-| POST   | `/api/cli-tools/backups`                | Create a backup of all CLI tool configurations                                                 |
-| POST   | `/api/cli-tools/[id]/restore`           | Restore a CLI tool from a backup                                                               |
-| GET    | `/api/cli-tools/antigravity-mitm`       | Antigravity MITM proxy status (the "antigravity-mitm" CLI tool)                                |
-| POST   | `/api/cli-tools/antigravity-mitm/alias` | Configure antigravity-mitm aliases                                                             |
+| Method | Path                                    | Description                                                                                                                                       |
+| ------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/cli-tools/all-statuses`           | Status of all CLI tools (installed, version, last seen)                                                                                           |
+| GET    | `/api/cli-tools/status`                 | Status detail for one CLI tool (`?tool=` query)                                                                                                   |
+| POST   | `/api/cli-tools/apply`                  | Write a tool's generated config (`dryRun` previews; `422` + `containerEphemeralTarget` when containerized; `migration` notes a legacy Codex YAML) |
+| GET    | `/api/cli-tools/backups`                | List CLI tool configuration backups                                                                                                               |
+| POST   | `/api/cli-tools/backups`                | Create a backup of all CLI tool configurations                                                                                                    |
+| POST   | `/api/cli-tools/backups`                | Restore: same endpoint with `{tool, backupId}` in the body restores that backup                                                                   |
+| GET    | `/api/cli-tools/antigravity-mitm`       | Antigravity MITM proxy status (the "antigravity-mitm" CLI tool)                                                                                   |
+| POST   | `/api/cli-tools/antigravity-mitm/alias` | Configure antigravity-mitm aliases                                                                                                                |
 
 **Auth:** Requires management session.
 
@@ -1270,16 +1930,14 @@ Manage the semantic cache and reasoning cache.
 
 Manage persistent memory (FTS5 + vector embeddings).
 
-| Method | Path                 | Description                                                           |
-| ------ | -------------------- | --------------------------------------------------------------------- |
-| GET    | `/api/memory`        | List memory entries (filter by scope, type, search query)             |
-| POST   | `/api/memory`        | Create a new memory entry — body: `{scope, type, content, metadata?}` |
-| GET    | `/api/memory/[id]`   | Get a specific memory entry                                           |
-| PUT    | `/api/memory/[id]`   | Update a memory entry                                                 |
-| DELETE | `/api/memory/[id]`   | Delete a memory entry                                                 |
-| GET    | `/api/memory/search` | Search memory (FTS5 + vector)                                         |
-| POST   | `/api/memory/clear`  | Clear memory entries (with filters)                                   |
-| GET    | `/api/memory/stats`  | Memory statistics (total entries, embedding coverage, etc.)           |
+| Method | Path               | Description                                                             |
+| ------ | ------------------ | ----------------------------------------------------------------------- |
+| GET    | `/api/memory`      | List memory entries (filter by scope, type, search query)               |
+| POST   | `/api/memory`      | Create a new memory entry — body: `{scope, type, content, metadata?}`   |
+| GET    | `/api/memory/[id]` | Get a specific memory entry                                             |
+| PUT    | `/api/memory/[id]` | Update a memory entry                                                   |
+| DELETE | `/api/memory/[id]` | Delete a memory entry                                                   |
+| GET    | `/api/memory?q=`   | Search memory (FTS5 + vector) — stats are included in the same response |
 
 **Auth:** Requires management session or management-scoped API key.
 
@@ -1296,7 +1954,6 @@ Manage webhook subscriptions for events.
 | GET    | `/api/webhooks/[id]`            | Get a specific webhook subscription                                       |
 | PUT    | `/api/webhooks/[id]`            | Update a webhook subscription                                             |
 | DELETE | `/api/webhooks/[id]`            | Delete a webhook subscription                                             |
-| GET    | `/api/webhooks/events`          | List all available webhook event types                                    |
 | GET    | `/api/webhooks/[id]/deliveries` | List delivery history for a webhook (success/failure log)                 |
 | POST   | `/api/webhooks/[id]/test`       | Send a test event to a webhook                                            |
 
@@ -1329,15 +1986,15 @@ See [Skills Framework](../frameworks/SKILLS.md) for full details.
 
 Manage OmniRoute plugins (third-party extensions).
 
-| Method | Path                             | Description                               |
-| ------ | -------------------------------- | ----------------------------------------- |
-| GET    | `/api/plugins`                   | List installed plugins                    |
-| POST   | `/api/plugins/install`           | Install a plugin from a local path or URL |
-| DELETE | `/api/plugins/[name]`            | Uninstall a plugin                        |
-| POST   | `/api/plugins/[name]/activate`   | Activate a plugin                         |
-| POST   | `/api/plugins/[name]/deactivate` | Deactivate a plugin                       |
-| GET    | `/api/plugins/[name]/config`     | Get plugin configuration                  |
-| PUT    | `/api/plugins/[name]/config`     | Update plugin configuration               |
+| Method | Path                               | Description                           |
+| ------ | ---------------------------------- | ------------------------------------- |
+| GET    | `/api/plugins`                     | List installed plugins                |
+| POST   | `/api/plugins/marketplace/install` | Install a plugin from the marketplace |
+| DELETE | `/api/plugins/[name]`              | Uninstall a plugin                    |
+| POST   | `/api/plugins/[name]/activate`     | Activate a plugin                     |
+| POST   | `/api/plugins/[name]/deactivate`   | Deactivate a plugin                   |
+| GET    | `/api/plugins/[name]/config`       | Get plugin configuration              |
+| PUT    | `/api/plugins/[name]/config`       | Update plugin configuration           |
 
 **Auth:** Requires management session.
 
@@ -1370,9 +2027,14 @@ See [Security > Guardrails](../security/GUARDRAILS.md) for full details.
 
 ## Authentication
 
+See [Management Authentication](../guides/MANAGEMENT-AUTH.md) for the four
+credential families (dashboard session, local CLI token, `oma_live_…` Access
+Token, manage-scoped API key) and how they differ from inference keys.
+
 - Dashboard routes (`/dashboard/*`) use `auth_token` cookie
 - Login uses saved password hash; fallback to `INITIAL_PASSWORD`
 - `requireLogin` toggleable via `/api/settings/require-login`
 - `/v1/*` routes optionally require Bearer API key when `REQUIRE_API_KEY=true`
+- "management token" / "management-scoped API key" in this reference means one of the families in that guide — not an undefined extra secret type
 
 > **Breaking change (v3.8.0)** — `/api/v1/agents/tasks/*` and the cooldown management endpoints now require **management auth** (dashboard `auth_token` cookie or a management-scoped API key). Clients that previously called these routes unauthenticated will receive `401 Unauthorized`. See commit `588a0333` (`fix(auth): require management auth for agent and cooldown APIs`).

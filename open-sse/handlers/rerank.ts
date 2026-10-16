@@ -12,6 +12,28 @@ import { attachOmniRouteMetaHeaders } from "@/domain/omnirouteResponseMeta";
 import { calculateModalCost } from "@/lib/usage/costCalculator";
 import { generateRequestId } from "@/shared/utils/requestId";
 import { saveCallLog } from "@/lib/usageDb";
+import { resolveProxyForConnection } from "@/lib/db/settings";
+import { runWithProxyContext } from "../utils/proxyFetch.ts";
+import * as log from "@/sse/utils/logger";
+
+/** A document as the Cohere-compatible rerank API accepts it: a bare string or `{ text }`. */
+type RerankDocument = string | { text?: string };
+
+/**
+ * The caller-side request fields the response adapters need to rebuild Cohere's
+ * `results[]`. Upstreams either omit the documents entirely (DeepInfra returns
+ * bare scores) or echo them in their own shape (Voyage returns plain strings),
+ * so document text is always synthesized from the caller's originals — and
+ * `top_n` / `return_documents` are honored here rather than upstream.
+ *
+ * Every field is optional: the parameter defaults to `{}` and the unit suites
+ * call it with subsets (e.g. `{ documents: ["a", "b"] }`).
+ */
+interface RerankResponseOptions {
+  documents?: RerankDocument[];
+  return_documents?: boolean;
+  top_n?: number;
+}
 
 /**
  * Build authorization header for a rerank provider
@@ -32,7 +54,7 @@ function buildAuthHeader(providerConfig, token) {
       model: body.model,
       query: { text: body.query },
       passages: (body.documents || []).map((doc) => ({
-        text: typeof doc === "string" ? doc : doc.text || "",
+        text: typeof doc === "string" ? doc : doc?.text || "",
       })),
       top_n: body.top_n,
     };
@@ -43,25 +65,80 @@ function buildAuthHeader(providerConfig, token) {
     return {
       queries: [body.query],
       documents: (body.documents || []).map((doc) =>
-        typeof doc === "string" ? doc : doc.text || ""
+        typeof doc === "string" ? doc : doc?.text || ""
       ),
     };
+  }
+  // Voyage AI: uses `top_k` instead of `top_n`, and rejects only exact empty
+  // strings (whitespace-only documents are accepted and ranked upstream). We
+  // filter out exact empty strings and track original indices implicitly via the
+  // response adapter, which reconstructs the map from options.documents (#7809).
+  // `top_k` is clamped to the number of documents actually sent: the handler
+  // defaults `top_n` to the caller's *unfiltered* document count, so dropping an
+  // empty string would otherwise ask Voyage to rank more documents than it got,
+  // and Voyage rejects `top_k > documents.length` with HTTP 400.
+  // `return_documents` is always forced off upstream: Voyage echoes documents as
+  // plain strings (not Cohere's {text}), so we never rely on the echo — document
+  // text is always synthesized locally from the caller's originals (#7811).
+  if (providerConfig.format === "voyage") {
+    const docTexts = (body.documents || [])
+      .map((doc) => (typeof doc === "string" ? doc : doc?.text || ""))
+      .filter((text) => text !== "");
+    return {
+      model: body.model,
+      query: body.query,
+      documents: docTexts,
+      top_k: Math.min(body.top_n || docTexts.length, docTexts.length),
+      return_documents: false,
+    };
+  }
+  // qwen3-rerank's /compatible-api/v1/reranks endpoint is flat like
+  // Cohere, but does not accept Cohere's return_documents request field.
+  if (providerConfig.format === "alibaba-qwen3") {
+    const compatibleBody = {
+      ...body,
+      documents: (body.documents || []).map((doc) =>
+        typeof doc === "string" ? doc : doc?.text || ""
+      ),
+    };
+    delete compatibleBody.return_documents;
+    return compatibleBody;
   }
   // Default: Cohere-compatible format (used by Together, Fireworks, Cohere, SiliconFlow)
   return body;
 }
 
+function transformAlibabaQwen3Response(data, options: RerankResponseOptions) {
+  if (!Array.isArray(data.results)) return data;
+  const documents = Array.isArray(options.documents) ? options.documents : [];
+  const returnDocuments = options.return_documents !== false;
+  return {
+    ...data,
+    results: data.results.map((entry) => {
+      if (!returnDocuments || entry.document) return entry;
+      const doc = documents[entry.index];
+      const text = typeof doc === "string" ? doc : doc?.text || "";
+      return { ...entry, document: { text } };
+    }),
+  };
+}
+
 /**
  * Transform response from provider-specific formats back to Cohere format
  */
-/* @testonly */ export function transformResponseFromProvider(providerConfig, data, options = {}) {
+/* @testonly */ export function transformResponseFromProvider(
+  providerConfig,
+  data,
+  options: RerankResponseOptions = {}
+) {
   if (providerConfig.format === "nvidia") {
+    const returnDocuments = options.return_documents !== false;
     return {
       id: data.id != null ? String(data.id) : `rerank-${Date.now()}`,
       results: (data.rankings || []).map((r) => ({
         index: r.index,
         relevance_score: r.logit || r.score || 0,
-        document: { text: r.text || "" },
+        ...(returnDocuments ? { document: { text: r.text || "" } } : {}),
       })),
       meta: {
         api_version: { version: "2" },
@@ -94,6 +171,44 @@ function buildAuthHeader(providerConfig, token) {
       },
     };
   }
+  // Voyage AI returns {data:[{relevance_score,index}], usage:{total_tokens}} — `index` refers
+  // to the filtered document array we sent (empty strings removed). We remap back to the
+  // caller's original positions and sort by score descending, honoring top_n (#7809).
+  if (providerConfig.format === "voyage") {
+    const documents = Array.isArray(options.documents) ? options.documents : [];
+    const returnDocuments = options.return_documents !== false;
+    // Reconstruct the index map: the request adapter filtered out exact empty
+    // strings, so we replicate that filter here to get original → filtered mapping.
+    const indexMap = [];
+    documents.forEach((doc, i) => {
+      const text = typeof doc === "string" ? doc : doc?.text || "";
+      if (text !== "") indexMap.push(i);
+    });
+    const scored = (Array.isArray(data.data) ? data.data : []).map((entry) => {
+      const filteredIdx = entry.index ?? 0;
+      const originalIdx = indexMap[filteredIdx] ?? filteredIdx;
+      const doc = documents[originalIdx];
+      const text = typeof doc === "string" ? doc : doc?.text || "";
+      return {
+        index: originalIdx,
+        relevance_score: typeof entry.relevance_score === "number" ? entry.relevance_score : 0,
+        ...(returnDocuments ? { document: { text } } : {}),
+      };
+    });
+    scored.sort((a, b) => b.relevance_score - a.relevance_score);
+    const topN = typeof options.top_n === "number" && options.top_n > 0 ? options.top_n : undefined;
+    return {
+      id: `rerank-${Date.now()}`,
+      results: topN ? scored.slice(0, topN) : scored,
+      meta: {
+        api_version: { version: "2" },
+        billed_units: { search_units: 1 },
+      },
+    };
+  }
+  if (providerConfig.format === "alibaba-qwen3") {
+    return transformAlibabaQwen3Response(data, options);
+  }
   return data;
 }
 
@@ -107,6 +222,9 @@ function buildAuthHeader(providerConfig, token) {
  * @param {number} [options.top_n] - Number of top results to return
  * @param {boolean} [options.return_documents] - Whether to include document text in results
  * @param {Object} options.credentials - Provider credentials { apiKey, accessToken }
+ * @param {string} [options.connectionId] - Connection ID for per-connection proxy resolution
+ * @param {Object} [options.resolvedProvider] - Runtime provider config for dynamic endpoints
+ * @param {string} [options.resolvedModel] - Model ID after removing a dynamic provider prefix
  * @returns {Response}
  */
 /** @returns {Promise<unknown>} */
@@ -117,6 +235,11 @@ export async function handleRerank({
   top_n,
   return_documents,
   credentials,
+  connectionId = null,
+  apiKeyId = null,
+  apiKeyName = null,
+  resolvedProvider = null,
+  resolvedModel = null,
 }) {
   const startTime = Date.now();
   if (!model) return errorResponse(400, "model is required");
@@ -125,8 +248,9 @@ export async function handleRerank({
     return errorResponse(400, "documents must be a non-empty array");
   }
 
-  const { provider: providerId, model: modelId } = parseRerankModel(model);
-  const providerConfig = providerId ? getRerankProvider(providerId) : null;
+  const { provider: providerId, model: parsedModelId } = parseRerankModel(model);
+  const modelId = resolvedModel ?? parsedModelId;
+  const providerConfig = resolvedProvider || (providerId ? getRerankProvider(providerId) : null);
 
   if (!providerConfig) {
     const availableProviders = Object.keys(RERANK_PROVIDERS).join(", ");
@@ -135,10 +259,13 @@ export async function handleRerank({
       `No rerank provider found for model "${model}". Available: ${availableProviders}`
     );
   }
+  // When a derived/generic provider is injected, its id is authoritative for
+  // logging and cost attribution even though parseRerankModel returned null.
+  const effectiveProviderId = providerConfig.id || providerId;
 
   const token = credentials?.apiKey || credentials?.accessToken;
   if (!token) {
-    return errorResponse(401, `No credentials for rerank provider: ${providerId}`);
+    return errorResponse(401, `No credentials for rerank provider: ${effectiveProviderId}`);
   }
 
   const requestBody = transformRequestForProvider(providerConfig, {
@@ -156,8 +283,20 @@ export async function handleRerank({
       ? `${providerConfig.baseUrl}/${modelId}`
       : providerConfig.baseUrl;
 
-  try {
-    const res = await fetch(rerankUrl, {
+  // Resolve per-connection proxy so rerank honors the same proxy pinning as chat
+  // and embeddings (#7350). Without this, rerank requests egress directly and fail
+  // when the provider blocks certain IP ranges (e.g. Voyage AI from Russian IPs).
+  let proxyInfo: Awaited<ReturnType<typeof resolveProxyForConnection>> | null = null;
+  if (connectionId) {
+    try {
+      proxyInfo = await resolveProxyForConnection(connectionId);
+    } catch (err) {
+      log.error("RERANK", `Proxy resolution failed for connection ${connectionId}: ${err}`);
+    }
+  }
+
+  const doFetch = () =>
+    fetch(rerankUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -166,12 +305,30 @@ export async function handleRerank({
       body: JSON.stringify(requestBody),
     });
 
+  try {
+    const res = connectionId
+      ? await runWithProxyContext(proxyInfo?.proxy || null, doFetch)
+      : await doFetch();
+
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      return errorResponse(
-        res.status,
-        errData.message || errData.error?.message || `Provider returned HTTP ${res.status}`
-      );
+      const errorMessage =
+        errData.message || errData.error?.message || `Provider returned HTTP ${res.status}`;
+      saveCallLog({
+        method: "POST",
+        path: "/v1/rerank",
+        status: res.status,
+        model: `${effectiveProviderId}/${modelId}`,
+        provider: effectiveProviderId,
+        connectionId: connectionId || undefined,
+        duration: Date.now() - startTime,
+        requestBody,
+        responseBody: errData,
+        error: errorMessage,
+        apiKeyId: apiKeyId || undefined,
+        apiKeyName: apiKeyName || undefined,
+      }).catch(() => {});
+      return errorResponse(res.status, errorMessage);
     }
 
     const data = await res.json();
@@ -182,22 +339,28 @@ export async function handleRerank({
     });
 
     const searchUnits = Number(result?.meta?.billed_units?.search_units) || 0;
-    const costUsd = await calculateModalCost("rerank", providerId, modelId, { searchUnits });
+    const costUsd = await calculateModalCost("rerank", effectiveProviderId, modelId, {
+      searchUnits,
+    });
 
     saveCallLog({
       method: "POST",
       path: "/v1/rerank",
       status: 200,
-      model: `${providerId}/${modelId}`,
-      provider: providerId,
+      model: `${effectiveProviderId}/${modelId}`,
+      provider: effectiveProviderId,
+      connectionId: connectionId || undefined,
       duration: Date.now() - startTime,
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      responseBody: { results_count: Array.isArray(result?.results) ? result.results.length : 0 },
+      requestBody,
+      responseBody: result,
+      apiKeyId: apiKeyId || undefined,
+      apiKeyName: apiKeyName || undefined,
     }).catch(() => {});
 
     const headers = new Headers({ ...CORS_HEADERS, "Content-Type": "application/json" });
     attachOmniRouteMetaHeaders(headers, {
-      provider: providerId,
+      provider: effectiveProviderId,
       model: modelId,
       costUsd,
       latencyMs: Date.now() - startTime,

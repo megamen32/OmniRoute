@@ -1,9 +1,15 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, Button, Badge, ConfirmModal } from "@/shared/components";
 import { useLocale, useTranslations } from "next-intl";
 import DatabaseBackupRetentionCard from "./DatabaseBackupRetentionCard";
+import {
+  fetchDatabaseSettingsData,
+  isAuthRequiredResponse,
+  AuthRequiredBanner,
+} from "./systemStorageAuth";
+import { extractApiErrorMessage } from "@/shared/http/apiErrorMessage";
 
 // Whitelist mirrored from src/lib/db/cleanup.ts::RESET_USAGE_HISTORY_PERIODS.
 const RESET_USAGE_PERIOD_VALUES = [
@@ -17,6 +23,17 @@ const RESET_USAGE_PERIOD_VALUES = [
   "30d",
   "all",
 ] as const;
+
+async function fetchStorageHealthData() {
+  try {
+    const res = await fetch("/api/storage/health");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.error("Failed to fetch storage health:", err);
+    return null;
+  }
+}
 
 export default function SystemStorageTab() {
   const [backups, setBackups] = useState([]);
@@ -87,6 +104,7 @@ export default function SystemStorageTab() {
   // Database settings state (tasks 23-26)
   const [dbSettings, setDbSettings] = useState<any>(null);
   const [dbSettingsLoading, setDbSettingsLoading] = useState(true);
+  const [dbSettingsAuthRequired, setDbSettingsAuthRequired] = useState(false);
   const [dbSettingsSaving, setDbSettingsSaving] = useState(false);
   const [dbStatsRefreshing, setDbStatsRefreshing] = useState(false);
 
@@ -103,34 +121,28 @@ export default function SystemStorageTab() {
     }
   };
 
+  const applyStorageHealth = useCallback((data) => {
+    if (!data) return;
+    setStorageHealth((prev) => ({ ...prev, ...data }));
+    setBackupCleanupOptions({
+      keepLatest: data.backupRetention?.maxFiles || 20,
+      retentionDays: data.backupRetention?.days || 0,
+    });
+  }, []);
+
   const loadStorageHealth = async () => {
-    try {
-      const res = await fetch("/api/storage/health");
-      if (!res.ok) return;
-      const data = await res.json();
-      setStorageHealth((prev) => ({ ...prev, ...data }));
-      setBackupCleanupOptions({
-        keepLatest: data.backupRetention?.maxFiles || 20,
-        retentionDays: data.backupRetention?.days || 0,
-      });
-    } catch (err) {
-      console.error("Failed to fetch storage health:", err);
-    }
+    applyStorageHealth(await fetchStorageHealthData());
   };
+
+  const applyDatabaseSettings = useCallback((result: { data: any; authRequired: boolean }) => {
+    if (result.data) setDbSettings(result.data);
+    setDbSettingsAuthRequired(result.authRequired);
+    setDbSettingsLoading(false);
+  }, []);
 
   const loadDatabaseSettings = async () => {
     setDbSettingsLoading(true);
-    try {
-      const res = await fetch("/api/settings/database");
-      if (res.ok) {
-        const data = await res.json();
-        setDbSettings(data);
-      }
-    } catch (err) {
-      console.error("Failed to load database settings:", err);
-    } finally {
-      setDbSettingsLoading(false);
-    }
+    applyDatabaseSettings(await fetchDatabaseSettingsData());
   };
 
   const saveDatabaseSettings = async () => {
@@ -178,13 +190,13 @@ export default function SystemStorageTab() {
       if (res.ok) {
         setBackupRetentionStatus({
           type: "success",
-          message: "Backup retention saved.",
+          message: t("backupRetentionSaved"),
         });
         await loadStorageHealth();
       } else {
         setBackupRetentionStatus({
           type: "error",
-          message: data.error || "Failed to save backup retention",
+          message: extractApiErrorMessage(data, t("backupRetentionSaveFailed")),
         });
       }
     } catch {
@@ -207,14 +219,17 @@ export default function SystemStorageTab() {
       if (res.ok) {
         setCleanupBackupsStatus({
           type: "success",
-          message: `Deleted ${data.deletedBackupFamilies} backup set(s) and ${data.deletedFiles} file(s).`,
+          message: t("backupCleanupSuccess", {
+            backups: data.deletedBackupFamilies,
+            files: data.deletedFiles,
+          }),
         });
         await loadStorageHealth();
         if (backupsExpanded) await loadBackups();
       } else {
         setCleanupBackupsStatus({
           type: "error",
-          message: data.error || "Failed to clean database backups",
+          message: extractApiErrorMessage(data, t("backupCleanupFailed")),
         });
       }
     } catch {
@@ -233,12 +248,12 @@ export default function SystemStorageTab() {
       if (res.ok) {
         setClearCacheStatus({
           type: "success",
-          message: t("cacheCleared") || "Cache cleared successfully",
+          message: t("cacheCleared"),
         });
       } else {
         setClearCacheStatus({
           type: "error",
-          message: data?.error || t("clearCacheFailed") || "Failed to clear cache",
+          message: extractApiErrorMessage(data, t("clearCacheFailed")),
         });
       }
     } catch {
@@ -258,12 +273,12 @@ export default function SystemStorageTab() {
         const deleted = data?.deleted ?? 0;
         setPurgeLogsStatus({
           type: "success",
-          message: t("logsDeleted", { count: deleted }) || `Purged ${deleted} expired log(s)`,
+          message: t("logsDeleted", { count: deleted }),
         });
       } else {
         setPurgeLogsStatus({
           type: "error",
-          message: data?.error || t("purgeLogsFailed") || "Failed to purge logs",
+          message: extractApiErrorMessage(data, t("purgeLogsFailed")),
         });
       }
     } catch {
@@ -282,12 +297,12 @@ export default function SystemStorageTab() {
       if (res.ok) {
         setPurgeQuotaSnapshotsStatus({
           type: "success",
-          message: `Purged ${data.deleted} quota snapshots`,
+          message: t("purgeQuotaSnapshotsSuccess", { count: data.deleted }),
         });
       } else {
         setPurgeQuotaSnapshotsStatus({
           type: "error",
-          message: data.error || "Failed to purge quota snapshots",
+          message: extractApiErrorMessage(data, t("purgeQuotaSnapshotsFailed")),
         });
       }
     } catch {
@@ -306,12 +321,12 @@ export default function SystemStorageTab() {
       if (res.ok) {
         setPurgeCallLogsStatus({
           type: "success",
-          message: `Purged ${data.deleted} call logs`,
+          message: t("purgeCallLogsSuccess", { count: data.deleted }),
         });
       } else {
         setPurgeCallLogsStatus({
           type: "error",
-          message: data.error || "Failed to purge call logs",
+          message: extractApiErrorMessage(data, t("purgeCallLogsFailed")),
         });
       }
     } catch {
@@ -330,12 +345,12 @@ export default function SystemStorageTab() {
       if (res.ok) {
         setPurgeDetailedLogsStatus({
           type: "success",
-          message: `Purged ${data.deleted} detailed logs`,
+          message: t("purgeDetailedLogsSuccess", { count: data.deleted }),
         });
       } else {
         setPurgeDetailedLogsStatus({
           type: "error",
-          message: data.error || "Failed to purge detailed logs",
+          message: extractApiErrorMessage(data, t("purgeDetailedLogsFailed")),
         });
       }
     } catch {
@@ -396,14 +411,14 @@ export default function SystemStorageTab() {
       if (res.ok && data?.success !== false) {
         setManualVacuumStatus({
           type: "success",
-          message: data?.message || "VACUUM completed",
+          message: data?.message || t("vacuumCompleted"),
         });
         await loadDatabaseSettings();
         await loadStorageHealth();
       } else {
         setManualVacuumStatus({
           type: "error",
-          message: data?.error || "VACUUM failed",
+          message: extractApiErrorMessage(data, t("vacuumFailed")),
         });
       }
     } catch {
@@ -434,7 +449,10 @@ export default function SystemStorageTab() {
         await loadStorageHealth();
         if (backupsExpanded) await loadBackups();
       } else {
-        setManualBackupStatus({ type: "error", message: data.error || t("backupFailed") });
+        setManualBackupStatus({
+          type: "error",
+          message: extractApiErrorMessage(data, t("backupFailed")),
+        });
       }
     } catch {
       setManualBackupStatus({ type: "error", message: t("errorOccurred") });
@@ -466,7 +484,10 @@ export default function SystemStorageTab() {
         await loadBackups();
         await loadStorageHealth();
       } else {
-        setRestoreStatus({ type: "error", message: data.error || t("restoreFailed") });
+        setRestoreStatus({
+          type: "error",
+          message: extractApiErrorMessage(data, t("restoreFailed")),
+        });
       }
     } catch {
       setRestoreStatus({ type: "error", message: t("errorDuringRestore") });
@@ -477,9 +498,19 @@ export default function SystemStorageTab() {
   };
 
   useEffect(() => {
-    loadStorageHealth();
-    loadDatabaseSettings();
-  }, []);
+    let cancelled = false;
+    void (async () => {
+      const data = await fetchStorageHealthData();
+      if (!cancelled) applyStorageHealth(data);
+    })();
+    void (async () => {
+      const data = await fetchDatabaseSettingsData();
+      if (!cancelled) applyDatabaseSettings(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyStorageHealth, applyDatabaseSettings]);
 
   /** Triggers a browser file download from an existing Blob. */
   const triggerDownload = (blob: Blob, filename: string) => {
@@ -502,7 +533,7 @@ export default function SystemStorageTab() {
     const res = await fetch(apiUrl);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error((data as { error?: string }).error || errorMessage);
+      throw new Error(extractApiErrorMessage(data, errorMessage));
     }
     const blob = await res.blob();
     const disposition = res.headers.get("Content-Disposition") || "";
@@ -516,7 +547,7 @@ export default function SystemStorageTab() {
       await fetchAndDownload(
         "/api/settings/export-json",
         `omniroute-legacy-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
-        "JSON Export failed"
+        t("jsonExportFailed")
       );
     } catch (err) {
       console.error("Export JSON failed:", err);
@@ -539,7 +570,7 @@ export default function SystemStorageTab() {
     if (!file.name.endsWith(".json")) {
       setImportStatus({
         type: "error",
-        message: "Invalid file type. Only .json allowed.",
+        message: t("invalidJsonFileType"),
       });
       return;
     }
@@ -558,15 +589,20 @@ export default function SystemStorageTab() {
         if (res.ok) {
           setImportStatus({
             type: "success",
-            message: data.message || "Legacy JSON imported successfully!",
+            message: data.message || t("legacyJsonImportSuccess"),
           });
           await loadStorageHealth();
           if (backupsExpanded) await loadBackups();
+        } else if (isAuthRequiredResponse(res.status, data)) {
+          setImportStatus({ type: "error", message: t("jsonImportAuthRequired") });
         } else {
-          setImportStatus({ type: "error", message: data.error || "Failed to import JSON" });
+          setImportStatus({
+            type: "error",
+            message: extractApiErrorMessage(data, t("jsonImportFailed")),
+          });
         }
-      } catch (err) {
-        setImportStatus({ type: "error", message: "Error during JSON import" });
+      } catch {
+        setImportStatus({ type: "error", message: t("jsonImportError") });
       } finally {
         setImportLoading(false);
         if (jsonInputRef.current) jsonInputRef.current.value = "";
@@ -642,7 +678,10 @@ export default function SystemStorageTab() {
         await loadStorageHealth();
         if (backupsExpanded) await loadBackups();
       } else {
-        setImportStatus({ type: "error", message: data.error || t("importFailed") });
+        setImportStatus({
+          type: "error",
+          message: extractApiErrorMessage(data, t("importFailed")),
+        });
       }
     } catch {
       setImportStatus({ type: "error", message: t("errorDuringImport") });
@@ -718,7 +757,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[18px]" aria-hidden="true">
               analytics
             </span>
-            Database Statistics
+            {t("storageDatabaseStatistics")}
           </h4>
           <Button
             variant="outline"
@@ -729,7 +768,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               refresh
             </span>
-            Refresh
+            {t("refresh")}
           </Button>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -754,7 +793,7 @@ export default function SystemStorageTab() {
             <p className="text-sm font-semibold">
               {dbSettings.stats.lastVacuumAt
                 ? new Date(dbSettings.stats.lastVacuumAt).toLocaleString(locale)
-                : "Never"}
+                : t("never")}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-black/[0.02] dark:bg-white/[0.02]">
@@ -762,7 +801,7 @@ export default function SystemStorageTab() {
             <p className="text-sm font-semibold">
               {dbSettings.stats.lastOptimizationAt
                 ? new Date(dbSettings.stats.lastOptimizationAt).toLocaleString(locale)
-                : "Never"}
+                : t("never")}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-black/[0.02] dark:bg-white/[0.02]">
@@ -773,7 +812,7 @@ export default function SystemStorageTab() {
               ) : dbSettings.stats.integrityCheck === "error" ? (
                 <span className="text-red-500">{t("storageIntegrityError")}</span>
               ) : (
-                "Not checked"
+                t("storageIntegrityNotChecked")
               )}
             </p>
           </div>
@@ -908,8 +947,10 @@ export default function SystemStorageTab() {
       ["mcpAudit", t("retentionMcpAudit"), 30],
       ["a2aEvents", t("retentionA2aEvents"), 30],
       ["callLogs", t("retentionCallLogs"), 30],
+      ["conversationTurnNodes", t("retentionConversationTurnNodes"), 30],
       ["usageHistory", t("retentionUsageHistory"), 30],
       ["memoryEntries", t("retentionMemoryEntries"), 30],
+      ["xpAuditLog", t("retentionXpAuditLog"), 30],
     ];
 
     return (
@@ -1000,7 +1041,7 @@ export default function SystemStorageTab() {
           <span className="material-symbols-outlined text-[18px]" aria-hidden="true">
             tune
           </span>
-          Optimization Settings
+          {t("storageOptimizationSettings")}
         </h4>
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1021,9 +1062,9 @@ export default function SystemStorageTab() {
                 }
                 className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-bg focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                <option value="NONE">None</option>
-                <option value="FULL">Full</option>
-                <option value="INCREMENTAL">Incremental</option>
+                <option value="NONE">{t("storageJournalModeNone")}</option>
+                <option value="FULL">{t("storageJournalModeFull")}</option>
+                <option value="INCREMENTAL">{t("storageJournalModeIncremental")}</option>
               </select>
             </div>
             <div>
@@ -1043,10 +1084,10 @@ export default function SystemStorageTab() {
                 }
                 className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-bg focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                <option value="never">Never</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
+                <option value="never">{t("storageVacuumNever")}</option>
+                <option value="daily">{t("storageVacuumDaily")}</option>
+                <option value="weekly">{t("storageVacuumWeekly")}</option>
+                <option value="monthly">{t("storageVacuumMonthly")}</option>
               </select>
             </div>
             <div>
@@ -1089,7 +1130,9 @@ export default function SystemStorageTab() {
               />
             </div>
             <div>
-              <label className="block text-xs text-text-muted mb-1">Cache Size (KB)</label>
+              <label className="block text-xs text-text-muted mb-1">
+                {t("storageCacheSizeKb")}
+              </label>
               <input
                 type="number"
                 min="1"
@@ -1125,7 +1168,7 @@ export default function SystemStorageTab() {
               className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-primary"
             />
             <label htmlFor="optimize-on-startup" className="text-sm">
-              Optimize on Startup
+              {t("storageOptimizeOnStartup")}
             </label>
           </div>
         </div>
@@ -1136,7 +1179,7 @@ export default function SystemStorageTab() {
             onClick={saveDatabaseSettings}
             loading={dbSettingsSaving}
           >
-            Save Optimization Settings
+            {t("storageSaveOptimization")}
           </Button>
         </div>
       </div>
@@ -1152,7 +1195,7 @@ export default function SystemStorageTab() {
           <span className="material-symbols-outlined text-[18px]" aria-hidden="true">
             compress
           </span>
-          Compression & Aggregation Settings
+          {t("storageCompressionAggregation")}
         </h4>
         <div className="space-y-4">
           <div className="flex items-center gap-3">
@@ -1169,13 +1212,13 @@ export default function SystemStorageTab() {
               className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-primary"
             />
             <label htmlFor="aggregation-enabled" className="text-sm">
-              Enable Data Aggregation
+              {t("storageEnableAggregation")}
             </label>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-text-muted mb-1">
-                Raw Data Retention (days)
+                {t("storageRawDataRetention")}
               </label>
               <input
                 type="number"
@@ -1195,7 +1238,9 @@ export default function SystemStorageTab() {
               />
             </div>
             <div>
-              <label className="block text-xs text-text-muted mb-1">Granularity</label>
+              <label className="block text-xs text-text-muted mb-1">
+                {t("storageGranularity")}
+              </label>
               <select
                 value={dbSettings.aggregation.granularity}
                 onChange={(e) =>
@@ -1209,9 +1254,9 @@ export default function SystemStorageTab() {
                 }
                 className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-bg focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                <option value="hourly">Hourly</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
+                <option value="hourly">{t("storageHourly")}</option>
+                <option value="daily">{t("storageDaily")}</option>
+                <option value="weekly">{t("storageWeekly")}</option>
               </select>
             </div>
           </div>
@@ -1223,7 +1268,7 @@ export default function SystemStorageTab() {
             onClick={saveDatabaseSettings}
             loading={dbSettingsSaving}
           >
-            Save Aggregation Settings
+            {t("storageSaveAggregation")}
           </Button>
         </div>
       </div>
@@ -1241,6 +1286,14 @@ export default function SystemStorageTab() {
         <div className="flex-1">
           <h3 className="text-lg font-semibold">{t("systemStorage")}</h3>
           <p className="text-xs text-text-muted">{t("allDataLocal")}</p>
+          <p className="text-xs text-text-muted mt-1">
+            Database backups are stored on this server in the db_backups folder under its data
+            directory.{" "}
+            <a href="/dashboard/endpoint" className="underline">
+              Cloud sync is a separate setting under Endpoints
+            </a>{" "}
+            and can upload credentials to a configured remote destination.
+          </p>
         </div>
         <Badge variant="success" size="sm">
           {storageHealth.driver || "json"}
@@ -1258,6 +1311,7 @@ export default function SystemStorageTab() {
         </div>
       </div>
 
+      {dbSettingsAuthRequired && !dbSettingsLoading && <AuthRequiredBanner t={t} />}
       {renderDatabaseStatistics()}
 
       <div className="pt-3 border-t border-border/50 mb-4">
@@ -1321,7 +1375,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               data_object
             </span>
-            Export JSON
+            {t("exportJson")}
           </Button>
           <Button
             variant="outline"
@@ -1332,7 +1386,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               data_object
             </span>
-            Import JSON
+            {t("importJson")}
           </Button>
           <input
             ref={jsonInputRef}
@@ -1383,7 +1437,7 @@ export default function SystemStorageTab() {
           <span className="material-symbols-outlined text-[18px] text-blue-500" aria-hidden="true">
             build
           </span>
-          <p className="font-medium">{t("maintenance") || "Maintenance"}</p>
+          <p className="font-medium">{t("maintenance")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -1395,7 +1449,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               delete_sweep
             </span>
-            {t("clearCache") || "Clear Cache"}
+            {t("clearCache")}
           </Button>
           <Button
             variant="outline"
@@ -1406,7 +1460,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               auto_delete
             </span>
-            {t("purgeExpiredLogs") || "Purge Expired Logs"}
+            {t("purgeExpiredLogs")}
           </Button>
           <Button
             variant="outline"
@@ -1417,7 +1471,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               cleaning_services
             </span>
-            Manual VACUUM
+            {t("manualVacuum")}
           </Button>
           <Button
             variant="outline"
@@ -1428,7 +1482,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               delete_forever
             </span>
-            Purge Quota Snapshots
+            {t("purgeQuotaSnapshots")}
           </Button>
           <Button
             variant="outline"
@@ -1439,7 +1493,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               delete_forever
             </span>
-            Purge Call Logs
+            {t("purgeCallLogs")}
           </Button>
           <Button
             variant="outline"
@@ -1450,7 +1504,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               delete_forever
             </span>
-            Purge Detailed Logs
+            {t("purgeDetailedLogs")}
           </Button>
           <Button
             variant="danger"
@@ -1461,7 +1515,7 @@ export default function SystemStorageTab() {
             <span className="material-symbols-outlined text-[14px] mr-1" aria-hidden="true">
               restart_alt
             </span>
-            {t("resetUsageData") || "Reset Usage Data"}
+            {t("resetUsageData")}
           </Button>
         </div>
         <div className="mt-4 border-t border-border/50 pt-3">
@@ -1535,12 +1589,12 @@ export default function SystemStorageTab() {
         isOpen={resetUsageModalOpen}
         onClose={() => !resetUsageLoading && setResetUsageModalOpen(false)}
         onConfirm={handleResetUsageHistory}
-        title={t("resetUsageData") || "Reset Usage Data"}
+        title={t("resetUsageData")}
         message={
           <div className="space-y-3">
             <p className="text-text-muted">
               {t("resetUsageDataDesc") ||
-                "Select how far back you want to delete usage data. This action cannot be undone."}
+                "Select how far back you want to delete usage, request logs, and analytics data. Provider configuration, connections, API keys, combos, and settings are preserved. This action cannot be undone."}
             </p>
             <select
               value={resetUsagePeriod}
@@ -1555,9 +1609,7 @@ export default function SystemStorageTab() {
             </select>
           </div>
         }
-        confirmText={
-          resetUsageLoading ? t("resetting") || "Resetting..." : t("reset") || "Reset"
-        }
+        confirmText={resetUsageLoading ? t("resetting") : t("reset")}
         variant="danger"
         loading={resetUsageLoading}
       />
