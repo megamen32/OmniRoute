@@ -13,7 +13,11 @@ const GLM_EXECUTOR_EFFORT_ALIASES = new Set([
 
 export const ZCODE_MODELS = GLM_SHARED_MODELS.filter(
   (model) => !GLM_EXECUTOR_EFFORT_ALIASES.has(model.id)
-).map((model) => ({ ...model, supportedThinkingEfforts: [] }));
+).map((model) => ({
+  ...model,
+  supportedThinkingEfforts: [],
+  ...(["glm-5.3", "glm-5.3-flash"].includes(model.id) ? { supportsVision: true } : {}),
+}));
 
 /**
  * Local ZCode app-server backend. Authentication remains in the user's local

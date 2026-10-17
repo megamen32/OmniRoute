@@ -10,6 +10,7 @@ import {
 } from "./base.ts";
 import { ZcodeAppServerClient, type ZcodeClientLike } from "./zcodeProtocol.ts";
 import { errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
+import { MAX_CURSOR_IMAGES, resolveCursorImages } from "../utils/cursorImages.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
 const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
@@ -85,12 +86,54 @@ function textContent(content: unknown): string {
     .join("");
 }
 
+function userContent(content: unknown): string | JsonRecord[] {
+  if (!Array.isArray(content)) return textContent(content);
+  const blocks = content.map((part) => {
+    const item = asRecord(part);
+    if (item.type === "image_url") {
+      const url = asRecord(item.image_url).url;
+      if (typeof url !== "string" || !url) throw new Error("ZCode image URL is missing");
+      return {
+        type: "image",
+        dataUrl: url,
+        mediaType: /^data:([^;,]+)/i.exec(url)?.[1]?.toLowerCase() || "image/unknown",
+      };
+    }
+    return { type: "text", text: textContent([part]) };
+  });
+  return blocks.some((part) => part.type === "image")
+    ? blocks
+    : blocks.map((part) => part.text).join("");
+}
+
+/** Reuse bounded public-URL fetching; retain original image bytes without JPEG prep. */
+async function resolveRequestImages(request: JsonRecord, signal?: AbortSignal | null) {
+  const blocks = (request.messages as JsonRecord[])
+    .flatMap((message) => (Array.isArray(message.content) ? message.content.map(asRecord) : []))
+    .filter((block) => block.type === "image");
+  if (blocks.length > MAX_CURSOR_IMAGES)
+    throw new Error(`Too many ZCode images (max ${MAX_CURSOR_IMAGES})`);
+  for (const block of blocks) {
+    const [image] = await withAbort(
+      resolveCursorImages([String(block.dataUrl)], { prepareForWire: false }),
+      signal
+    );
+    if (
+      !["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"].includes(image.mimeType)
+    )
+      throw new Error("Unsupported ZCode image media type");
+    block.mediaType = image.mimeType === "image/jpg" ? "image/jpeg" : image.mimeType;
+    block.dataUrl = `data:${block.mediaType};base64,${image.data.toString("base64")}`;
+  }
+}
+
 /** Preserve caller tool calls/results; the native text API never runs a coding agent. */
 export function buildZcodeModelRequest(body: JsonRecord): JsonRecord {
   const names = new Map<string, string>();
   const messages = (Array.isArray(body.messages) ? body.messages : []).map((value) => {
     const message = asRecord(value);
-    const content = textContent(message.content);
+    const content =
+      message.role === "user" ? userContent(message.content) : textContent(message.content);
     if (message.role === "assistant") {
       const toolCalls = (Array.isArray(message.tool_calls) ? message.tool_calls : []).map(
         (value) => {
@@ -309,6 +352,7 @@ export class ZcodeExecutor extends BaseExecutor {
     let request: JsonRecord;
     try {
       request = buildZcodeModelRequest(asRecord(input.body));
+      await resolveRequestImages(request, input.signal);
     } catch (error) {
       return errorResponse(
         400,
@@ -326,12 +370,32 @@ export class ZcodeExecutor extends BaseExecutor {
         await withAbort(client.call("zcode-agent", "initialize", [workspace]), input.signal)
       );
       if (initialized.available !== true) throw new Error("ZCode model runtime is unavailable");
-      const registry = await withAbort(client.call("model-selection", "getView", []), input.signal);
-      const selection = resolveZcodeSelection(
-        registry,
-        resolution.model,
-        this.options.providerId || process.env.ZCODE_PROVIDER_ID
-      );
+      // The signed-in account can hydrate after initialize while custom providers
+      // are already ready. Wait for the exact model; never substitute a provider.
+      const readyDeadline = Date.now() + (this.options.startupTimeoutMs ?? 10_000);
+      let selection: ReturnType<typeof resolveZcodeSelection>;
+      for (;;) {
+        const registry = await withAbort(
+          client.call("model-selection", "getView", []),
+          input.signal
+        );
+        try {
+          selection = resolveZcodeSelection(
+            registry,
+            resolution.model,
+            this.options.providerId || process.env.ZCODE_PROVIDER_ID
+          );
+          break;
+        } catch (error) {
+          if (Date.now() >= readyDeadline) throw error;
+          await withAbort(
+            new Promise((resolve) =>
+              setTimeout(resolve, Math.min(250, readyDeadline - Date.now()))
+            ),
+            input.signal
+          );
+        }
+      }
       input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
       const result = asRecord(
         await withAbort(

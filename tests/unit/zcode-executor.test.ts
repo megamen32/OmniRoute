@@ -24,6 +24,43 @@ function requestBody() {
   };
 }
 
+test("ZCode waits for the signed-in provider to finish native registry hydration", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  let views = 0;
+  const executor = new ZcodeExecutor({
+    startupTimeoutMs: 500,
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel, method) {
+        if (method === "initialize") return { available: true };
+        if (method === "getView")
+          return {
+            providers:
+              ++views < 2
+                ? []
+                : [
+                    {
+                      providerId: "account:zai-individual-coding-plan",
+                      models: [{ modelId: "GLM-5.3-Flash", config: {} }],
+                    },
+                  ],
+          };
+        assert.equal(method, "generateWorkspaceText");
+        return { text: "ready", finishReason: "stop" };
+      },
+    }),
+  });
+  const result = await executor.execute({
+    model: "glm-5.3-flash",
+    body: requestBody(),
+    stream: false,
+    credentials: {},
+  });
+  assert.equal(("response" in result ? result.response : result).status, 200);
+  assert.equal(views, 2);
+});
+
 test("ZCode selects exact native Coding Plan IDs and required reasoning without a custom-provider fallback", async () => {
   const { resolveZcodeSelection } = await loadZcodeExecutor();
   const view = {
@@ -217,7 +254,64 @@ test("ZCode keeps model errors as HTTP errors rather than empty success streams"
   assert.equal(closed, true);
 });
 
-test("ZCode rejects unsupported image content instead of silently discarding it", async () => {
+test("ZCode preserves image pixels and surrounding text as native image blocks", async () => {
+  const { buildZcodeModelRequest } = await loadZcodeExecutor();
+  const url = "data:image/png;base64,aGVsbG8=";
+  const request = buildZcodeModelRequest({
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Before" },
+          { type: "image_url", image_url: { url } },
+          { type: "text", text: "After" },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(request.messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Before" },
+        { type: "image", dataUrl: url, mediaType: "image/png" },
+        { type: "text", text: "After" },
+      ],
+    },
+  ]);
+});
+
+test("ZCode forwards resolved images over native RPC and rejects private remote image URLs", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  const executor = new ZcodeExecutor({
+    command: process.execPath,
+    args: [fixture],
+    cwd: process.cwd(),
+    requestTimeoutMs: 3000,
+  });
+  const content = [
+    { type: "text", text: "Inspect" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+  ];
+  const result = await executor.execute({
+    model: "glm-5.3-flash",
+    body: { messages: [{ role: "user", content }] },
+    stream: false,
+    credentials: {},
+  });
+  const body = await ("response" in result ? result.response : result).json();
+  assert.equal(body.choices[0].message.content, "native image received");
+  content[1].image_url!.url = "http://127.0.0.1/private.png";
+  const blocked = await executor.execute({
+    model: "glm-5.3-flash",
+    body: { messages: [{ role: "user", content }] },
+    stream: false,
+    credentials: {},
+  });
+  assert.equal(("response" in blocked ? blocked.response : blocked).status, 400);
+});
+
+test("ZCode rejects unsupported non-image content instead of silently discarding it", async () => {
   const { buildZcodeModelRequest } = await loadZcodeExecutor();
   assert.throws(
     () =>
@@ -225,7 +319,7 @@ test("ZCode rejects unsupported image content instead of silently discarding it"
         messages: [
           {
             role: "user",
-            content: [{ type: "image_url", image_url: { url: "https://example.com/image.png" } }],
+            content: [{ type: "input_audio", input_audio: { data: "abc", format: "wav" } }],
           },
         ],
       }),

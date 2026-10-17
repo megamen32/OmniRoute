@@ -137,11 +137,22 @@ function handleFrame(body) {
       )
         process.exit(2);
       response(id, {
-        text: request.messages.some((message) => message.role === "tool")
-          ? "tool result consumed"
-          : request.tools?.length
-            ? ""
-            : "fake zcode response",
+        text: request.messages.some(
+          (message) =>
+            Array.isArray(message.content) &&
+            message.content.some(
+              (part) =>
+                part.type === "image" &&
+                part.dataUrl === "data:image/png;base64,aGVsbG8=" &&
+                part.mediaType === "image/png"
+            )
+        )
+          ? "native image received"
+          : request.messages.some((message) => message.role === "tool")
+            ? "tool result consumed"
+            : request.tools?.length
+              ? ""
+              : "fake zcode response",
         selection: request.selection,
         ...(request.tools?.length && !request.messages.some((message) => message.role === "tool")
           ? {
