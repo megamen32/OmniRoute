@@ -38,8 +38,11 @@ ZCODE_AGENT_SERVER_ARGS_JSON='["/path/to/isolated/zcode-images/zcode.cjs","app-s
 ```
 
 Restart OmniRoute through the normal deployment path. Enable `image` in the caller's
-model input capabilities for `zc/glm-5.3-flash` / `zc/glm-5.3`, then verify a real
-image through that caller. Native inference still returns tool calls to the caller;
+model input capabilities for `zc/glm-5.3-flash`, then verify a real image through
+that caller. Ordinary `zc/glm-5.3` is text-only: the adapter rejects image requests
+before native inference rather than silently losing pixels. See the
+[official GLM-5.3 documentation](https://docs.z.ai/guides/llm/glm-5.3).
+Native inference still returns tool calls to the caller;
 no autonomous ZCode coding session is created. SSE remains buffered per model step.
 
 To roll back, restore the previous OmniRoute artifact/config, remove the two command

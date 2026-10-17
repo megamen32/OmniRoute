@@ -352,6 +352,13 @@ export class ZcodeExecutor extends BaseExecutor {
     let request: JsonRecord;
     try {
       request = buildZcodeModelRequest(asRecord(input.body));
+      const hasImages = (request.messages as JsonRecord[]).some(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content.some((block) => asRecord(block).type === "image")
+      );
+      if (hasImages && !ZCODE_MODELS.find((model) => model.id === resolution.model)?.supportsVision)
+        throw new Error(`ZCode model "${resolution.model}" does not support image input`);
       await resolveRequestImages(request, input.signal);
     } catch (error) {
       return errorResponse(

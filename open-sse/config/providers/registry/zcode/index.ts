@@ -16,7 +16,7 @@ export const ZCODE_MODELS = GLM_SHARED_MODELS.filter(
 ).map((model) => ({
   ...model,
   supportedThinkingEfforts: [],
-  ...(["glm-5.3", "glm-5.3-flash"].includes(model.id) ? { supportsVision: true } : {}),
+  supportsVision: Boolean(model.supportsVision),
 }));
 
 /**

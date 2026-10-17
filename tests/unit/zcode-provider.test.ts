@@ -10,9 +10,14 @@ test("ZCode provider registry exposes a local no-auth GLM Coding Plan backend", 
   assert.equal(zcodeProvider.baseUrl, "zcode://app-server/stdio");
   assert.equal(zcodeProvider.authType, "none");
   assert.equal(zcodeProvider.authHeader, "none");
-  for (const id of ["glm-5.3", "glm-5.3-flash"]) {
-    assert.equal(zcodeProvider.models.find((model) => model.id === id)?.supportsVision, true);
-  }
+  assert.equal(
+    zcodeProvider.models.find((model) => model.id === "glm-5.3-flash")?.supportsVision,
+    true
+  );
+  assert.equal(
+    Boolean(zcodeProvider.models.find((model) => model.id === "glm-5.3")?.supportsVision),
+    false
+  );
   assert.equal(
     zcodeProvider.models.some((model) => model.id === "glm-5.2"),
     true

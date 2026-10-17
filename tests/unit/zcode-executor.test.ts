@@ -311,6 +311,31 @@ test("ZCode forwards resolved images over native RPC and rejects private remote 
   assert.equal(("response" in blocked ? blocked.response : blocked).status, 400);
 });
 
+test("ZCode rejects image input for text-only models before starting native inference", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  const executor = new ZcodeExecutor({
+    clientFactory() {
+      throw new Error("Native inference must not start for unsupported images");
+    },
+  });
+  const result = await executor.execute({
+    model: "glm-5.3",
+    body: {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } }],
+        },
+      ],
+    },
+    stream: false,
+    credentials: {},
+  });
+  const response = "response" in result ? result.response : result;
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error.message, /does not support image input/);
+});
+
 test("ZCode rejects unsupported non-image content instead of silently discarding it", async () => {
   const { buildZcodeModelRequest } = await loadZcodeExecutor();
   assert.throws(
