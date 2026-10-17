@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTempDataDir } from "../_setup/tempDataDir.ts";
+import type { ZcodeTurnSelection } from "../../open-sse/executors/zcode.ts";
 
 const fixture = join(process.cwd(), "tests/fixtures/fake-zcode-app-server.mjs");
 const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), "omniroute-zcode-"));
@@ -109,7 +110,8 @@ function capturingExecutor(
 test("ZCode resolves the native bounded maxOutputTokens from the model option spec", async () => {
   const { resolveZcodeSelection } = await loadZcodeExecutor();
   const bounded = resolveZcodeSelection(boundedSelectionView(), "glm-5.3-flash");
-  assert.deepEqual(bounded.options, { reasoningLevel: "high", maxOutputTokens: 128000 });
+  assert.deepEqual(bounded.options, { reasoningLevel: "high" });
+  assert.equal(bounded.maxOutputTokensMax, 128000);
   // Models without a token bound keep receiving no fabricated limit.
   const unbounded = resolveZcodeSelection(
     {
@@ -123,6 +125,7 @@ test("ZCode resolves the native bounded maxOutputTokens from the model option sp
     "glm-5.2"
   );
   assert.deepEqual(unbounded.options, undefined);
+  assert.equal(unbounded.maxOutputTokensMax, undefined);
 });
 
 test("ZCode always sends native-valid maxOutputTokens even when the caller omits a token limit", async () => {
@@ -137,10 +140,10 @@ test("ZCode always sends native-valid maxOutputTokens even when the caller omits
   const response = "response" in result ? result.response : result;
   assert.equal(response.status, 200);
   const args = calls()[0] as {
-    selection: { options: { maxOutputTokens?: number } };
+    selection: ZcodeTurnSelection;
     maxOutputTokens?: number;
   };
-  assert.equal(args.selection.options.maxOutputTokens, 128000);
+  assert.deepEqual(args.selection.options, { reasoningLevel: "high" });
   assert.equal(args.maxOutputTokens, 128000);
 });
 

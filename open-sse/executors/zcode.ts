@@ -35,7 +35,18 @@ function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 /** Use the native registry's exact, case-sensitive IDs without changing providers. */
-export function resolveZcodeSelection(view: unknown, model: string, providerId?: string) {
+/** Native generateWorkspaceText selection: options accept only known keys (no maxOutputTokens). */
+export interface ZcodeTurnSelection {
+  providerId: string;
+  modelId: string;
+  options?: { reasoningLevel?: string };
+  maxOutputTokensMax?: number;
+}
+export function resolveZcodeSelection(
+  view: unknown,
+  model: string,
+  providerId?: string
+): ZcodeTurnSelection {
   const providers = asRecord(view).providers;
   const allowed = providerId ? [providerId] : [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID];
   for (const id of allowed) {
@@ -63,15 +74,13 @@ export function resolveZcodeSelection(view: unknown, model: string, providerId?:
       typeof tokensSpec.max === "number" && tokensSpec.max >= 1
         ? Math.floor(tokensSpec.max)
         : undefined;
-    const options = {
-      ...(reasoningLevel ? { reasoningLevel } : {}),
-      ...(nativeMaxTokens !== undefined ? { maxOutputTokens: nativeMaxTokens } : {}),
-    };
-    return {
+    const selection: ZcodeTurnSelection = {
       providerId: id,
       modelId: entry.modelId as string,
-      ...(Object.keys(options).length ? { options } : {}),
+      ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
+      ...(nativeMaxTokens !== undefined ? { maxOutputTokensMax: nativeMaxTokens } : {}),
     };
+    return selection;
   }
   throw new Error(
     `ZCode Coding Plan model "${model}" is not enabled in the native provider registry.`
@@ -415,9 +424,10 @@ export class ZcodeExecutor extends BaseExecutor {
       }
       input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
       // The native runtime validates that maxOutputTokens is a positive integer
-      // inside the model's option range on every turn. Keep a caller-provided
-      // limit, but bound it into the registry range; otherwise use the bound.
-      const nativeMax = selection.options?.maxOutputTokens;
+      // inside the model's option range on every turn, while selection.options
+      // must stay schema-clean. Bound a caller-provided limit into the
+      // registry range; otherwise use the bound.
+      const nativeMax = selection.maxOutputTokensMax;
       if (typeof nativeMax === "number") {
         const callerMax =
           typeof request.maxOutputTokens === "number" && request.maxOutputTokens >= 1
