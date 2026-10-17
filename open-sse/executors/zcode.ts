@@ -52,15 +52,25 @@ export function resolveZcodeSelection(view: unknown, model: string, providerId?:
           asRecord(candidate.config).enabled !== false
       );
     if (!entry) continue;
-    const spec = asRecord(asRecord(asRecord(entry.config).optionSpecs).reasoningLevel);
+    const optionSpecs = asRecord(asRecord(entry.config).optionSpecs);
+    const spec = asRecord(optionSpecs.reasoningLevel);
     const levels = Array.isArray(spec.values)
       ? spec.values.filter((value): value is string => typeof value === "string")
       : [];
     const reasoningLevel = levels.includes("high") ? "high" : levels[0];
+    const tokensSpec = asRecord(optionSpecs.maxOutputTokens);
+    const nativeMaxTokens =
+      typeof tokensSpec.max === "number" && tokensSpec.max >= 1
+        ? Math.floor(tokensSpec.max)
+        : undefined;
+    const options = {
+      ...(reasoningLevel ? { reasoningLevel } : {}),
+      ...(nativeMaxTokens !== undefined ? { maxOutputTokens: nativeMaxTokens } : {}),
+    };
     return {
       providerId: id,
       modelId: entry.modelId as string,
-      ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
+      ...(Object.keys(options).length ? { options } : {}),
     };
   }
   throw new Error(
@@ -404,6 +414,17 @@ export class ZcodeExecutor extends BaseExecutor {
         }
       }
       input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
+      // The native runtime validates that maxOutputTokens is a positive integer
+      // inside the model's option range on every turn. Keep a caller-provided
+      // limit, but bound it into the registry range; otherwise use the bound.
+      const nativeMax = selection.options?.maxOutputTokens;
+      if (typeof nativeMax === "number") {
+        const callerMax =
+          typeof request.maxOutputTokens === "number" && request.maxOutputTokens >= 1
+            ? Math.floor(request.maxOutputTokens)
+            : undefined;
+        request.maxOutputTokens = Math.min(callerMax ?? nativeMax, nativeMax);
+      }
       const result = asRecord(
         await withAbort(
           client.call("zcode-agent", "generateWorkspaceText", [

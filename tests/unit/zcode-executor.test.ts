@@ -61,6 +61,111 @@ test("ZCode waits for the signed-in provider to finish native registry hydration
   assert.equal(views, 2);
 });
 
+/** Live-shaped registry view: optionSpecs carry the native maxOutputTokens bound. */
+function boundedSelectionView() {
+  return {
+    providers: [
+      {
+        providerId: "account:zai-individual-coding-plan",
+        models: [
+          {
+            modelId: "GLM-5.3-Flash",
+            config: {
+              optionSpecs: {
+                reasoningLevel: { values: ["low", "high", "max"] },
+                maxOutputTokens: { max: 128000 },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function capturingExecutor(
+  view: unknown,
+  Executor: new (
+    options: import("../../open-sse/executors/zcode.ts").ZcodeExecutorOptions
+  ) => import("../../open-sse/executors/zcode.ts").ZcodeExecutor
+) {
+  let captured: unknown[] = [];
+  const executor = new Executor({
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel: string, method: string, args: unknown[]) {
+        if (method === "initialize") return { available: true };
+        if (method === "getView") return view;
+        assert.equal(method, "generateWorkspaceText");
+        captured.push(args[0]);
+        return { text: "fake zcode response", finishReason: "stop" };
+      },
+    }),
+  });
+  return { executor, calls: () => captured };
+}
+
+test("ZCode resolves the native bounded maxOutputTokens from the model option spec", async () => {
+  const { resolveZcodeSelection } = await loadZcodeExecutor();
+  const bounded = resolveZcodeSelection(boundedSelectionView(), "glm-5.3-flash");
+  assert.deepEqual(bounded.options, { reasoningLevel: "high", maxOutputTokens: 128000 });
+  // Models without a token bound keep receiving no fabricated limit.
+  const unbounded = resolveZcodeSelection(
+    {
+      providers: [
+        {
+          providerId: "builtin:zai-coding-plan",
+          models: [{ modelId: "glm-5.2", config: {} }],
+        },
+      ],
+    },
+    "glm-5.2"
+  );
+  assert.deepEqual(unbounded.options, undefined);
+});
+
+test("ZCode always sends native-valid maxOutputTokens even when the caller omits a token limit", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  const { executor, calls } = capturingExecutor(boundedSelectionView(), ZcodeExecutor);
+  const result = await executor.execute({
+    model: "glm-5.3-flash",
+    body: requestBody(),
+    stream: false,
+    credentials: {},
+  });
+  const response = "response" in result ? result.response : result;
+  assert.equal(response.status, 200);
+  const args = calls()[0] as {
+    selection: { options: { maxOutputTokens?: number } };
+    maxOutputTokens?: number;
+  };
+  assert.equal(args.selection.options.maxOutputTokens, 128000);
+  assert.equal(args.maxOutputTokens, 128000);
+});
+
+test("ZCode clamps caller token limits into the native model option range", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  const { executor, calls } = capturingExecutor(boundedSelectionView(), ZcodeExecutor);
+  const oversized = await executor.execute({
+    model: "glm-5.3-flash",
+    body: { messages: [{ role: "user", content: "status" }], max_tokens: 999999 },
+    stream: false,
+    credentials: {},
+  });
+  assert.equal(("response" in oversized ? oversized.response : oversized).status, 200);
+  const withinRange = await executor.execute({
+    model: "glm-5.3-flash",
+    body: { messages: [{ role: "user", content: "status" }], max_completion_tokens: 512 },
+    stream: false,
+    credentials: {},
+  });
+  assert.equal(("response" in withinRange ? withinRange.response : withinRange).status, 200);
+  const [first, second] = calls() as Array<{ maxOutputTokens?: number }>;
+  assert.equal(first.maxOutputTokens, 128000);
+  assert.equal(second.maxOutputTokens, 512);
+});
+
 test("ZCode selects exact native Coding Plan IDs and required reasoning without a custom-provider fallback", async () => {
   const { resolveZcodeSelection } = await loadZcodeExecutor();
   const view = {
