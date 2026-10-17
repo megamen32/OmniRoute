@@ -34,19 +34,24 @@ export interface ZcodeExecutorOptions {
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
-/** Use the native registry's exact, case-sensitive IDs without changing providers. */
-/** Native generateWorkspaceText selection: options accept only known keys (no maxOutputTokens). */
+/**
+ * Native generateWorkspaceText selection payload. The native schema rejects
+ * unknown keys anywhere inside `selection`, so no runtime option bound may be
+ * shipped here — it is resolved separately.
+ */
 export interface ZcodeTurnSelection {
   providerId: string;
   modelId: string;
   options?: { reasoningLevel?: string };
-  maxOutputTokensMax?: number;
 }
-export function resolveZcodeSelection(
+
+type NativeModelEntry = { record: JsonRecord; providerId: string };
+
+function findNativeModelEntry(
   view: unknown,
   model: string,
   providerId?: string
-): ZcodeTurnSelection {
+): NativeModelEntry | null {
   const providers = asRecord(view).providers;
   const allowed = providerId ? [providerId] : [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID];
   for (const id of allowed) {
@@ -62,29 +67,53 @@ export function resolveZcodeSelection(
           candidate.modelId.toLowerCase() === model.toLowerCase() &&
           asRecord(candidate.config).enabled !== false
       );
-    if (!entry) continue;
-    const optionSpecs = asRecord(asRecord(entry.config).optionSpecs);
-    const spec = asRecord(optionSpecs.reasoningLevel);
-    const levels = Array.isArray(spec.values)
-      ? spec.values.filter((value): value is string => typeof value === "string")
-      : [];
-    const reasoningLevel = levels.includes("high") ? "high" : levels[0];
-    const tokensSpec = asRecord(optionSpecs.maxOutputTokens);
-    const nativeMaxTokens =
-      typeof tokensSpec.max === "number" && tokensSpec.max >= 1
-        ? Math.floor(tokensSpec.max)
-        : undefined;
-    const selection: ZcodeTurnSelection = {
-      providerId: id,
-      modelId: entry.modelId as string,
-      ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
-      ...(nativeMaxTokens !== undefined ? { maxOutputTokensMax: nativeMaxTokens } : {}),
-    };
-    return selection;
+    if (entry) return { record: entry, providerId: id };
   }
-  throw new Error(
-    `ZCode Coding Plan model "${model}" is not enabled in the native provider registry.`
-  );
+  return null;
+}
+
+/** Use the native registry's exact, case-sensitive IDs without changing providers. */
+export function resolveZcodeSelection(
+  view: unknown,
+  model: string,
+  providerId?: string
+): ZcodeTurnSelection {
+  const found = findNativeModelEntry(view, model, providerId);
+  if (!found) {
+    throw new Error(
+      `ZCode Coding Plan model "${model}" is not enabled in the native provider registry.`
+    );
+  }
+  const optionSpecs = asRecord(asRecord(found.record.config).optionSpecs);
+  const spec = asRecord(optionSpecs.reasoningLevel);
+  const levels = Array.isArray(spec.values)
+    ? spec.values.filter((value): value is string => typeof value === "string")
+    : [];
+  const reasoningLevel = levels.includes("high") ? "high" : levels[0];
+  return {
+    providerId: found.providerId,
+    modelId: found.record.modelId as string,
+    ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
+  };
+}
+
+/**
+ * Native maxOutputTokens bound from the model option spec, or undefined when
+ * the registry does not publish one. The upstream runtime refuses turns whose
+ * maxOutputTokens is missing or outside this bound.
+ */
+export function resolveZcodeMaxTokens(
+  view: unknown,
+  model: string,
+  providerId?: string
+): number | undefined {
+  const found = findNativeModelEntry(view, model, providerId);
+  if (!found) return undefined;
+  const optionSpecs = asRecord(asRecord(found.record.config).optionSpecs);
+  const tokensSpec = asRecord(optionSpecs.maxOutputTokens);
+  return typeof tokensSpec.max === "number" && tokensSpec.max >= 1
+    ? Math.floor(tokensSpec.max)
+    : undefined;
 }
 
 function textContent(content: unknown): string {
@@ -399,7 +428,8 @@ export class ZcodeExecutor extends BaseExecutor {
       // The signed-in account can hydrate after initialize while custom providers
       // are already ready. Wait for the exact model; never substitute a provider.
       const readyDeadline = Date.now() + (this.options.startupTimeoutMs ?? 10_000);
-      let selection: ReturnType<typeof resolveZcodeSelection>;
+      let selection: ZcodeTurnSelection;
+      let nativeMaxTokens: number | undefined;
       for (;;) {
         const registry = await withAbort(
           client.call("model-selection", "getView", []),
@@ -407,6 +437,11 @@ export class ZcodeExecutor extends BaseExecutor {
         );
         try {
           selection = resolveZcodeSelection(
+            registry,
+            resolution.model,
+            this.options.providerId || process.env.ZCODE_PROVIDER_ID
+          );
+          nativeMaxTokens = resolveZcodeMaxTokens(
             registry,
             resolution.model,
             this.options.providerId || process.env.ZCODE_PROVIDER_ID
@@ -424,16 +459,15 @@ export class ZcodeExecutor extends BaseExecutor {
       }
       input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
       // The native runtime validates that maxOutputTokens is a positive integer
-      // inside the model's option range on every turn, while selection.options
-      // must stay schema-clean. Bound a caller-provided limit into the
+      // inside the model's option range on every turn, while the RPC selection
+      // payload must stay schema-clean. Bound a caller-provided limit into the
       // registry range; otherwise use the bound.
-      const nativeMax = selection.maxOutputTokensMax;
-      if (typeof nativeMax === "number") {
+      if (typeof nativeMaxTokens === "number") {
         const callerMax =
           typeof request.maxOutputTokens === "number" && request.maxOutputTokens >= 1
             ? Math.floor(request.maxOutputTokens)
             : undefined;
-        request.maxOutputTokens = Math.min(callerMax ?? nativeMax, nativeMax);
+        request.maxOutputTokens = Math.min(callerMax ?? nativeMaxTokens, nativeMaxTokens);
       }
       const result = asRecord(
         await withAbort(

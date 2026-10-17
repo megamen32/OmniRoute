@@ -108,11 +108,15 @@ function capturingExecutor(
 }
 
 test("ZCode resolves the native bounded maxOutputTokens from the model option spec", async () => {
-  const { resolveZcodeSelection } = await loadZcodeExecutor();
+  const { resolveZcodeSelection, resolveZcodeMaxTokens } = await loadZcodeExecutor();
   const bounded = resolveZcodeSelection(boundedSelectionView(), "glm-5.3-flash");
-  assert.deepEqual(bounded.options, { reasoningLevel: "high" });
-  assert.equal(bounded.maxOutputTokensMax, 128000);
-  // Models without a token bound keep receiving no fabricated limit.
+  assert.deepEqual(bounded, {
+    providerId: "account:zai-individual-coding-plan",
+    modelId: "GLM-5.3-Flash",
+    options: { reasoningLevel: "high" },
+  });
+  assert.equal(resolveZcodeMaxTokens(boundedSelectionView(), "glm-5.3-flash"), 128000);
+  // Models without a token bound receive no fabricated limit.
   const unbounded = resolveZcodeSelection(
     {
       providers: [
@@ -125,8 +129,19 @@ test("ZCode resolves the native bounded maxOutputTokens from the model option sp
     "glm-5.2"
   );
   assert.deepEqual(unbounded.options, undefined);
-  assert.equal(unbounded.maxOutputTokensMax, undefined);
+  assert.equal(resolveZcodeMaxTokens(unboundedView(), "glm-5.2"), undefined);
 });
+
+function unboundedView() {
+  return {
+    providers: [
+      {
+        providerId: "builtin:zai-coding-plan",
+        models: [{ modelId: "glm-5.2", config: {} }],
+      },
+    ],
+  };
+}
 
 test("ZCode always sends native-valid maxOutputTokens even when the caller omits a token limit", async () => {
   const { ZcodeExecutor } = await loadZcodeExecutor();
