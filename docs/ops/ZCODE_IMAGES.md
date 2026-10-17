@@ -1,3 +1,9 @@
+---
+title: "ZCode Image Input"
+version: 3.8.52
+lastUpdated: 2026-10-17
+---
+
 # ZCode image input (explicit native protocol opt-in)
 
 The ZCode executor forwards OpenAI user `image_url` parts as native image blocks,
