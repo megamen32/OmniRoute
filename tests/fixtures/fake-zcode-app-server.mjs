@@ -1,8 +1,6 @@
 const HEADER_SIZE = 13;
 let input = Buffer.alloc(0);
 let handshaken = false;
-let sessionId = "fake-zcode-session";
-let selectedModel = null;
 
 function vql(value) {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error("invalid vql value");
@@ -132,43 +130,41 @@ function handleFrame(body) {
         transportKind: "stdio",
       });
       break;
-    case "createSession":
-      if (request.persistence !== "immediate") process.exit(2);
-      sessionId = "fake-zcode-session";
-      response(id, {
-        session: { sessionId, status: "idle", workspace: { workspacePath: request.workspacePath } },
-        messages: [],
-      });
-      break;
-    case "setModel":
+    case "generateWorkspaceText":
       if (
-        request.model?.providerId !== "account:zai-individual-coding-plan" ||
-        !["GLM-5.2", "GLM-5.3-Flash"].includes(request.model?.modelId)
+        request.selection?.providerId !== "account:zai-individual-coding-plan" ||
+        !Array.isArray(request.messages)
       )
         process.exit(2);
-      selectedModel = request.model;
-      response(id, { ok: true, model: selectedModel });
-      break;
-    case "sendPrompt":
-      response(id, { session: { sessionId, status: "running" }, accepted: true });
-      break;
-    case "readSession":
       response(id, {
-        session: { sessionId, status: "completed", model: selectedModel },
-        messages: [
-          {
-            info: { messageId: "fake-user-message", role: "user" },
-            parts: [{ type: "text", text: request.content || "prompt" }],
-          },
-          {
-            info: { messageId: "fake-assistant-message", role: "assistant" },
-            parts: [{ type: "text", text: "fake zcode response" }],
-          },
-        ],
+        text: request.messages.some((message) => message.role === "tool")
+          ? "tool result consumed"
+          : request.tools?.length
+            ? ""
+            : "fake zcode response",
+        selection: request.selection,
+        ...(request.tools?.length && !request.messages.some((message) => message.role === "tool")
+          ? {
+              toolCalls: [
+                { id: "call_lookup", name: request.tools[0].name, input: { key: "bridge-check" } },
+              ],
+              finishReason: "tool-calls",
+            }
+          : { finishReason: "stop" }),
+        usage: {
+          inputTokens: 100,
+          outputTokens: 12,
+          totalTokens: 112,
+          cacheReadTokens: 30,
+          reasoningTokens: 4,
+        },
       });
       break;
-    case "closeSession":
-      response(id, { ok: true });
+    case "createSession":
+    case "sendPrompt":
+    case "setModel":
+    case "readSession":
+      send([202, id], { message: "Inference must not launch an autonomous coding session" });
       break;
     default:
       response(id, { ok: true });

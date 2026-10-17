@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,23 +9,17 @@ import {
   type ProviderCredentials,
 } from "./base.ts";
 import { ZcodeAppServerClient, type ZcodeClientLike } from "./zcodeProtocol.ts";
-import { buildErrorBody, errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
+import { errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
 const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
 const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
-const DEFAULT_TURN_TIMEOUT_MS = 120_000;
-const DEFAULT_POLL_INTERVAL_MS = 250;
-const TERMINAL_STATUSES = new Set(["completed", "idle", "paused", "error"]);
+const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const ZCODE_MODEL_ALLOWLIST = new Set(ZCODE_MODELS.map((model) => model.id));
 const DEFAULT_ZCODE_MODEL = ZCODE_MODELS[0]?.id || "glm-5.2";
-
 type JsonRecord = Record<string, unknown>;
-type OpenAIMsg = { role?: string; content?: unknown };
-
 type ZcodeCommand = { command: string; args: string[] };
 type ZcodeModelResolution = { ok: true; model: string } | { ok: false; error: string };
-
 export interface ZcodeExecutorOptions {
   command?: string;
   args?: string[];
@@ -35,14 +28,11 @@ export interface ZcodeExecutorOptions {
   startupTimeoutMs?: number;
   requestTimeoutMs?: number;
   turnTimeoutMs?: number;
-  pollIntervalMs?: number;
   clientFactory?: () => ZcodeClientLike;
 }
-
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
-
 /** Use the native registry's exact, case-sensitive IDs without changing providers. */
 export function resolveZcodeSelection(view: unknown, model: string, providerId?: string) {
   const providers = asRecord(view).providers;
@@ -77,32 +67,85 @@ export function resolveZcodeSelection(view: unknown, model: string, providerId?:
   );
 }
 
-function textFromContent(content: unknown): string {
+function textContent(content: unknown): string {
+  if (content == null) return "";
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
+  if (!Array.isArray(content)) throw new Error("ZCode model messages require text content");
   return content
     .map((part) => {
+      const item = asRecord(part);
       if (typeof part === "string") return part;
-      const record = asRecord(part);
-      if (record.type === "text" || record.type === "input_text" || record.type === "output_text") {
-        return typeof record.text === "string" ? record.text : "";
-      }
-      return "";
+      if (
+        ["text", "input_text", "output_text"].includes(String(item.type)) &&
+        typeof item.text === "string"
+      )
+        return item.text;
+      throw new Error("ZCode model transport currently supports text input only");
     })
     .join("");
 }
 
-/** Convert an OpenAI conversation into one explicit ZCode coding turn. */
-export function buildZcodePrompt(messages: OpenAIMsg[]): string {
-  const parts: string[] = [];
-  for (const message of messages) {
-    const text = textFromContent(message.content).trim();
-    if (!text) continue;
-    const role = String(message.role || "user");
-    const label = role === "system" ? "System" : role === "assistant" ? "Assistant" : "User";
-    parts.push(`[${label}]\n${text}`);
+/** Preserve caller tool calls/results; the native text API never runs a coding agent. */
+export function buildZcodeModelRequest(body: JsonRecord): JsonRecord {
+  const names = new Map<string, string>();
+  const messages = (Array.isArray(body.messages) ? body.messages : []).map((value) => {
+    const message = asRecord(value);
+    const content = textContent(message.content);
+    if (message.role === "assistant") {
+      const toolCalls = (Array.isArray(message.tool_calls) ? message.tool_calls : []).map(
+        (value) => {
+          const call = asRecord(value),
+            fn = asRecord(call.function);
+          if (typeof call.id !== "string" || typeof fn.name !== "string")
+            throw new Error("Invalid assistant tool call");
+          names.set(call.id, fn.name);
+          return {
+            id: call.id,
+            name: fn.name,
+            input:
+              typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : (fn.arguments ?? {}),
+          };
+        }
+      );
+      return { role: "assistant", content, ...(toolCalls.length ? { toolCalls } : {}) };
+    }
+    if (message.role === "tool") {
+      const toolCallId = message.tool_call_id;
+      const toolName = message.name || names.get(String(toolCallId));
+      if (typeof toolCallId !== "string" || typeof toolName !== "string")
+        throw new Error("Tool result has no matching assistant call/name");
+      return { role: "tool", content, toolCallId, toolName };
+    }
+    if (!["system", "developer", "user"].includes(String(message.role)))
+      throw new Error("Unsupported ZCode message role");
+    return { role: message.role === "developer" ? "system" : message.role, content };
+  });
+  if (!messages.length) throw new Error("ZCode model request requires messages");
+  if (body.tool_choice != null && !["auto", "none"].includes(String(body.tool_choice))) {
+    throw new Error("ZCode model transport supports automatic tool selection or tool_choice=none");
   }
-  return parts.join("\n\n") || "(empty)";
+  const tools =
+    body.tool_choice === "none"
+      ? []
+      : (Array.isArray(body.tools) ? body.tools : []).map((value) => {
+          const item = asRecord(value),
+            fn = asRecord(item.function);
+          if (item.type !== "function" || typeof fn.name !== "string")
+            throw new Error("ZCode model transport requires function tools");
+          return {
+            name: fn.name,
+            ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+            inputSchema: asRecord(fn.parameters),
+          };
+        });
+  const maxTokens = body.max_completion_tokens ?? body.max_tokens;
+  return {
+    messages,
+    tools,
+    ...(typeof maxTokens === "number" && maxTokens > 0
+      ? { maxOutputTokens: Math.floor(maxTokens) }
+      : {}),
+  };
 }
 
 export function resolveZcodeModel(model: unknown): ZcodeModelResolution {
@@ -147,356 +190,202 @@ function defaultCommand(): ZcodeCommand {
   return { command: process.env.ZCODE_BIN || "zcode", args: parseArgs(process.env.ZCODE_ARGS) };
 }
 
-function extractSessionId(value: unknown): string | undefined {
-  const root = asRecord(value);
-  const nested = asRecord(root.session);
-  const sessionId = nested.sessionId ?? root.sessionId;
-  return typeof sessionId === "string" && sessionId.trim() ? sessionId : undefined;
-}
-
-function extractStatus(value: unknown): string | undefined {
-  const root = asRecord(value);
-  const nested = asRecord(root.session);
-  const status = nested.status ?? root.status;
-  return typeof status === "string" ? status : undefined;
-}
-
-function extractTextFromMessage(value: unknown): { role?: string; text: string } {
-  const message = asRecord(value);
-  const info = asRecord(message.info);
-  const role =
-    typeof info.role === "string"
-      ? info.role
-      : typeof message.role === "string"
-        ? message.role
-        : undefined;
-  const parts = Array.isArray(message.parts) ? message.parts : [];
-  const text = parts
-    .map((part) => {
-      const record = asRecord(part);
-      if (record.type === "text" && typeof record.text === "string") return record.text;
-      return "";
-    })
-    .join("");
-  return { role, text };
-}
-
-function extractAssistantText(value: unknown): string {
-  const root = asRecord(value);
-  const messages = Array.isArray(root.messages) ? root.messages : [];
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = extractTextFromMessage(messages[i]);
-    if (message.text && (!message.role || message.role === "assistant")) return message.text;
-  }
-  const nestedMessage = extractTextFromMessage(root.message);
-  if (nestedMessage.text) return nestedMessage.text;
-  for (const candidate of [root.content, root.text, root.output_text]) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
-  }
-  return "";
-}
-
-function extractErrorMessage(value: unknown): string {
-  const root = asRecord(value);
-  const nested = asRecord(root.error);
-  for (const candidate of [nested.message, root.message, root.reason]) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
-  }
-  return "ZCode app-server returned an error";
-}
-
-function makeWorkspace(cwd: string): JsonRecord {
-  return { workspacePath: cwd, workspaceIdentity: cwd };
-}
-
-function abortError(): Error {
-  return new Error("ZCode request aborted");
-}
-
-async function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) {
-    promise.catch(() => undefined);
-    throw abortError();
-  }
-  let onAbort: (() => void) | undefined;
-  const aborted = new Promise<T>((_, reject) => {
-    onAbort = () => reject(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
+function completion(model: string, result: JsonRecord): JsonRecord {
+  const toolCalls = (Array.isArray(result.toolCalls) ? result.toolCalls : []).map((value) => {
+    const call = asRecord(value);
+    if (typeof call.id !== "string" || typeof call.name !== "string")
+      throw new Error("ZCode returned an invalid tool call");
+    return {
+      id: call.id,
+      type: "function",
+      function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) },
+    };
   });
-  promise.catch(() => undefined);
+  const nativeUsage = asRecord(result.usage);
+  const promptTokens = Number(nativeUsage.inputTokens || 0),
+    completionTokens = Number(nativeUsage.outputTokens || 0);
+  const finishReason = toolCalls.length
+    ? "tool_calls"
+    : ["length", "max-tokens"].includes(String(result.finishReason))
+      ? "length"
+      : "stop";
+  return {
+    id: `chatcmpl-zcode-${Date.now()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: typeof result.text === "string" ? result.text : "",
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: finishReason,
+      },
+    ],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: Number(nativeUsage.totalTokens ?? promptTokens + completionTokens),
+      prompt_tokens_details: { cached_tokens: Number(nativeUsage.cacheReadTokens || 0) },
+      completion_tokens_details: { reasoning_tokens: Number(nativeUsage.reasoningTokens || 0) },
+    },
+  };
+}
+
+function modelResponse(model: string, result: JsonRecord, stream: boolean): Response {
+  const body = completion(model, result);
+  if (!stream) return Response.json(body);
+  const choice = (body.choices as JsonRecord[])[0],
+    message = asRecord(choice.message);
+  const base = { id: body.id, object: "chat.completion.chunk", created: body.created, model };
+  const toolCalls = Array.isArray(message.tool_calls)
+    ? message.tool_calls.map((value, index) => ({ ...asRecord(value), index }))
+    : undefined;
+  const chunks = [
+    {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: "assistant",
+            content: message.content,
+            ...(toolCalls ? { tool_calls: toolCalls } : {}),
+          },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }],
+      usage: body.usage,
+    },
+  ];
+  return new Response(
+    chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n",
+    {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    }
+  );
+}
+
+async function withAbort<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+  if (!signal) return promise;
+  let listener: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    listener = () => reject(new Error("ZCode model request aborted"));
+    if (signal.aborted) listener();
+    else signal.addEventListener("abort", listener, { once: true });
+  });
   try {
     return await Promise.race([promise, aborted]);
   } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
+    signal.removeEventListener("abort", listener!);
   }
-}
-
-async function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
-  if (ms <= 0) {
-    if (signal?.aborted) throw abortError();
-    return;
-  }
-  await raceAbort(
-    new Promise<void>((resolveDelay) => {
-      const timer = setTimeout(resolveDelay, ms);
-      timer.unref?.();
-    }),
-    signal
-  );
-}
-
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
-}
-
-function completionResponse(model: string, prompt: string, content: string): Response {
-  const promptTokens = estimateTokens(prompt);
-  const completionTokens = estimateTokens(content);
-  return new Response(
-    JSON.stringify({
-      id: `chatcmpl-zcode-${Date.now()}`,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model,
-      choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens,
-        estimated: true,
-      },
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } }
-  );
-}
-
-function sseResponse(model: string, content: string): Response {
-  const id = `chatcmpl-zcode-${Date.now()}`;
-  const created = Math.floor(Date.now() / 1000);
-  const chunks = [
-    {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
-    },
-    {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: { content }, finish_reason: null }],
-    },
-    {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    },
-  ];
-  const body = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
-  return new Response(body, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
-}
-
-function sseErrorResponse(status: number, message: string): Response {
-  const body = `data: ${JSON.stringify(buildErrorBody(status, message))}\n\ndata: [DONE]\n\n`;
-  return new Response(body, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
 }
 
 export class ZcodeExecutor extends BaseExecutor {
-  private readonly options: ZcodeExecutorOptions;
-
-  constructor(options: ZcodeExecutorOptions = {}) {
+  constructor(private readonly options: ZcodeExecutorOptions = {}) {
     super("zcode", { id: "zcode", baseUrl: ZCODE_URL, format: "openai" });
-    this.options = options;
   }
-
   buildUrl(): string {
     return ZCODE_URL;
   }
-
   transformRequest(): null {
     return null;
   }
-
   async execute(input: ExecuteInput): Promise<ExecutorExecuteResult> {
     const resolution = resolveZcodeModel(input.model);
-    if (!resolution.ok) {
-      const message = "error" in resolution ? resolution.error : "Invalid ZCode model";
-      return input.stream ? sseErrorResponse(400, message) : errorResponse(400, message);
-    }
-
-    const body = asRecord(input.body);
-    const messages = Array.isArray(body.messages) ? (body.messages as OpenAIMsg[]) : [];
-    const prompt = buildZcodePrompt(messages);
-    input.log?.info?.("ZCODE", `local app-server turn started model=${resolution.model}`);
-
+    if (!resolution.ok)
+      return errorResponse(400, "error" in resolution ? resolution.error : "Invalid ZCode model");
+    let request: JsonRecord;
     try {
-      const content = await this.runTurn(resolution.model, prompt, input.signal, input.log);
-      const response = input.stream
-        ? sseResponse(resolution.model, content)
-        : completionResponse(resolution.model, prompt, content);
+      request = buildZcodeModelRequest(asRecord(input.body));
+    } catch (error) {
+      return errorResponse(
+        400,
+        sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
+      );
+    }
+    const client = this.createClient();
+    try {
+      const workspace = {
+        workspacePath: resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd()),
+        workspaceIdentity: resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd()),
+      };
+      await withAbort(client.start(), input.signal);
+      const initialized = asRecord(
+        await withAbort(client.call("zcode-agent", "initialize", [workspace]), input.signal)
+      );
+      if (initialized.available !== true) throw new Error("ZCode model runtime is unavailable");
+      const registry = await withAbort(client.call("model-selection", "getView", []), input.signal);
+      const selection = resolveZcodeSelection(
+        registry,
+        resolution.model,
+        this.options.providerId || process.env.ZCODE_PROVIDER_ID
+      );
+      input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
+      const result = asRecord(
+        await withAbort(
+          client.call("zcode-agent", "generateWorkspaceText", [
+            {
+              ...workspace,
+              selection,
+              ...request,
+              querySource: "omniroute",
+              requestTimeoutMs: this.turnTimeoutMs(),
+            },
+          ]),
+          input.signal
+        )
+      );
       return {
-        response,
+        response: modelResponse(resolution.model, result, Boolean(input.stream)),
         url: ZCODE_URL,
         headers: {},
-        transformedBody: { model: resolution.model, promptLength: prompt.length, buffered: true },
-        transport: "local-zcode-app-server",
+        transformedBody: {
+          model: resolution.model,
+          buffered: true,
+          tools: (request.tools as unknown[]).length,
+        },
+        transport: "local-zcode-model",
       };
     } catch (error) {
       const message = sanitizeErrorMessage(error instanceof Error ? error.message : String(error));
       input.log?.warn?.("ZCODE", message);
-      return input.stream ? sseErrorResponse(502, message) : errorResponse(502, message);
+      // No stream has started: retain a real HTTP error, not a 200 error-only SSE
+      // that the readiness guard rewrites into STREAM_EARLY_EOF.
+      return errorResponse(input.signal?.aborted ? 499 : 502, message);
+    } finally {
+      await client.close().catch(() => undefined);
     }
   }
-
+  private turnTimeoutMs(): number {
+    return (
+      this.options.turnTimeoutMs ??
+      Number(process.env.ZCODE_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS)
+    );
+  }
   private createClient(): ZcodeClientLike {
     if (this.options.clientFactory) return this.options.clientFactory();
-    const command =
-      this.options.command || process.env.ZCODE_SERVER_NODE || defaultCommand().command;
-    const args =
-      this.options.args ||
-      (process.env.ZCODE_SERVER_NODE
-        ? [
-            process.env.ZCODE_SERVER_ENTRY ||
-              join(
-                process.env.ZCODE_SERVER_RUNTIME_ROOT || join(homedir(), ".zcode", "server"),
-                "zcode-server.cjs"
-              ),
-          ]
-        : defaultCommand().args);
+    const selected = defaultCommand();
     return new ZcodeAppServerClient({
-      command,
-      args,
+      command: this.options.command || selected.command,
+      args: this.options.args || selected.args,
       cwd: this.options.cwd || process.env.ZCODE_CWD || process.cwd(),
       startupTimeoutMs:
         this.options.startupTimeoutMs ?? Number(process.env.ZCODE_STARTUP_TIMEOUT_MS || 10_000),
-      requestTimeoutMs:
-        this.options.requestTimeoutMs ?? Number(process.env.ZCODE_RPC_TIMEOUT_MS || 30_000),
+      requestTimeoutMs: this.options.requestTimeoutMs ?? this.turnTimeoutMs() + 10_000,
     });
   }
-
-  private async runTurn(
-    model: string,
-    prompt: string,
-    signal: AbortSignal | null | undefined,
-    log: ExecuteInput["log"]
-  ): Promise<string> {
-    const client = this.createClient();
-    const cwd = resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd());
-    const workspace = makeWorkspace(cwd);
-    const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
-    const turnTimeoutMs =
-      this.options.turnTimeoutMs ??
-      Number(process.env.ZCODE_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS);
-    const pollIntervalMs =
-      this.options.pollIntervalMs ??
-      Number(process.env.ZCODE_POLL_INTERVAL_MS || DEFAULT_POLL_INTERVAL_MS);
-    let sessionId: string | undefined;
-
-    try {
-      await raceAbort(client.start(), signal);
-      const initialized = asRecord(
-        await raceAbort(client.call("zcode-agent", "initialize", [workspace]), signal)
-      );
-      if (initialized.available !== true) {
-        throw new Error(extractErrorMessage(initialized));
-      }
-
-      const registry = await raceAbort(client.call("model-selection", "getView", []), signal);
-      const selection = resolveZcodeSelection(registry, model, providerId);
-
-      const created = await raceAbort(
-        client.call("zcode-agent", "createSession", [
-          {
-            ...workspace,
-            sessionTraceId: randomUUID(),
-            mode: "build",
-            persistence: "immediate",
-          },
-        ]),
-        signal
-      );
-      sessionId = extractSessionId(created);
-      if (!sessionId) throw new Error("ZCode createSession returned no sessionId");
-
-      await raceAbort(
-        client.call("zcode-agent", "setModel", [
-          {
-            ...workspace,
-            sessionId,
-            model: selection,
-          },
-        ]),
-        signal
-      );
-
-      let state: unknown = await raceAbort(
-        client.call("zcode-agent", "sendPrompt", [
-          {
-            ...workspace,
-            sessionId,
-            inputId: randomUUID(),
-            content: prompt,
-          },
-        ]),
-        signal
-      );
-      const deadline = Date.now() + Math.max(1, turnTimeoutMs);
-
-      while (Date.now() <= deadline) {
-        if (signal?.aborted) throw abortError();
-        const text = extractAssistantText(state);
-        const status = extractStatus(state);
-        if (text && (status === undefined || TERMINAL_STATUSES.has(status))) return text;
-        if (status === "error") throw new Error(extractErrorMessage(state));
-        await delay(Math.max(0, pollIntervalMs), signal);
-        state = await raceAbort(
-          client.call("zcode-agent", "readSession", [
-            {
-              ...workspace,
-              sessionId,
-              messageLimit: 200,
-            },
-          ]),
-          signal
-        );
-      }
-      const finalText = extractAssistantText(state);
-      if (finalText) return finalText;
-      throw new Error("ZCode turn timed out before an assistant response was available");
-    } finally {
-      if (sessionId && !signal?.aborted) {
-        await client
-          .call("zcode-agent", "closeSession", [{ ...workspace, sessionId }])
-          .catch(() => undefined);
-      }
-      await client
-        .close()
-        .catch((error) =>
-          log?.debug?.("ZCODE", `app-server close failed: ${sanitizeErrorMessage(error)}`)
-        );
-    }
-  }
-
-  // Credentials are intentionally ignored: the local ZCode profile owns auth.
   override buildHeaders(_credentials: ProviderCredentials): Record<string, string> {
     return {};
   }
