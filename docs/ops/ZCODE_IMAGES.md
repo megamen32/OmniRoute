@@ -29,6 +29,15 @@ duplicate schema matches and conflicting output directories fail closed. Origina
 ZCode files, authentication, provider configuration and native tool behavior remain
 unchanged. No vendor bundle is included in this repository.
 
+Since 2026-10-18 the helper applies a second versioned step,
+`numeric-provider-code-v1`: the finish-record business-error detector accepts only
+numeric provider codes, so GLM's own generated tool-call text inside a finish
+record is no longer misread as `502 Provider returned a business error`. Explicit
+failure markers (`success:false`, `event:"error"`, `ProviderBusinessError`
+instances) still fail unchanged. The receipt in `omniroute-image-patch.json`
+lists both steps; re-provisioning from a new vendor build requires re-reviewing
+every step before it applies.
+
 Configure only the OmniRoute process to select the copy through ZCode's command
 override; retain the existing pristine `ZCODE_SERVER_ENTRY` and signed-in profile:
 

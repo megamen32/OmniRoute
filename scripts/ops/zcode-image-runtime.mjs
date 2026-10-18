@@ -19,6 +19,42 @@ export function patchZcodeImageProtocol(source) {
   return source.replace(before, before.replace("content:m.string()", `content:${content}`));
 }
 
+/**
+ * The native finish/stream detectors treat ANY non-empty `code` string on a
+ * record as a provider business failure, so GLM's own generated tool-call text
+ * inside a finish record was misread as a provider refusal and killed valid
+ * streams (intermittent 502 "Provider returned a business error"). Real Z.ai
+ * failure codes are numeric; restrict code-based failure detection to numeric
+ * codes. Explicit failure markers (`success:false`, `event:"error"`,
+ * ProviderBusinessError instances) still fail exactly as before.
+ */
+export function patchZcodeNumericProviderCode(source) {
+  const guard = {
+    // detectProviderBusinessFinishError (lG): finish-record code path. This is
+    // the exact guard deployed to production on 2026-10-18; the CDe/SRs sites
+    // intentionally keep upstream behavior (no change beyond the applied fix).
+    before:
+      'a=o.providerCode??Pb(t.providerCode)??Pb(s?.code);if(!(a!==void 0||n==="provider_success_false"',
+    after:
+      'a=o.providerCode??Pb(t.providerCode)??Pb(s?.code);if(a!==void 0&&!/^-?[0-9]+$/.test(String(a).trim()))a=void 0;if(!(a!==void 0||n==="provider_success_false"',
+  };
+  if (source.split(guard.before).length !== 2)
+    throw new Error("Unsupported ZCode build: expected exactly one finish-record detection site");
+  const patched = source.replace(guard.before, guard.after);
+  return patched;
+}
+
+export const PATCH_STEPS = [
+  { id: "user-text-and-image-v1", apply: patchZcodeImageProtocol },
+  { id: "numeric-provider-code-v1", apply: patchZcodeNumericProviderCode },
+];
+
+export function applyZcodePatchSteps(source) {
+  let patched = source;
+  for (const step of PATCH_STEPS) patched = step.apply(patched);
+  return patched;
+}
+
 export function prepareZcodeImageRuntime(sourceFile, outputDirectory) {
   const sourcePath = resolve(sourceFile);
   const outputPath = resolve(outputDirectory);
@@ -27,7 +63,7 @@ export function prepareZcodeImageRuntime(sourceFile, outputDirectory) {
   const original = readFileSync(sourcePath, "utf8");
   if (sha256(original) !== SUPPORTED_ZCODE_SHA256)
     throw new Error("Unsupported ZCode build: review the protocol patch before updating");
-  const patched = patchZcodeImageProtocol(original);
+  const patched = applyZcodePatchSteps(original);
   const target = join(outputPath, "zcode.cjs");
   if (existsSync(outputPath)) {
     if (!existsSync(target) || sha256(readFileSync(target)) !== sha256(patched))
@@ -41,7 +77,8 @@ export function prepareZcodeImageRuntime(sourceFile, outputDirectory) {
     sourceSha256: sha256(original),
     patchedSha256: sha256(patched),
     entry: target,
-    patch: "user-text-and-image-v1",
+    patch: PATCH_STEPS.map((step) => step.id).join("+"),
+    steps: PATCH_STEPS.map((step) => step.id),
   };
   writeFileSync(
     join(outputPath, "omniroute-image-patch.json"),
