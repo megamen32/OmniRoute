@@ -24,6 +24,7 @@ const ACCOUNT_BASES: Record<string, string> = {
 };
 const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_RETRIES = 3;
 const REFRESH_MARGIN_MS = 60_000;
 
 type JsonRecord = Record<string, unknown>;
@@ -118,6 +119,17 @@ export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord
   const messages: JsonRecord[] = [];
   const systemParts: string[] = [];
   const toolNames = new Map<string, string>();
+  let pendingToolResults: JsonRecord[] = [];
+
+  // Anthropic requires every tool_result to sit in the user message that
+  // immediately follows the assistant message with the matching tool_use, and
+  // it rejects a tool_use whose result is missing. The results of all tools
+  // called in one turn therefore share a single user message.
+  const flushToolResults = () => {
+    if (!pendingToolResults.length) return;
+    messages.push({ role: "user", content: pendingToolResults });
+    pendingToolResults = [];
+  };
 
   for (const raw of Array.isArray(body.messages) ? body.messages : []) {
     const message = asRecord(raw);
@@ -130,6 +142,7 @@ export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord
     }
 
     if (role === "assistant") {
+      flushToolResults();
       const blocks: JsonRecord[] = [];
       const text = contentToText(message.content);
       if (text) blocks.push({ type: "text", text });
@@ -154,10 +167,11 @@ export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord
       const text = contentToText(message.content);
       const block: JsonRecord = { type: "tool_result", tool_use_id: toolUseId, content: text };
       if (name) block.name = name;
-      messages.push({ role: "user", content: [block] });
+      pendingToolResults.push(block);
       continue;
     }
 
+    flushToolResults();
     const text = contentToText(message.content);
     const images = imageBlocks(message.content);
     const blocks: JsonRecord[] = [];
@@ -166,6 +180,7 @@ export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord
     if (!blocks.length) continue;
     messages.push({ role: "user", content: blocks.length === 1 ? text || blocks[0] : blocks });
   }
+  flushToolResults();
 
   // The gateway requires the conversation to start with a user turn.
   while (messages.length && messages[0].role !== "user") messages.shift();
@@ -176,7 +191,9 @@ export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord
     max_tokens: resolveMaxTokens(body),
     messages,
   };
-  if (systemParts.length) payload.system = systemParts.join("\n\n");
+  if (systemParts.length) {
+    payload.system = systemParts.map((text) => ({ type: "text", text }));
+  }
 
   const rawTools = Array.isArray(body.tools) ? body.tools : [];
   const toolChoice = asString(body.tool_choice);
@@ -336,6 +353,8 @@ export interface EnsureTokenOptions {
   region?: string;
   fetchImpl?: typeof fetch;
   now?: number;
+  /** Refresh even when the current access token is still valid. */
+  force?: boolean;
   onRefresh?: (profile: MinimaxAuthProfile) => void;
 }
 /**
@@ -347,7 +366,7 @@ export async function ensureAccessToken(options: EnsureTokenOptions = {}): Promi
   const profile = await readAuthProfile(path);
   if (!profile) throw new Error("MiniMax Code auth profile not found — run `mcode login` first");
   const now = options.now ?? Date.now();
-  if (profile.expiresAtMs && profile.expiresAtMs - now > REFRESH_MARGIN_MS) {
+  if (!options.force && profile.expiresAtMs && profile.expiresAtMs - now > REFRESH_MARGIN_MS) {
     return profile.accessToken;
   }
   if (!profile.refreshToken) return profile.accessToken;
@@ -409,41 +428,105 @@ export interface GatewayCallOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   url?: string;
+  /** Retries on a transient failure (429, 5xx, network). */
+  maxRetries?: number;
+  /** Base backoff delay between retries. */
+  retryBaseMs?: number;
 }
 
-/** Perform the HTTP call against the managed gateway. */
+/** The gateway rejected the access token: refresh it and try again. */
+export class GatewayAuthError extends Error {
+  readonly status = 401;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayAuthError";
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
+/**
+ * Perform the HTTP call against the managed gateway.
+ *
+ * A transient failure (429, 5xx, a dropped connection) is retried with an
+ * exponential backoff, the way the MiniMax Code app does. A rejected token is
+ * reported as `GatewayAuthError` so the caller can refresh it and retry.
+ */
 export async function callGateway(options: GatewayCallOptions): Promise<Response> {
   const doFetch = options.fetchImpl || fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  timer.unref?.();
-  const onAbort = () => controller.abort();
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    const response = await doFetch(options.url || resolveGatewayUrl(), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${options.accessToken}`,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-        "user-agent": "MiniMaxAgent",
-        accept: options.stream ? "text/event-stream" : "application/json",
-      },
-      body: JSON.stringify({ ...options.payload, stream: options.stream }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(
-        `MiniMax gateway error ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`
-      );
+  const maxRetries = Math.max(
+    0,
+    options.maxRetries ?? Number(process.env.MINIMAX_CODE_GATEWAY_RETRIES ?? DEFAULT_MAX_RETRIES)
+  );
+  const baseMs = options.retryBaseMs ?? 1000;
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(Math.min(baseMs * 2 ** (attempt - 1), 30_000), options.signal);
     }
-    return response;
-  } finally {
-    clearTimeout(timer);
-    options.signal?.removeEventListener("abort", onAbort);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const response = await doFetch(options.url || resolveGatewayUrl(), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.accessToken}`,
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "user-agent": "MiniMaxAgent",
+          accept: options.stream ? "text/event-stream" : "application/json",
+        },
+        body: JSON.stringify({ ...options.payload, stream: options.stream }),
+        signal: controller.signal,
+      });
+      if (response.status === 401) {
+        const detail = await response.text().catch(() => "");
+        throw new GatewayAuthError(
+          `MiniMax gateway rejected the access token (401)${detail ? `: ${detail.slice(0, 200)}` : ""}`
+        );
+      }
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        const error = new Error(
+          `MiniMax gateway error ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`
+        );
+        if (response.status === 429 || response.status >= 500) {
+          lastError = error;
+          continue;
+        }
+        throw error;
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof GatewayAuthError) throw error;
+      lastError = error;
+      if (attempt >= maxRetries) break;
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
   }
+
+  throw lastError instanceof Error ? lastError : new Error("MiniMax gateway request failed");
 }
 
 export interface GatewayStreamState {

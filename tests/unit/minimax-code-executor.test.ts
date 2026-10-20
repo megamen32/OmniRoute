@@ -320,3 +320,215 @@ test("MiniMax Code returns native tool calls from the managed gateway", async ()
     server.close();
   }
 });
+
+test("MiniMax Code refreshes an expired gateway token and retries once", async () => {
+  const { MinimaxCodeExecutor } = await loadMinimaxCodeExecutor();
+  const { mkdtemp, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createServer } = await import("node:http");
+
+  const dir = await mkdtemp(join(tmpdir(), "mmcode-auth-"));
+  const authFile = join(dir, "auth.json");
+  await writeFile(
+    authFile,
+    JSON.stringify({
+      schemaVersion: 1,
+      records: {
+        "com.minimax.mcode.oauth.prod.en": {
+          accessToken: "stale-access-token",
+          refreshToken: "test-refresh-token",
+          clientId: "mcode-public",
+          scopes: ["agent.default"],
+          audience: "agent-backend",
+          expiresAtMs: Date.now() + 3_600_000,
+          generation: 1,
+        },
+      },
+    })
+  );
+
+  const seenAuth: string[] = [];
+  let gatewayCalls = 0;
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      if (req.url?.includes("/oauth2/token")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            access_token: "fresh-access-token",
+            refresh_token: "fresh-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          })
+        );
+        return;
+      }
+      seenAuth.push(String(req.headers.authorization || ""));
+      gatewayCalls += 1;
+      if (gatewayCalls === 1) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "token expired" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          content: [{ type: "text", text: "fresh" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 5, output_tokens: 2 },
+        })
+      );
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const previousUrl = process.env.MINIMAX_CODE_GATEWAY_URL;
+  process.env.MINIMAX_CODE_GATEWAY_URL = `http://127.0.0.1:${port}/mavis/api/v1/llm/v1/messages`;
+
+  try {
+    // The token endpoint is the real one, so the refresh is routed to a local
+    // stand-in while the gateway call goes to the local server.
+    const routedFetch: typeof fetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.includes("account.minimax.io/oauth2/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "fresh-access-token",
+            refresh_token: "fresh-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return fetch(input as RequestInfo, init);
+    };
+    const executor = new MinimaxCodeExecutor({
+      authFile,
+      fetchImpl: routedFetch,
+      transport: "gateway",
+    });
+    const result = await executor.execute({
+      model: "MiniMax-M3.1-Flash",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: {},
+    });
+    const response = "response" in result ? result.response : result;
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.choices?.[0]?.message?.content, "fresh");
+    // The first call used the stale token, the second one the refreshed token.
+    assert.deepEqual(seenAuth, ["Bearer stale-access-token", "Bearer fresh-access-token"]);
+  } finally {
+    if (previousUrl === undefined) delete process.env.MINIMAX_CODE_GATEWAY_URL;
+    else process.env.MINIMAX_CODE_GATEWAY_URL = previousUrl;
+    server.close();
+  }
+});
+
+test("MiniMax Code streams native tool calls from the managed gateway", async () => {
+  const { MinimaxCodeExecutor } = await loadMinimaxCodeExecutor();
+  const { mkdtemp, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createServer } = await import("node:http");
+
+  const dir = await mkdtemp(join(tmpdir(), "mmcode-auth-"));
+  const authFile = join(dir, "auth.json");
+  await writeFile(
+    authFile,
+    JSON.stringify({
+      schemaVersion: 1,
+      records: {
+        "com.minimax.mcode.oauth.prod.en": {
+          accessToken: "stream-access-token",
+          refreshToken: "test-refresh-token",
+          clientId: "mcode-public",
+          scopes: ["agent.default"],
+          audience: "agent-backend",
+          expiresAtMs: Date.now() + 3_600_000,
+          generation: 1,
+        },
+      },
+    })
+  );
+
+  const frames = [
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}\n\n',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Looking it up."}}\n\n',
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"get_time"}}\n\n',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\":\\"Moscow\\"}"}}\n\n',
+    'data: {"type":"content_block_stop","index":1}\n\n',
+    'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":8}}\n\n',
+    'data: {"type":"message_stop"}\n\n',
+  ].join("");
+
+  const server = createServer((req, res) => {
+    req.on("data", () => undefined);
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(frames);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const previousUrl = process.env.MINIMAX_CODE_GATEWAY_URL;
+  process.env.MINIMAX_CODE_GATEWAY_URL = `http://127.0.0.1:${port}/mavis/api/v1/llm/v1/messages`;
+
+  try {
+    const executor = new MinimaxCodeExecutor({ authFile, transport: "gateway" });
+    const result = await executor.execute({
+      model: "MiniMax-M3.1-Flash",
+      body: {
+        messages: [{ role: "user", content: "What time is it in Moscow?" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_time",
+              description: "Current time in a city",
+              parameters: { type: "object", properties: { city: { type: "string" } } },
+            },
+          },
+        ],
+      },
+      stream: true,
+      credentials: {},
+    });
+    const response = "response" in result ? result.response : result;
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /data: \[DONE\]/);
+    const chunks = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && !line.includes("[DONE]"))
+      .map((line) => JSON.parse(line.slice("data: ".length)));
+    const content = chunks.map((chunk) => chunk.choices?.[0]?.delta?.content || "").join("");
+    assert.equal(content, "Looking it up.");
+    const last = chunks[chunks.length - 1];
+    assert.equal(last.choices?.[0]?.finish_reason, "tool_calls");
+    const call = last.choices?.[0]?.delta?.tool_calls?.[0];
+    assert.equal(call?.id, "call_1");
+    assert.equal(call?.index, 0);
+    assert.equal(call?.function?.name, "get_time");
+    assert.deepEqual(JSON.parse(call?.function?.arguments), { city: "Moscow" });
+    assert.equal(last.usage?.prompt_tokens, 12);
+    assert.equal(last.usage?.completion_tokens, 8);
+  } finally {
+    if (previousUrl === undefined) delete process.env.MINIMAX_CODE_GATEWAY_URL;
+    else process.env.MINIMAX_CODE_GATEWAY_URL = previousUrl;
+    server.close();
+  }
+});

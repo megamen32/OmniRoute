@@ -15,8 +15,12 @@ import {
   callGateway,
   ensureAccessToken,
   gatewayResultToCompletion,
+  GatewayAuthError,
   parseGatewayResult,
   parseGatewaySse,
+  readAuthProfile,
+  refreshAuthProfile,
+  resolveAuthFile,
   type GatewayStreamState,
 } from "./minimaxCodeGateway.ts";
 
@@ -585,6 +589,39 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     };
   }
 
+  /**
+   * One call against the managed gateway. A token that expired mid-flight is
+   * refreshed through the account OAuth endpoint and the call is repeated once.
+   */
+  private async callManagedGateway(
+    payload: JsonRecord,
+    stream: boolean,
+    signal?: AbortSignal | null
+  ): Promise<Response> {
+    const path = this.options.authFile;
+    const accessToken = await ensureAccessToken({ path });
+    const options = {
+      payload,
+      accessToken,
+      stream,
+      signal,
+      timeoutMs: this.resolveGatewayTimeoutMs(),
+      fetchImpl: this.options.fetchImpl,
+    };
+    try {
+      return await callGateway(options);
+    } catch (error) {
+      if (!(error instanceof GatewayAuthError)) throw error;
+      const profile = await readAuthProfile(path || resolveAuthFile());
+      if (!profile?.refreshToken) throw error;
+      const refreshed = await refreshAuthProfile(profile, {
+        path: profile.path,
+        fetchImpl: this.options.fetchImpl,
+      });
+      return await callGateway({ ...options, accessToken: refreshed.accessToken });
+    }
+  }
+
   /** One-shot call against the managed gateway: native tool calling, no agent. */
   private async executeGateway(
     input: ExecuteInput,
@@ -592,15 +629,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     body: JsonRecord
   ): Promise<ExecutorExecuteResult> {
     const payload = buildGatewayPayload(body, model);
-    const accessToken = await ensureAccessToken({ path: this.options.authFile });
-    const response = await callGateway({
-      payload,
-      accessToken,
-      stream: false,
-      signal: input.signal,
-      timeoutMs: this.resolveGatewayTimeoutMs(),
-      fetchImpl: this.options.fetchImpl,
-    });
+    const response = await this.callManagedGateway(payload, false, input.signal);
     const result = parseGatewayResult(asRecord(await response.json()));
     return Response.json(gatewayResultToCompletion(model, result));
   }
@@ -612,15 +641,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     body: JsonRecord
   ): Promise<ExecutorExecuteResult> {
     const payload = buildGatewayPayload(body, model);
-    const accessToken = await ensureAccessToken({ path: this.options.authFile });
-    const response = await callGateway({
-      payload,
-      accessToken,
-      stream: true,
-      signal: input.signal,
-      timeoutMs: this.resolveGatewayTimeoutMs(),
-      fetchImpl: this.options.fetchImpl,
-    });
+    const response = await this.callManagedGateway(payload, true, input.signal);
     const upstream = response.body;
     const encoder = new TextEncoder();
     const messageId = `chatcmpl-minimax-code-${Date.now()}`;
