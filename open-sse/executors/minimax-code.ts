@@ -523,8 +523,8 @@ export class MinimaxCodeExecutor extends BaseExecutor {
   }
 
   private configuredTransport(): "auto" | "gateway" | "cli" {
-    const raw = this.options.transport || process.env.MINIMAX_CODE_TRANSPORT || "auto";
-    return raw === "gateway" || raw === "cli" ? raw : "auto";
+    const raw = this.options.transport || process.env.MINIMAX_CODE_TRANSPORT || "gateway";
+    return raw === "auto" || raw === "cli" ? raw : "gateway";
   }
 
   /**
@@ -770,10 +770,6 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         const message = sanitizeErrorMessage(
           error instanceof Error ? error.message : String(error)
         );
-        if (this.configuredTransport() === "gateway") {
-          input.log?.warn?.("MINIMAX_CODE", `gateway transport failed: ${message}`);
-          return input.stream ? sseErrorResponse(502, message) : errorResponse(502, message);
-        }
         input.log?.warn?.(
           "MINIMAX_CODE",
           `gateway transport failed, falling back to the local CLI: ${message}`

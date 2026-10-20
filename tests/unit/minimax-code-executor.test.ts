@@ -109,6 +109,7 @@ test("MiniMax Code runs the local CLI and returns an OpenAI chat completion", as
     args: [fixture],
     cwd: process.cwd(),
     timeoutMs: 10_000,
+    transport: "cli",
   });
 
   const result = await executor.execute({
@@ -186,6 +187,46 @@ test("MiniMax Code routes client tools to the managed gateway and plain chat to 
   // An explicit choice always wins.
   assert.equal(resolveMinimaxCodeTransport("cli", true), "cli");
   assert.equal(resolveMinimaxCodeTransport("gateway", false), "gateway");
+  // The default is the managed gateway for every request: it speaks the
+  // native tool protocol and answers in seconds. The local CLI is the
+  // fallback for a gateway that is unreachable or rejects the token.
+  assert.equal(resolveMinimaxCodeTransport("gateway", true), "gateway");
+  assert.equal(resolveMinimaxCodeTransport("gateway", false), "gateway");
+});
+
+test("MiniMax Code falls back to the local CLI when the gateway is unreachable", async () => {
+  const { MinimaxCodeExecutor } = await loadMinimaxCodeExecutor();
+  const seen: string[] = [];
+  const executor = new MinimaxCodeExecutor({
+    command: process.execPath,
+    args: [fixture],
+    cwd: process.cwd(),
+    timeoutMs: 10_000,
+    transport: "gateway",
+    // A missing credential makes the gateway call fail before the request.
+    authFile: "/nonexistent/minimax-auth.json",
+    runner: async (options) => {
+      seen.push(options.mode);
+      return {
+        text: "fallback answer",
+        usage: null,
+        state: { text: "fallback answer", usage: null, status: "succeeded", error: null },
+      };
+    },
+  });
+
+  const result = await executor.execute({
+    model: "MiniMax-M3.1-Flash",
+    body: requestBody(),
+    stream: false,
+    credentials: {},
+  });
+  const response = "response" in result ? result.response : result;
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.choices?.[0]?.message?.content, "fallback answer");
+  // The plain chat request stays on the lightweight profile of the CLI.
+  assert.deepEqual(seen, ["lightweight"]);
 });
 
 test("MiniMax Code streams assistant deltas as OpenAI SSE when stream=true", async () => {
@@ -195,6 +236,7 @@ test("MiniMax Code streams assistant deltas as OpenAI SSE when stream=true", asy
     args: [fixture],
     cwd: process.cwd(),
     timeoutMs: 10_000,
+    transport: "cli",
   });
 
   const result = await executor.execute({
@@ -276,7 +318,7 @@ test("MiniMax Code returns native tool calls from the managed gateway", async ()
   process.env.MINIMAX_CODE_GATEWAY_URL = `http://127.0.0.1:${port}/mavis/api/v1/llm/v1/messages`;
 
   try {
-    const executor = new MinimaxCodeExecutor({ authFile });
+    const executor = new MinimaxCodeExecutor({ authFile, transport: "gateway" });
     const result = await executor.execute({
       model: "MiniMax-M3.1-Flash",
       body: {
