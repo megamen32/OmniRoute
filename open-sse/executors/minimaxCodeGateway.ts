@@ -15,7 +15,7 @@
 
 import { readFile, writeFile, rename, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const GATEWAY_URL = "https://agent.minimax.io/mavis/api/v1/llm/v1/messages";
 const ACCOUNT_BASES: Record<string, string> = {
@@ -330,6 +330,34 @@ export async function readAuthProfile(path: string): Promise<MinimaxAuthProfile 
   };
 }
 
+/**
+ * Keep the CLI session state in sync with the rotated credential.
+ *
+ * The MiniMax Code CLI validates the credential against the `auth-state.json`
+ * file next to it. A state file that still points at the previous generation
+ * makes the CLI treat the session as expired ("Sign in to MiniMax to use
+ * Agent features") even though the credential itself is fresh. The CLI writes
+ * both files on its own refresh, so the gateway has to do the same.
+ */
+async function writeAuthState(path: string, profile: MinimaxAuthProfile): Promise<void> {
+  const statePath = join(dirname(path), "auth-state.json");
+  let state: JsonRecord;
+  try {
+    state = asRecord(JSON.parse(await readFile(statePath, "utf8")));
+  } catch {
+    // No state file: the CLI creates one on login.
+    return;
+  }
+  if (typeof state.generation !== "number") return;
+  state.generation = profile.generation;
+  state.expiresAtMs = profile.expiresAtMs;
+  state.status = "authenticated";
+  const tmp = `${statePath}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  await rename(tmp, statePath);
+  await chmod(statePath, 0o600).catch(() => undefined);
+}
+
 /** Persist a refreshed token back into the MiniMax Code auth profile. */
 async function writeAuthProfile(path: string, profile: MinimaxAuthProfile): Promise<void> {
   const doc = asRecord(JSON.parse(await readFile(path, "utf8")));
@@ -415,6 +443,11 @@ export async function refreshAuthProfile(
     await writeAuthProfile(profile.path, updated);
   } catch {
     // A read-only profile must not break the request: the fresh token still works.
+  }
+  try {
+    await writeAuthState(profile.path, updated);
+  } catch {
+    // The CLI would read a stale state file as an expired session.
   }
   options.onRefresh?.(updated);
   return updated;

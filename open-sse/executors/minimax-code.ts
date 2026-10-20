@@ -596,10 +596,14 @@ export class MinimaxCodeExecutor extends BaseExecutor {
   private async callManagedGateway(
     payload: JsonRecord,
     stream: boolean,
-    signal?: AbortSignal | null
+    signal?: AbortSignal | null,
+    log?: ExecuteInput["log"]
   ): Promise<Response> {
     const path = this.options.authFile;
-    const accessToken = await ensureAccessToken({ path });
+    const accessToken = await ensureAccessToken({
+      path,
+      onRefresh: () => log?.info?.("MINIMAX_CODE", "managed gateway access token refreshed"),
+    });
     const options = {
       payload,
       accessToken,
@@ -617,6 +621,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       const refreshed = await refreshAuthProfile(profile, {
         path: profile.path,
         fetchImpl: this.options.fetchImpl,
+        onRefresh: () => log?.info?.("MINIMAX_CODE", "managed gateway access token refreshed"),
       });
       return await callGateway({ ...options, accessToken: refreshed.accessToken });
     }
@@ -629,7 +634,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     body: JsonRecord
   ): Promise<ExecutorExecuteResult> {
     const payload = buildGatewayPayload(body, model);
-    const response = await this.callManagedGateway(payload, false, input.signal);
+    const response = await this.callManagedGateway(payload, false, input.signal, input.log);
     const result = parseGatewayResult(asRecord(await response.json()));
     return Response.json(gatewayResultToCompletion(model, result));
   }
@@ -641,7 +646,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     body: JsonRecord
   ): Promise<ExecutorExecuteResult> {
     const payload = buildGatewayPayload(body, model);
-    const response = await this.callManagedGateway(payload, true, input.signal);
+    const response = await this.callManagedGateway(payload, true, input.signal, input.log);
     const upstream = response.body;
     const encoder = new TextEncoder();
     const messageId = `chatcmpl-minimax-code-${Date.now()}`;

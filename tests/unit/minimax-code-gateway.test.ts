@@ -246,3 +246,85 @@ test("auth profile path honours the explicit override", async () => {
     else process.env.MINIMAX_CODE_AUTH_FILE = previous;
   }
 });
+
+test("a token refresh keeps the CLI session state in sync", async () => {
+  const { refreshAuthProfile } = await loadGateway();
+  const { mkdtemp, writeFile, readFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const dir = await mkdtemp(join(tmpdir(), "mmcode-auth-"));
+  const authFile = join(dir, "auth.json");
+  const stateFile = join(dir, "auth-state.json");
+  await writeFile(
+    authFile,
+    JSON.stringify({
+      schemaVersion: 1,
+      records: {
+        "com.minimax.mcode.oauth.prod.en": {
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          clientId: "mcode-public",
+          scopes: ["agent.default"],
+          audience: "agent-backend",
+          expiresAtMs: 1000,
+          generation: 4,
+        },
+      },
+    })
+  );
+  await writeFile(
+    stateFile,
+    JSON.stringify({
+      schemaVersion: 2,
+      status: "authenticated",
+      storeKind: "file",
+      clientId: "mcode-public",
+      scopes: ["agent.default"],
+      audience: "agent-backend",
+      buildEnv: "prod",
+      region: "en",
+      generation: 4,
+      expiresAtMs: 1000,
+    })
+  );
+
+  const fetchImpl: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        access_token: "new-access-token",
+        refresh_token: "new-refresh-token",
+        expires_in: 3600,
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+  const profile = await refreshAuthProfile(
+    {
+      accessToken: "old-access-token",
+      refreshToken: "old-refresh-token",
+      clientId: "mcode-public",
+      scopes: ["agent.default"],
+      audience: "agent-backend",
+      expiresAtMs: 1000,
+      generation: 4,
+      path: authFile,
+    },
+    { fetchImpl }
+  );
+  assert.equal(profile.accessToken, "new-access-token");
+  assert.equal(profile.generation, 5);
+
+  const auth = JSON.parse(await readFile(authFile, "utf8"));
+  const record = Object.values(auth.records)[0] as Record<string, unknown>;
+  assert.equal(record.accessToken, "new-access-token");
+  assert.equal(record.refreshToken, "new-refresh-token");
+  assert.equal(record.generation, 5);
+
+  // The CLI validates the credential against the state file: a stale
+  // generation there makes it treat the session as expired.
+  const state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(state.generation, 5);
+  assert.equal(state.status, "authenticated");
+  assert.equal(state.expiresAtMs, profile.expiresAtMs);
+});
