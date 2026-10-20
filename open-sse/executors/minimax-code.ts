@@ -32,6 +32,7 @@ const DEFAULT_MODEL = MINIMAX_CODE_MODELS[0]?.id || "MiniMax-M3.1-Flash";
 const MINIMAX_CODE_MODEL_ALLOWLIST = new Set(MINIMAX_CODE_MODELS.map((model) => model.id));
 const DEFAULT_TURN_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_STEPS = 1;
+const DEFAULT_CONTEXT_MODE = "lightweight";
 
 type JsonRecord = Record<string, unknown>;
 type OpenAIMsg = { role?: string; content?: unknown };
@@ -92,6 +93,8 @@ export interface MinimaxCodeExecutorOptions {
   maxSteps?: number;
   /** Tool permission policy handed to the CLI (default: `off`). */
   permission?: string;
+  /** CLI context mode: `lightweight` (conversation) or `standard` (full agent). */
+  mode?: string;
   /** Run timeout in milliseconds. */
   timeoutMs?: number;
   /** Extra CLI arguments appended to the run. */
@@ -157,13 +160,21 @@ export function resolveMinimaxCodeModel(
   return { ok: true, model: normalized };
 }
 
-/** Build the `mcode exec` command line for one run. */
+/**
+ * Build the `mcode exec` command line for one run.
+ *
+ * `mode` maps to the CLI context mode: "lightweight" runs the conversation
+ * prompt (answer directly, no coding-agent scaffolding) and is roughly twice
+ * as fast as "standard" — that is the right shape for a chat-completion
+ * proxy. "standard" keeps the full agent context.
+ */
 export function buildMinimaxCodeExecArgs(options: {
   model: string;
   cwd: string;
   maxSteps?: number;
   permission?: string;
   timeoutMs?: number;
+  mode?: string;
   extraArgs?: string[];
 }): string[] {
   const args = [
@@ -172,6 +183,8 @@ export function buildMinimaxCodeExecArgs(options: {
     `${MINIMAX_CODE_PROVIDER_ID}/${options.model}`,
     "--permission",
     options.permission || "off",
+    "--mode",
+    options.mode || DEFAULT_CONTEXT_MODE,
     "--output-format",
     "stream-json",
     "--input",
@@ -426,6 +439,10 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     return this.options.permission || process.env.MINIMAX_CODE_PERMISSION || "off";
   }
 
+  private resolveMode(): string {
+    return this.options.mode || process.env.MINIMAX_CODE_MODE || DEFAULT_CONTEXT_MODE;
+  }
+
   private buildRunOptions(
     model: string,
     prompt: string,
@@ -440,6 +457,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         maxSteps: this.resolveMaxSteps(),
         permission: this.resolvePermission(),
         timeoutMs: this.resolveTimeoutMs(),
+        mode: this.resolveMode(),
         extraArgs: this.options.extraArgs,
       });
     return {

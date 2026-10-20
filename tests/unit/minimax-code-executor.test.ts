@@ -51,6 +51,17 @@ test("MiniMax Code builds a one-shot CLI run against the local profile", async (
   assert.equal(args[args.indexOf("--cwd") + 1], "/tmp/workspace");
   assert.equal(args[args.indexOf("--max-steps") + 1], "1");
   assert.equal(args[args.indexOf("--permission") + 1], "off");
+  assert.equal(args[args.indexOf("--mode") + 1], "lightweight");
+});
+
+test("MiniMax Code can run the full agent context mode", async () => {
+  const { buildMinimaxCodeExecArgs } = await loadMinimaxCodeExecutor();
+  const args = buildMinimaxCodeExecArgs({
+    model: "MiniMax-M3.1-Flash",
+    cwd: "/tmp/workspace",
+    mode: "standard",
+  });
+  assert.equal(args[args.indexOf("--mode") + 1], "standard");
 });
 
 test("MiniMax Code folds stream-json events into the final answer and usage", async () => {
