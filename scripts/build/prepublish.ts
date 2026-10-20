@@ -93,7 +93,7 @@ function runBuildTool(
   });
 }
 
-const DIST_DIR = join(ROOT, "dist");
+const DIST_DIR = process.env.OMNIROUTE_DIST_DIR || join(ROOT, "dist");
 const METHOD_GUARD_REQUIRE = 'require("./http-method-guard.cjs").installHttpMethodGuard();\n';
 
 function walkFiles(dir: string, rootDir: string = dir, files: string[] = []): string[] {
