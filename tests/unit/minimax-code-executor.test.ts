@@ -130,6 +130,51 @@ test("MiniMax Code runs the local CLI and returns an OpenAI chat completion", as
   assert.equal(body.usage?.estimated, false);
 });
 
+test("MiniMax Code gives the agent real tools when the client sends tools", async () => {
+  const { MinimaxCodeExecutor } = await loadMinimaxCodeExecutor();
+  const seen: string[] = [];
+  const steps: number[] = [];
+  const executor = new MinimaxCodeExecutor({
+    command: process.execPath,
+    args: [fixture],
+    cwd: process.cwd(),
+    timeoutMs: 10_000,
+    runner: async (options) => {
+      seen.push(options.mode);
+      steps.push(options.maxSteps);
+      return {
+        text: "ok",
+        usage: null,
+        state: { text: "ok", usage: null, status: "succeeded", error: null },
+      };
+    },
+  });
+
+  await executor.execute({
+    model: "MiniMax-M3.1-Flash",
+    body: {
+      ...requestBody(),
+      tools: [{ type: "function", function: { name: "bash", parameters: { type: "object" } } }],
+    },
+    stream: false,
+    credentials: {},
+  });
+  assert.deepEqual(seen, ["standard"]);
+  // An agentic run needs a real step budget so the model can use tools and
+  // still report the result back.
+  assert.deepEqual(steps, [8]);
+
+  // A plain chat request stays on the lightweight profile (no tools, fast).
+  await executor.execute({
+    model: "MiniMax-M3.1-Flash",
+    body: requestBody(),
+    stream: false,
+    credentials: {},
+  });
+  assert.deepEqual(seen, ["standard", "lightweight"]);
+  assert.deepEqual(steps, [8, 1]);
+});
+
 test("MiniMax Code streams assistant deltas as OpenAI SSE when stream=true", async () => {
   const { MinimaxCodeExecutor } = await loadMinimaxCodeExecutor();
   const executor = new MinimaxCodeExecutor({

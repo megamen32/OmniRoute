@@ -32,7 +32,9 @@ const DEFAULT_MODEL = MINIMAX_CODE_MODELS[0]?.id || "MiniMax-M3.1-Flash";
 const MINIMAX_CODE_MODEL_ALLOWLIST = new Set(MINIMAX_CODE_MODELS.map((model) => model.id));
 const DEFAULT_TURN_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_STEPS = 1;
+const DEFAULT_MAX_STEPS_WITH_TOOLS = 8;
 const DEFAULT_CONTEXT_MODE = "lightweight";
+const DEFAULT_PERMISSION_POLICY = "smart";
 
 type JsonRecord = Record<string, unknown>;
 type OpenAIMsg = { role?: string; content?: unknown };
@@ -68,6 +70,10 @@ export interface MinimaxCodeExecState {
 export interface MinimaxCodeRunOptions {
   command: string;
   args: string[];
+  /** CLI context mode used for this run ("lightweight" or "standard"). */
+  mode: string;
+  /** Step budget handed to the CLI for this run. */
+  maxSteps: number;
   cwd: string;
   prompt: string;
   timeoutMs: number;
@@ -91,6 +97,8 @@ export interface MinimaxCodeExecutorOptions {
   cwd?: string;
   /** Maximum assistant steps for one run (default: 1 — a single answer). */
   maxSteps?: number;
+  /** Step budget for runs that carry client tools (default: 8). */
+  maxStepsWithTools?: number;
   /** Tool permission policy handed to the CLI (default: `off`). */
   permission?: string;
   /** CLI context mode: `lightweight` (conversation) or `standard` (full agent). */
@@ -429,23 +437,48 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     );
   }
 
-  private resolveMaxSteps(): number {
+  private resolveMaxSteps(hasTools: boolean): number {
+    if (hasTools) {
+      // An agentic client expects the model to work through its tools and then
+      // report back, so the run needs a real step budget.
+      const raw =
+        this.options.maxStepsWithTools ??
+        Number(process.env.MINIMAX_CODE_MAX_STEPS_TOOLS || DEFAULT_MAX_STEPS_WITH_TOOLS);
+      return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_STEPS_WITH_TOOLS;
+    }
     const raw =
       this.options.maxSteps ?? Number(process.env.MINIMAX_CODE_MAX_STEPS || DEFAULT_MAX_STEPS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_STEPS;
   }
 
   private resolvePermission(): string {
-    return this.options.permission || process.env.MINIMAX_CODE_PERMISSION || "off";
+    return (
+      this.options.permission || process.env.MINIMAX_CODE_PERMISSION || DEFAULT_PERMISSION_POLICY
+    );
   }
 
   private resolveMode(): string {
     return this.options.mode || process.env.MINIMAX_CODE_MODE || DEFAULT_CONTEXT_MODE;
   }
 
+  /**
+   * A request that carries OpenAI `tools` comes from an agentic client
+   * (OpenCode, Codex, ...): the model has to be able to act, so the run gets
+   * the full agent context with the host tools (shell, file, memory, web).
+   * A plain chat request stays on the lightweight profile — no tools, a small
+   * prompt and roughly half the latency.
+   */
+  private resolveModeForRequest(body: JsonRecord): string {
+    const tools = body.tools;
+    if (Array.isArray(tools) && tools.length > 0) return "standard";
+    return this.resolveMode();
+  }
+
   private buildRunOptions(
     model: string,
     prompt: string,
+    mode: string,
+    maxSteps: number,
     signal?: AbortSignal | null
   ): MinimaxCodeRunOptions {
     const cwd = this.resolveCwd();
@@ -454,15 +487,17 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       buildMinimaxCodeExecArgs({
         model,
         cwd,
-        maxSteps: this.resolveMaxSteps(),
+        maxSteps,
         permission: this.resolvePermission(),
         timeoutMs: this.resolveTimeoutMs(),
-        mode: this.resolveMode(),
+        mode,
         extraArgs: this.options.extraArgs,
       });
     return {
       command: this.resolveCommand(),
       args,
+      mode,
+      maxSteps,
       cwd,
       prompt,
       timeoutMs: this.resolveTimeoutMs(),
@@ -482,7 +517,13 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     const messages = Array.isArray(body.messages) ? (body.messages as OpenAIMsg[]) : [];
     const prompt = buildMinimaxCodePrompt(messages);
     const runner = this.options.runner ?? runMinimaxCodeExec;
-    input.log?.info?.("MINIMAX_CODE", `local run started model=${resolution.model}`);
+    const mode = this.resolveModeForRequest(body);
+    const wantsTools = Array.isArray(body.tools) && body.tools.length > 0;
+    const maxSteps = this.resolveMaxSteps(wantsTools);
+    input.log?.info?.(
+      "MINIMAX_CODE",
+      `local run started model=${resolution.model} mode=${mode} maxSteps=${maxSteps} clientTools=${wantsTools ? body.tools.length : 0}`
+    );
 
     if (input.stream) {
       const encoder = new TextEncoder();
@@ -494,7 +535,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
                 encoder.encode(sseChunk(resolution.model, { role: "assistant", content: "" }))
               );
               await runner({
-                ...this.buildRunOptions(resolution.model, prompt, input.signal),
+                ...this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal),
                 onDelta: (delta) => {
                   controller.enqueue(
                     encoder.encode(sseChunk(resolution.model, { content: delta }))
@@ -530,7 +571,9 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     }
 
     try {
-      const result = await runner(this.buildRunOptions(resolution.model, prompt, input.signal));
+      const result = await runner(
+        this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal)
+      );
       return completionResponse(resolution.model, prompt, result.text, result.usage);
     } catch (error) {
       const message = sanitizeErrorMessage(error instanceof Error ? error.message : String(error));
