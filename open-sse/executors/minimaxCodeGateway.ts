@@ -1,0 +1,535 @@
+/**
+ * Managed-gateway transport for the MiniMax Code provider.
+ *
+ * The MiniMax Code desktop app talks to a managed subscription gateway
+ * (`agent.minimax.io`) that speaks the Anthropic Messages contract: it accepts
+ * a `tools` array and answers with `tool_use` blocks. That is the native
+ * function-calling shape OmniRoute's OpenAI surface needs — the model asks for
+ * a tool, OmniRoute hands the call to the client, the client executes it
+ * locally and sends the result back.
+ *
+ * Credentials stay in the local MiniMax Code profile (`~/.minimax`). The access
+ * token is short lived; it is refreshed through the account OAuth endpoint the
+ * same way the CLI itself does it, and the rotated token is written back.
+ */
+
+import { readFile, writeFile, rename, chmod } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const GATEWAY_URL = "https://agent.minimax.io/mavis/api/v1/llm/v1/messages";
+const ACCOUNT_BASES: Record<string, string> = {
+  en: "https://account.minimax.io",
+  cn: "https://account.minimax.cn",
+};
+const DEFAULT_MAX_TOKENS = 8192;
+const DEFAULT_TIMEOUT_MS = 120_000;
+const REFRESH_MARGIN_MS = 60_000;
+
+type JsonRecord = Record<string, unknown>;
+
+export interface MinimaxAuthProfile {
+  accessToken: string;
+  refreshToken?: string;
+  clientId: string;
+  scopes: string[];
+  audience: string;
+  expiresAtMs: number;
+  generation: number;
+  path: string;
+}
+
+export interface GatewayToolCall {
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+export interface GatewayResult {
+  text: string;
+  toolCalls: GatewayToolCall[];
+  stopReason: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** Flatten an OpenAI content field into plain text. */
+export function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const raw of content) {
+    if (typeof raw === "string") {
+      parts.push(raw);
+      continue;
+    }
+    const part = asRecord(raw);
+    if (part.type === "text" || part.type === "input_text" || part.type === "output_text") {
+      parts.push(asString(part.text));
+    }
+  }
+  return parts.join("");
+}
+
+/** Convert OpenAI image parts into Anthropic image blocks. */
+function imageBlocks(content: unknown): JsonRecord[] {
+  if (!Array.isArray(content)) return [];
+  const blocks: JsonRecord[] = [];
+  for (const raw of content) {
+    const part = asRecord(raw);
+    if (part.type !== "image_url") continue;
+    const imageUrl = asRecord(part.image_url);
+    const url = asString(imageUrl.url);
+    const match = /^data:([^;,]+);base64,(.+)$/.exec(url);
+    if (!match) continue;
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: match[1], data: match[2] },
+    });
+  }
+  return blocks;
+}
+
+function parseToolArguments(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw ?? {};
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Convert an OpenAI chat request into the Anthropic Messages payload the
+ * managed gateway expects. Assistant tool calls become `tool_use` blocks and
+ * tool results become `tool_result` blocks carried by a user message.
+ */
+export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord {
+  const messages: JsonRecord[] = [];
+  const systemParts: string[] = [];
+  const toolNames = new Map<string, string>();
+
+  for (const raw of Array.isArray(body.messages) ? body.messages : []) {
+    const message = asRecord(raw);
+    const role = asString(message.role) || "user";
+
+    if (role === "system" || role === "developer") {
+      const text = contentToText(message.content).trim();
+      if (text) systemParts.push(text);
+      continue;
+    }
+
+    if (role === "assistant") {
+      const blocks: JsonRecord[] = [];
+      const text = contentToText(message.content);
+      if (text) blocks.push({ type: "text", text });
+      for (const rawCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+        const call = asRecord(rawCall);
+        const fn = asRecord(call.function);
+        const id = asString(call.id);
+        const name = asString(fn.name);
+        if (!id || !name) continue;
+        toolNames.set(id, name);
+        blocks.push({ type: "tool_use", id, name, input: parseToolArguments(fn.arguments) });
+      }
+      if (!blocks.length) continue;
+      messages.push({ role: "assistant", content: blocks });
+      continue;
+    }
+
+    if (role === "tool" || role === "function") {
+      const toolUseId = asString(message.tool_call_id);
+      if (!toolUseId) continue;
+      const name = asString(message.name) || toolNames.get(toolUseId) || "";
+      const text = contentToText(message.content);
+      const block: JsonRecord = { type: "tool_result", tool_use_id: toolUseId, content: text };
+      if (name) block.name = name;
+      messages.push({ role: "user", content: [block] });
+      continue;
+    }
+
+    const text = contentToText(message.content);
+    const images = imageBlocks(message.content);
+    const blocks: JsonRecord[] = [];
+    if (text) blocks.push({ type: "text", text });
+    blocks.push(...images);
+    if (!blocks.length) continue;
+    messages.push({ role: "user", content: blocks.length === 1 ? text || blocks[0] : blocks });
+  }
+
+  // The gateway requires the conversation to start with a user turn.
+  while (messages.length && messages[0].role !== "user") messages.shift();
+  if (!messages.length) messages.push({ role: "user", content: "(continue)" });
+
+  const payload: JsonRecord = {
+    model,
+    max_tokens: resolveMaxTokens(body),
+    messages,
+  };
+  if (systemParts.length) payload.system = systemParts.join("\n\n");
+
+  const rawTools = Array.isArray(body.tools) ? body.tools : [];
+  const toolChoice = asString(body.tool_choice);
+  if (rawTools.length && toolChoice !== "none") {
+    payload.tools = rawTools.map((raw) => {
+      const item = asRecord(raw);
+      const fn = asRecord(item.function);
+      const schema = asRecord(fn.parameters);
+      return {
+        name: asString(fn.name),
+        description: asString(fn.description),
+        input_schema: Object.keys(schema).length > 0 ? schema : { type: "object", properties: {} },
+      };
+    });
+    if (toolChoice === "required" || toolChoice === "any") payload.tool_choice = { type: "any" };
+    else if (toolChoice) payload.tool_choice = { type: "auto" };
+  }
+
+  const temperature = Number(body.temperature);
+  if (Number.isFinite(temperature)) payload.temperature = temperature;
+  const topP = Number(body.top_p);
+  if (Number.isFinite(topP)) payload.top_p = topP;
+
+  return payload;
+}
+
+function resolveMaxTokens(body: JsonRecord): number {
+  const raw = Number(body.max_tokens ?? body.max_completion_tokens);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  const env = Number(process.env.MINIMAX_CODE_MAX_TOKENS);
+  if (Number.isFinite(env) && env > 0) return Math.floor(env);
+  return DEFAULT_MAX_TOKENS;
+}
+
+/** Convert an Anthropic Messages response into the pieces OmniRoute needs. */
+export function parseGatewayResult(doc: JsonRecord): GatewayResult {
+  const content = Array.isArray(doc.content) ? doc.content : [];
+  let text = "";
+  const toolCalls: GatewayToolCall[] = [];
+  for (const raw of content) {
+    const part = asRecord(raw);
+    const type = asString(part.type);
+    if (type === "text") text += asString(part.text);
+    else if (type === "tool_use") {
+      toolCalls.push({
+        id: asString(part.id),
+        name: asString(part.name),
+        input: part.input ?? {},
+      });
+    }
+  }
+  const usage = asRecord(doc.usage);
+  return {
+    text,
+    toolCalls,
+    stopReason: asString(doc.stop_reason) || "end_turn",
+    inputTokens: Number(usage.input_tokens ?? 0) || 0,
+    outputTokens: Number(usage.output_tokens ?? 0) || 0,
+  };
+}
+
+/** Build the OpenAI chat completion body for a gateway result. */
+export function gatewayResultToCompletion(model: string, result: GatewayResult): JsonRecord {
+  const toolCalls = result.toolCalls.map((call) => ({
+    id: call.id,
+    type: "function",
+    function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) },
+  }));
+  const finishReason = result.toolCalls.length
+    ? "tool_calls"
+    : result.stopReason === "max_tokens"
+      ? "length"
+      : "stop";
+  return {
+    id: `chatcmpl-minimax-code-${Date.now()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: result.text,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: finishReason,
+      },
+    ],
+    usage: {
+      prompt_tokens: result.inputTokens,
+      completion_tokens: result.outputTokens,
+      total_tokens: result.inputTokens + result.outputTokens,
+    },
+  };
+}
+
+/** Absolute path of the MiniMax Code auth profile. */
+export function resolveAuthFile(profileDir?: string): string {
+  const override = process.env.MINIMAX_CODE_AUTH_FILE;
+  if (override) return override;
+  const dir = profileDir || process.env.MINIMAX_CODE_PROFILE_DIR || join(homedir(), ".minimax");
+  return join(dir, "auth", "prod", "en", "mcode-public", "auth.json");
+}
+
+/** Endpoint of the managed subscription gateway. */
+export function resolveGatewayUrl(): string {
+  return process.env.MINIMAX_CODE_GATEWAY_URL || GATEWAY_URL;
+}
+
+/** Read the local MiniMax Code auth profile (token values never leave the host). */
+export async function readAuthProfile(path: string): Promise<MinimaxAuthProfile | null> {
+  let doc: JsonRecord;
+  try {
+    doc = asRecord(JSON.parse(await readFile(path, "utf8")));
+  } catch {
+    return null;
+  }
+  const records = asRecord(doc.records);
+  const keys = Object.keys(records);
+  if (!keys.length) return null;
+  const record = asRecord(records[keys[0]]);
+  const accessToken = asString(record.accessToken);
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    refreshToken: record.refreshToken ? asString(record.refreshToken) : undefined,
+    clientId: asString(record.clientId) || "mcode-public",
+    scopes: Array.isArray(record.scopes) ? record.scopes.map(asString) : ["agent.default"],
+    audience: asString(record.audience) || "agent-backend",
+    expiresAtMs: Number(record.expiresAtMs ?? 0) || 0,
+    generation: Number(record.generation ?? 0) || 0,
+    path,
+  };
+}
+
+/** Persist a refreshed token back into the MiniMax Code auth profile. */
+async function writeAuthProfile(path: string, profile: MinimaxAuthProfile): Promise<void> {
+  const doc = asRecord(JSON.parse(await readFile(path, "utf8")));
+  const records = asRecord(doc.records);
+  const keys = Object.keys(records);
+  if (!keys.length) return;
+  const key = keys[0];
+  const record = asRecord(records[key]);
+  record.accessToken = profile.accessToken;
+  if (profile.refreshToken) record.refreshToken = profile.refreshToken;
+  record.expiresAtMs = profile.expiresAtMs;
+  record.generation = profile.generation;
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
+  await rename(tmp, path);
+  await chmod(path, 0o600).catch(() => undefined);
+}
+
+export interface EnsureTokenOptions {
+  path?: string;
+  region?: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+  onRefresh?: (profile: MinimaxAuthProfile) => void;
+}
+/**
+ * Return a usable access token, refreshing it through the account OAuth
+ * endpoint when it is expired or about to expire.
+ */
+export async function ensureAccessToken(options: EnsureTokenOptions = {}): Promise<string> {
+  const path = options.path || resolveAuthFile();
+  const profile = await readAuthProfile(path);
+  if (!profile) throw new Error("MiniMax Code auth profile not found — run `mcode login` first");
+  const now = options.now ?? Date.now();
+  if (profile.expiresAtMs && profile.expiresAtMs - now > REFRESH_MARGIN_MS) {
+    return profile.accessToken;
+  }
+  if (!profile.refreshToken) return profile.accessToken;
+  const refreshed = await refreshAuthProfile(profile, options);
+  return refreshed.accessToken;
+}
+
+/** Exchange the refresh token for a new access token and persist it. */
+export async function refreshAuthProfile(
+  profile: MinimaxAuthProfile,
+  options: EnsureTokenOptions = {}
+): Promise<MinimaxAuthProfile> {
+  const region = options.region || process.env.MINIMAX_CODE_REGION || "en";
+  const base = ACCOUNT_BASES[region] || ACCOUNT_BASES.en;
+  const doFetch = options.fetchImpl || fetch;
+  const form = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: profile.refreshToken || "",
+    client_id: profile.clientId,
+    scope: profile.scopes.join(" "),
+    audience: profile.audience,
+  });
+  const response = await doFetch(`${base}/oauth2/token`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "user-agent": "minimax-code-cli",
+    },
+    body: form.toString(),
+  });
+  if (!response.ok) {
+    throw new Error(`MiniMax token refresh failed (${response.status})`);
+  }
+  const data = asRecord(await response.json());
+  const accessToken = asString(data.access_token);
+  if (!accessToken) throw new Error("MiniMax token refresh returned no access token");
+  const expiresIn = Number(data.expires_in ?? 0);
+  const updated: MinimaxAuthProfile = {
+    ...profile,
+    accessToken,
+    refreshToken: asString(data.refresh_token) || profile.refreshToken,
+    expiresAtMs: Date.now() + (expiresIn > 0 ? expiresIn : 3600) * 1000,
+    generation: profile.generation + 1,
+  };
+  try {
+    await writeAuthProfile(profile.path, updated);
+  } catch {
+    // A read-only profile must not break the request: the fresh token still works.
+  }
+  options.onRefresh?.(updated);
+  return updated;
+}
+
+export interface GatewayCallOptions {
+  payload: JsonRecord;
+  accessToken: string;
+  stream: boolean;
+  signal?: AbortSignal | null;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  url?: string;
+}
+
+/** Perform the HTTP call against the managed gateway. */
+export async function callGateway(options: GatewayCallOptions): Promise<Response> {
+  const doFetch = options.fetchImpl || fetch;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  const onAbort = () => controller.abort();
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const response = await doFetch(options.url || resolveGatewayUrl(), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${options.accessToken}`,
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "user-agent": "MiniMaxAgent",
+        accept: options.stream ? "text/event-stream" : "application/json",
+      },
+      body: JSON.stringify({ ...options.payload, stream: options.stream }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `MiniMax gateway error ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`
+      );
+    }
+    return response;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+export interface GatewayStreamState {
+  text: string;
+  toolCalls: { id: string; name: string; arguments: string }[];
+  finishReason: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Fold one Anthropic SSE event into the stream state.
+ * Returns the text delta carried by the event ("" when there is none).
+ */
+export function applyGatewayEvent(state: GatewayStreamState, event: JsonRecord): string {
+  const type = asString(event.type);
+  const blocks = new Map<number, { id: string; name: string; args: string }>();
+
+  if (type === "message_start") {
+    const message = asRecord(event.message);
+    const usage = asRecord(message.usage);
+    state.inputTokens = Number(usage.input_tokens ?? 0) || 0;
+    return "";
+  }
+  if (type === "content_block_start") {
+    const block = asRecord(event.content_block);
+    if (asString(block.type) === "tool_use") {
+      blocks.set(Number(event.index ?? 0), {
+        id: asString(block.id),
+        name: asString(block.name),
+        args: "",
+      });
+      state.toolCalls.push({
+        id: asString(block.id),
+        name: asString(block.name),
+        arguments: "",
+      });
+    }
+    return "";
+  }
+  if (type === "content_block_delta") {
+    const delta = asRecord(event.delta);
+    const deltaType = asString(delta.type);
+    if (deltaType === "text_delta") {
+      const text = asString(delta.text);
+      state.text += text;
+      return text;
+    }
+    if (deltaType === "input_json_delta") {
+      const partial = asString(delta.partial_json);
+      const last = state.toolCalls[state.toolCalls.length - 1];
+      if (last) last.arguments += partial;
+      return "";
+    }
+    return "";
+  }
+  if (type === "message_delta") {
+    const delta = asRecord(event.delta);
+    const stopReason = asString(delta.stop_reason);
+    if (stopReason) state.finishReason = stopReason;
+    const usage = asRecord(event.usage);
+    if (usage && Number(usage.output_tokens ?? 0) > 0) {
+      state.outputTokens = Number(usage.output_tokens);
+    }
+    return "";
+  }
+  return "";
+}
+
+/** Parse a raw SSE buffer into the Anthropic events it carries. */
+export function parseGatewaySse(chunk: string): JsonRecord[] {
+  const events: JsonRecord[] = [];
+  for (const block of chunk.split("\n\n")) {
+    const dataLines = block
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim());
+    if (!dataLines.length) continue;
+    const payload = dataLines.join("\n");
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(payload);
+      if (parsed && typeof parsed === "object") events.push(parsed as JsonRecord);
+    } catch {
+      // Ignore keep-alive or partial frames.
+    }
+  }
+  return events;
+}

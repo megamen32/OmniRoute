@@ -9,6 +9,16 @@ import {
 } from "./base.ts";
 import { buildErrorBody, errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
 import { MINIMAX_CODE_MODELS } from "../config/providers/registry/minimax-code/index.ts";
+import {
+  applyGatewayEvent,
+  buildGatewayPayload,
+  callGateway,
+  ensureAccessToken,
+  gatewayResultToCompletion,
+  parseGatewayResult,
+  parseGatewaySse,
+  type GatewayStreamState,
+} from "./minimaxCodeGateway.ts";
 
 /**
  * MiniMax Code provider.
@@ -103,6 +113,21 @@ export interface MinimaxCodeExecutorOptions {
   permission?: string;
   /** CLI context mode: `lightweight` (conversation) or `standard` (full agent). */
   mode?: string;
+  /**
+   * Transport used for a run.
+   *   "auto"   — client tools go through the managed gateway (native function
+   *              calling, the client executes the tools), plain chat stays on
+   *              the local CLI in the fast lightweight profile.
+   *   "gateway"— always the managed gateway.
+   *   "cli"    — always the local CLI.
+   */
+  transport?: "auto" | "gateway" | "cli";
+  /** Timeout of a single managed-gateway call in milliseconds. */
+  gatewayTimeoutMs?: number;
+  /** Path of the MiniMax Code auth profile (default: the local profile). */
+  authFile?: string;
+  /** Injection point for the HTTP client of the managed gateway (tests). */
+  fetchImpl?: typeof fetch;
   /** Run timeout in milliseconds. */
   timeoutMs?: number;
   /** Extra CLI arguments appended to the run. */
@@ -209,6 +234,25 @@ export function buildMinimaxCodeExecArgs(options: {
     args.push("--timeout", `${Math.ceil(timeoutMs / 1000)}s`);
   if (options.extraArgs?.length) args.push(...options.extraArgs);
   return args;
+}
+
+/**
+ * Pick the transport for one request.
+ *
+ * A request that carries client `tools` comes from an agentic client
+ * (OpenCode, Codex, ...). Those tools live on the client machine and the
+ * model has to call them, so the run goes to the managed gateway: it speaks
+ * the native tool protocol and returns the calls to the client.
+ *
+ * A plain chat request has nothing to execute, so it stays on the local CLI
+ * in the lightweight profile — no tools, small prompt, half the latency.
+ */
+export function resolveMinimaxCodeTransport(
+  configured: "auto" | "gateway" | "cli",
+  hasTools: boolean
+): "gateway" | "cli" {
+  if (configured !== "auto") return configured;
+  return hasTools ? "gateway" : "cli";
 }
 
 export function createExecState(): MinimaxCodeExecState {
@@ -383,14 +427,20 @@ function completionResponse(
   );
 }
 
-function sseChunk(model: string, delta: JsonRecord, finishReason: string | null = null): string {
-  const chunk = {
-    id: `chatcmpl-minimax-code-${Date.now()}`,
+function sseChunk(
+  model: string,
+  delta: JsonRecord,
+  finishReason: string | null = null,
+  extra: { id?: string; usage?: JsonRecord } = {}
+): string {
+  const chunk: JsonRecord = {
+    id: extra.id || `chatcmpl-minimax-code-${Date.now()}`,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
+  if (extra.usage) chunk.usage = extra.usage;
   return `data: ${JSON.stringify(chunk)}\n\n`;
 }
 
@@ -461,12 +511,41 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     return this.options.mode || process.env.MINIMAX_CODE_MODE || DEFAULT_CONTEXT_MODE;
   }
 
+  private resolveGatewayTimeoutMs(): number {
+    return (
+      this.options.gatewayTimeoutMs ??
+      Number(process.env.MINIMAX_CODE_GATEWAY_TIMEOUT_MS || 120_000)
+    );
+  }
+
+  private configuredTransport(): "auto" | "gateway" | "cli" {
+    const raw = this.options.transport || process.env.MINIMAX_CODE_TRANSPORT || "auto";
+    return raw === "gateway" || raw === "cli" ? raw : "auto";
+  }
+
   /**
-   * A request that carries OpenAI `tools` comes from an agentic client
-   * (OpenCode, Codex, ...): the model has to be able to act, so the run gets
-   * the full agent context with the host tools (shell, file, memory, web).
-   * A plain chat request stays on the lightweight profile — no tools, a small
-   * prompt and roughly half the latency.
+   * Pick the transport for one request.
+   *
+   * A request that carries client `tools` comes from an agentic client
+   * (OpenCode, Codex, ...). Those tools live on the client machine and the
+   * model has to call them, so the run goes to the managed gateway: it
+   * speaks the native tool protocol and returns the calls to the client.
+   *
+   * A plain chat request has nothing to execute, so it stays on the local CLI
+   * in the lightweight profile — no tools, small prompt, half the latency.
+   */
+  private resolveTransport(hasTools: boolean): "gateway" | "cli" {
+    return resolveMinimaxCodeTransport(this.configuredTransport(), hasTools);
+  }
+
+  /**
+   * Context mode of a CLI run.
+   *
+   * A request that carries OpenAI `tools` but is routed to the local CLI (the
+   * gateway is unavailable, or the transport is pinned to `cli`) needs the full
+   * agent context with the host tools (shell, file, memory, web). A plain chat
+   * request stays on the lightweight profile — no tools, a small prompt and
+   * roughly half the latency.
    */
   private resolveModeForRequest(body: JsonRecord): string {
     const tools = body.tools;
@@ -506,6 +585,136 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     };
   }
 
+  /** One-shot call against the managed gateway: native tool calling, no agent. */
+  private async executeGateway(
+    input: ExecuteInput,
+    model: string,
+    body: JsonRecord
+  ): Promise<ExecutorExecuteResult> {
+    const payload = buildGatewayPayload(body, model);
+    const accessToken = await ensureAccessToken({ path: this.options.authFile });
+    const response = await callGateway({
+      payload,
+      accessToken,
+      stream: false,
+      signal: input.signal,
+      timeoutMs: this.resolveGatewayTimeoutMs(),
+      fetchImpl: this.options.fetchImpl,
+    });
+    const result = parseGatewayResult(asRecord(await response.json()));
+    return Response.json(gatewayResultToCompletion(model, result));
+  }
+
+  /** Streaming call against the managed gateway: Anthropic SSE in, OpenAI SSE out. */
+  private async executeGatewayStream(
+    input: ExecuteInput,
+    model: string,
+    body: JsonRecord
+  ): Promise<ExecutorExecuteResult> {
+    const payload = buildGatewayPayload(body, model);
+    const accessToken = await ensureAccessToken({ path: this.options.authFile });
+    const response = await callGateway({
+      payload,
+      accessToken,
+      stream: true,
+      signal: input.signal,
+      timeoutMs: this.resolveGatewayTimeoutMs(),
+      fetchImpl: this.options.fetchImpl,
+    });
+    const upstream = response.body;
+    const encoder = new TextEncoder();
+    const messageId = `chatcmpl-minimax-code-${Date.now()}`;
+    const state: GatewayStreamState = {
+      text: "",
+      toolCalls: [],
+      finishReason: "end_turn",
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        void (async () => {
+          const write = (chunk: string) => controller.enqueue(encoder.encode(chunk));
+          try {
+            write(sseChunk(model, { role: "assistant", content: "" }, null, { id: messageId }));
+            if (upstream) {
+              const reader = upstream.getReader();
+              const decoder = new TextDecoder();
+              let buffer = "";
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let index = buffer.indexOf("\n\n");
+                while (index >= 0) {
+                  const frame = buffer.slice(0, index);
+                  buffer = buffer.slice(index + 2);
+                  for (const event of parseGatewaySse(frame)) {
+                    const delta = applyGatewayEvent(state, event);
+                    if (delta) write(sseChunk(model, { content: delta }, null, { id: messageId }));
+                  }
+                  index = buffer.indexOf("\n\n");
+                }
+              }
+              if (buffer.trim()) {
+                for (const event of parseGatewaySse(buffer)) {
+                  const delta = applyGatewayEvent(state, event);
+                  if (delta) write(sseChunk(model, { content: delta }, null, { id: messageId }));
+                }
+              }
+            }
+            const toolCalls = state.toolCalls.map((call, index) => ({
+              index,
+              id: call.id,
+              type: "function",
+              function: { name: call.name, arguments: call.arguments || "{}" },
+            }));
+            const finishReason = state.toolCalls.length
+              ? "tool_calls"
+              : state.finishReason === "max_tokens"
+                ? "length"
+                : "stop";
+            const finalDelta: JsonRecord = {};
+            if (toolCalls.length) finalDelta.tool_calls = toolCalls;
+            write(
+              sseChunk(model, finalDelta, finishReason, {
+                id: messageId,
+                usage: {
+                  prompt_tokens: state.inputTokens,
+                  completion_tokens: state.outputTokens,
+                  total_tokens: state.inputTokens + state.outputTokens,
+                },
+              })
+            );
+            write("data: [DONE]\n\n");
+          } catch (error) {
+            const message = sanitizeErrorMessage(
+              error instanceof Error ? error.message : String(error)
+            );
+            input.log?.warn?.("MINIMAX_CODE", message);
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify(buildErrorBody(502, message))}\n\ndata: [DONE]\n\n`
+              )
+            );
+          } finally {
+            controller.close();
+          }
+        })();
+      },
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
   async execute(input: ExecuteInput): Promise<ExecutorExecuteResult> {
     const resolution = resolveMinimaxCodeModel(input.model);
     if (!resolution.ok) {
@@ -519,30 +728,60 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     const runner = this.options.runner ?? runMinimaxCodeExec;
     const mode = this.resolveModeForRequest(body);
     const wantsTools = Array.isArray(body.tools) && body.tools.length > 0;
+    const transport = this.resolveTransport(wantsTools);
     const maxSteps = this.resolveMaxSteps(wantsTools);
     input.log?.info?.(
       "MINIMAX_CODE",
-      `local run started model=${resolution.model} mode=${mode} maxSteps=${maxSteps} clientTools=${wantsTools ? body.tools.length : 0}`
+      `run started model=${resolution.model} transport=${transport} mode=${mode} maxSteps=${maxSteps} clientTools=${wantsTools ? body.tools.length : 0}`
     );
+
+    if (transport === "gateway") {
+      try {
+        return input.stream
+          ? await this.executeGatewayStream(input, resolution.model, body)
+          : await this.executeGateway(input, resolution.model, body);
+      } catch (error) {
+        const message = sanitizeErrorMessage(
+          error instanceof Error ? error.message : String(error)
+        );
+        if (this.configuredTransport() === "gateway") {
+          input.log?.warn?.("MINIMAX_CODE", `gateway transport failed: ${message}`);
+          return input.stream ? sseErrorResponse(502, message) : errorResponse(502, message);
+        }
+        input.log?.warn?.(
+          "MINIMAX_CODE",
+          `gateway transport failed, falling back to the local CLI: ${message}`
+        );
+      }
+    }
 
     if (input.stream) {
       const encoder = new TextEncoder();
+      const messageId = `chatcmpl-minimax-code-${Date.now()}`;
       const stream = new ReadableStream<Uint8Array>({
         start: (controller) => {
           void (async () => {
             try {
               controller.enqueue(
-                encoder.encode(sseChunk(resolution.model, { role: "assistant", content: "" }))
+                encoder.encode(
+                  sseChunk(resolution.model, { role: "assistant", content: "" }, null, {
+                    id: messageId,
+                  })
+                )
               );
               await runner({
                 ...this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal),
                 onDelta: (delta) => {
                   controller.enqueue(
-                    encoder.encode(sseChunk(resolution.model, { content: delta }))
+                    encoder.encode(
+                      sseChunk(resolution.model, { content: delta }, null, { id: messageId })
+                    )
                   );
                 },
               });
-              controller.enqueue(encoder.encode(sseChunk(resolution.model, {}, "stop")));
+              controller.enqueue(
+                encoder.encode(sseChunk(resolution.model, {}, "stop", { id: messageId }))
+              );
               controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             } catch (error) {
               const message = sanitizeErrorMessage(
