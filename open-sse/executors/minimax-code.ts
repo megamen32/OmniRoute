@@ -12,6 +12,8 @@ import { MINIMAX_CODE_MODELS } from "../config/providers/registry/minimax-code/i
 import {
   applyGatewayEvent,
   buildGatewayPayload,
+  estimateGatewayInputTokens,
+  isGatewayPayloadOversized,
   callGateway,
   ensureAccessToken,
   gatewayResultToCompletion,
@@ -634,6 +636,14 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     body: JsonRecord
   ): Promise<ExecutorExecuteResult> {
     const payload = buildGatewayPayload(body, model);
+    if (isGatewayPayloadOversized(payload)) {
+      const tokens = estimateGatewayInputTokens(payload);
+      const message =
+        `MiniMax Code request is too large: ~${tokens} input tokens ` +
+        `(limit 200000). Trim the conversation and retry.`;
+      input.log?.warn?.("MINIMAX_CODE", message);
+      return errorResponse(400, message);
+    }
     const response = await this.callManagedGateway(payload, false, input.signal, input.log);
     const result = parseGatewayResult(asRecord(await response.json()));
     return Response.json(gatewayResultToCompletion(model, result));
@@ -646,6 +656,14 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     body: JsonRecord
   ): Promise<ExecutorExecuteResult> {
     const payload = buildGatewayPayload(body, model);
+    if (isGatewayPayloadOversized(payload)) {
+      const tokens = estimateGatewayInputTokens(payload);
+      const message =
+        `MiniMax Code request is too large: ~${tokens} input tokens ` +
+        `(limit 200000). Trim the conversation and retry.`;
+      input.log?.warn?.("MINIMAX_CODE", message);
+      return sseErrorResponse(400, message);
+    }
     const response = await this.callManagedGateway(payload, true, input.signal, input.log);
     const upstream = response.body;
     const encoder = new TextEncoder();

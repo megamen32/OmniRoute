@@ -23,6 +23,19 @@ const ACCOUNT_BASES: Record<string, string> = {
   cn: "https://account.minimax.cn",
 };
 const DEFAULT_MAX_TOKENS = 8192;
+/**
+ * Hard ceiling on the estimated input size of one gateway request.
+ *
+ * Incident 2026-10-21: a request with ~322k input tokens was accepted by the
+ * managed gateway, ran for 236s and came back as `limit_exceeded`. That error
+ * is what trips the in-memory model lockout in the combo fallback, which took
+ * the MiniMax leg out of every combo for ~27 minutes. A request that large is
+ * never useful here, so it is refused locally with a fast 400 instead of being
+ * forwarded.
+ */
+const MAX_INPUT_TOKENS = 200_000;
+/** Chars per token, deliberately pessimistic for CJK and code payloads. */
+const CHARS_PER_TOKEN = 3;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RETRIES = 3;
 const REFRESH_MARGIN_MS = 60_000;
@@ -648,4 +661,27 @@ export function parseGatewaySse(chunk: string): JsonRecord[] {
     }
   }
   return events;
+}
+
+/**
+ * Estimate the input tokens of a gateway payload.
+ *
+ * The managed gateway does not report the input size before it starts
+ * generating, so the size is estimated from the serialized prompt. The
+ * estimate is deliberately pessimistic: it must never underestimate a payload
+ * that the gateway would reject.
+ */
+export function estimateGatewayInputTokens(payload: JsonRecord): number {
+  const text = JSON.stringify(payload.messages ?? []) + JSON.stringify(payload.system ?? []);
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * A payload whose estimated input size is above the ceiling.
+ *
+ * Returned as a plain object so the caller can turn it into a 400 response
+ * without going through the gateway at all.
+ */
+export function isGatewayPayloadOversized(payload: JsonRecord): boolean {
+  return estimateGatewayInputTokens(payload) > MAX_INPUT_TOKENS;
 }
