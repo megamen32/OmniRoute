@@ -415,6 +415,7 @@ export class ZcodeExecutor extends BaseExecutor {
       );
     }
     const client = this.createClient();
+    let nativeQuotaScope = false;
     try {
       const workspace = {
         workspacePath: resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd()),
@@ -469,6 +470,9 @@ export class ZcodeExecutor extends BaseExecutor {
             : undefined;
         request.maxOutputTokens = Math.min(callerMax ?? nativeMaxTokens, nativeMaxTokens);
       }
+      // Scope quota evidence to this native Coding Plan inference RPC.
+      nativeQuotaScope = [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID].includes(selection.providerId)
+        && /^glm-/i.test(resolution.model);
       const result = asRecord(
         await withAbort(
           client.call("zcode-agent", "generateWorkspaceText", [
@@ -499,6 +503,26 @@ export class ZcodeExecutor extends BaseExecutor {
       input.log?.warn?.("ZCODE", message);
       // No stream has started: retain a real HTTP error, not a 200 error-only SSE
       // that the readiness guard rewrites into STREAM_EARLY_EOF.
+      const nativeError = asRecord(error);
+      const data = asRecord(nativeError.data);
+      const details = [nativeError, data, asRecord(data.error), asRecord(nativeError.cause),
+        asRecord(nativeError.response), asRecord(data.response)];
+      const contradictoryError = details.some((detail) => {
+        const code = typeof detail.code === "string" ? detail.code : "";
+        const name = typeof detail.name === "string" ? detail.name : "";
+        return /auth|unauthor|forbidden|network|econn|etimed|timeout|abort|cancel|bad_gateway|service_unavailable|internal_error/i.test(`${code} ${name}`)
+          || [detail.status, detail.statusCode, detail.httpStatus].some((status) =>
+            Number.isInteger(Number(status)) && Number(status) >= 400 && Number(status) <= 599 && Number(status) !== 429);
+      });
+      const exactQuota = nativeQuotaScope && !contradictoryError && !input.signal?.aborted
+        && /^\[1310\]\[Weekly\/Monthly Limit Exhausted(?:\. Your limit will reset at [^\]\r\n]+)?\](?:\[[A-Za-z0-9_-]+\])?$/i.test((error instanceof Error ? error.message : String(error)));
+      if (exactQuota) {
+        // This is terminal provider quota evidence, not proof that the native
+        // input was never accepted. Do not attach pre-admission/replay flags.
+        return errorResponse(429, message, {
+          type: "rate_limit_error", code: "insufficient_quota", reason: "quota_exhausted",
+        });
+      }
       return errorResponse(input.signal?.aborted ? 499 : 502, message);
     } finally {
       await client.close().catch(() => undefined);
