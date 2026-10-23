@@ -16,11 +16,11 @@ credential that comes back is written into that same local profile.
 
 ## Transports
 
-| Transport | What it does | When it is used |
-| --- | --- | --- |
-| `gateway` (default) | One call to the managed MiniMax subscription gateway. It speaks the native tool protocol, so a request that carries client tools comes back as OpenAI `tool_calls`. **No fallback**: a failing gateway answers with the status of the failure and names the transport — `502` when the gateway could not be reached, `401` when the credential is missing or dead, `500` when the failure is ours. | Every request. |
-| `cli` | Runs the locally installed MiniMax Code CLI (`mcode exec --output-format stream-json`) in the lightweight conversation profile — or on the shared agent below, when `MINIMAX_CODE_SHARED_AGENT` is on. | Opt-in (`MINIMAX_CODE_TRANSPORT=cli`). |
-| `auto` | Requests with client tools to the gateway, plain chat to the CLI. | Opt-in (`MINIMAX_CODE_TRANSPORT=auto`). |
+| Transport           | What it does                                                                                                                                                                                                                                                                                                                                                                                       | When it is used                         |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `gateway` (default) | One call to the managed MiniMax subscription gateway. It speaks the native tool protocol, so a request that carries client tools comes back as OpenAI `tool_calls`. **No fallback**: a failing gateway answers with the status of the failure and names the transport — `502` when the gateway could not be reached, `401` when the credential is missing or dead, `500` when the failure is ours. | Every request.                          |
+| `cli`               | Runs the locally installed MiniMax Code CLI (`mcode exec --output-format stream-json`) in the lightweight conversation profile — or on the shared agent below, when `MINIMAX_CODE_SHARED_AGENT` is on.                                                                                                                                                                                             | Opt-in (`MINIMAX_CODE_TRANSPORT=cli`).  |
+| `auto`              | Requests with client tools to the gateway, plain chat to the CLI.                                                                                                                                                                                                                                                                                                                                  | Opt-in (`MINIMAX_CODE_TRANSPORT=auto`). |
 
 The gateway transport has **no fallback**: a request that cannot be answered
 by the gateway fails with the status of the failure and names the transport. The local CLI stays
@@ -95,24 +95,64 @@ When the profile holds several accounts, the provider uses the record with
 the newest generation — the one the CLI itself refreshes. Pin a specific
 record with `MINIMAX_CODE_AUTH_RECORD` (the record key inside `auth.json`).
 
-## The gateway has its own input ceiling
+## The two transports have different ceilings
 
-The two transports do not have the same limits. The local MiniMax Code
-transport runs the models with their full context (1M for
-`MiniMax-M3.1-Flash`, 512k for `MiniMax-M3`), and no OmniRoute setting
-lowers it.
+The model catalog the MiniMax Code product ships declares a context window
+of 512000 tokens for `MiniMax-M3` and `MiniMax-M3.1-Flash`, and offers a
+second, larger window of 1000000 tokens that the catalog hints as
+`higher_usage` — it costs more of the plan. The managed gateway answers in
+the larger window: a request of 1024056 input tokens was answered with 200
+in 42.8 s, one of 1024072 tokens in 34.5 s, and a request of ~2.05M tokens
+was refused with `context window exceeds limit (2013)` in 6.3 s
+(2026-10-23).
 
-The managed gateway transport has a ceiling of its own. A request above
-`MINIMAX_CODE_MAX_INPUT_TOKENS` (200000 by default) is refused locally
-with a 413, because the gateway answers such a request with
-`limit_exceeded` after minutes of work, and that failure locks the model
-out of every fallback combo it belongs to. The refusal is request-scoped:
-it says nothing about the health of the model, which is why it answers 413
-and not 400.
+The managed gateway transport therefore refuses a request above the window
+of the gateway. `MINIMAX_CODE_MAX_INPUT_TOKENS` (1000000 by default) is
+refused locally with a 413. The refusal is request-scoped: it says nothing
+about the health of the model, which is why it answers 413 and not 400 —
+a 400 with a model scope is classified as a model failure and locks the
+model out of every fallback combo it belongs to. The refusal of the gateway
+itself (`context window exceeds limit`) is answered with a 413 for the same
+reason.
 
-Raise the ceiling only for a deployment whose gateway accepts more than
-the default. A request that is too large for the gateway transport does
-not become valid by raising the number.
+The local CLI transport has a lower ceiling, 200000 estimated input tokens.
+The CLI adds its own agent scaffolding to the prompt, so a request of
+~322k input tokens ran there for 236 s and came back as `limit_exceeded`
+(incident 2026-10-21). That error trips the in-memory model lockout, so
+the local transport refuses such a request with a fast 413 instead.
+
+`MINIMAX_CODE_CONTEXT_WINDOW` narrows the request to the window the
+catalog declares as the default of the models (512000) — the plan counts
+less of a request that runs in the narrower window. Without it the gateway
+runs in the larger window it answers in anyway. `MINIMAX_CODE_MAX_INPUT_TOKENS`
+lowers the ceiling of the managed gateway; it cannot raise it above the
+window.
+
+## The effort level
+
+The MiniMax Code product lets a model reason at different levels. The model
+catalog it ships declares them for `MiniMax-M3.1-Flash`:
+`effortOptions = ['default', 'low', 'medium', 'high', 'xhigh', 'max']`, where
+`default` means "let the provider decide". The level changes how much the
+model reasons: on 2026-10-23 a request of `low` was answered with 3 output
+tokens and no thinking tokens, `medium` with 7 thinking tokens, `xhigh` and
+`max` with 15.
+
+A request names the level the way its client speaks: `reasoning_effort` (the
+OpenAI field), `output_config.effort` (the Anthropic field) or
+`reasoning.effort`. `MINIMAX_CODE_EFFORT` pins the level of a deployment, and
+the level of the request wins over it. `default` is never sent — the model
+then reasons the way it decides by itself — and a level the catalog does not
+offer is dropped instead of being forwarded.
+
+The level travels on every transport: the managed gateway takes it as the
+`effort` field of `output_config` of the request, the local CLI takes it as
+`--effort <level>`, and the shared agent takes it as the `thinkingEffort`
+option of the session.
+
+`MiniMax-M3` declares no levels in the catalog — its thinking is switchable
+instead — so a level asked for that model is dropped: the CLI refuses
+`--effort` for a model without levels.
 
 ## The gateway endpoint
 
@@ -215,9 +255,9 @@ question.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `MiniMax Code auth profile not found — run 'mcode login' first` | The profile is not where the provider looks. | `mcode login`, or set `MINIMAX_CODE_PROFILE_DIR` / `MINIMAX_CODE_AUTH_FILE`. A CN account needs `MINIMAX_CODE_REGION=cn`. |
-| `401` on a request | The credential is missing, expired, or the token refresh was refused. | `mcode login`, or sign in from the provider page. |
-| `502` on a request | The gateway could not be reached, or the request carries client tools on the CLI transport, which cannot execute them. | Check the gateway URL and the run log; the message names the transport. `MINIMAX_CODE_TRANSPORT=cli` answers a plain chat turn through the local CLI. |
-| `400` on a CLI run in the `standard` context | The host tools are not allowed. | `MINIMAX_CODE_ALLOW_HOST_TOOLS=true`, or use the gateway transport. |
+| Symptom                                                         | Cause                                                                                                                  | Fix                                                                                                                                                   |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MiniMax Code auth profile not found — run 'mcode login' first` | The profile is not where the provider looks.                                                                           | `mcode login`, or set `MINIMAX_CODE_PROFILE_DIR` / `MINIMAX_CODE_AUTH_FILE`. A CN account needs `MINIMAX_CODE_REGION=cn`.                             |
+| `401` on a request                                              | The credential is missing, expired, or the token refresh was refused.                                                  | `mcode login`, or sign in from the provider page.                                                                                                     |
+| `502` on a request                                              | The gateway could not be reached, or the request carries client tools on the CLI transport, which cannot execute them. | Check the gateway URL and the run log; the message names the transport. `MINIMAX_CODE_TRANSPORT=cli` answers a plain chat turn through the local CLI. |
+| `400` on a CLI run in the `standard` context                    | The host tools are not allowed.                                                                                        | `MINIMAX_CODE_ALLOW_HOST_TOOLS=true`, or use the gateway transport.                                                                                   |

@@ -11,7 +11,10 @@ import {
   type ProviderCredentials,
 } from "./base.ts";
 import { buildErrorBody, errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
-import { MINIMAX_CODE_MODELS } from "../config/providers/registry/minimax-code/index.ts";
+import {
+  MINIMAX_CODE_EFFORT_LEVELS_BY_MODEL,
+  MINIMAX_CODE_MODELS,
+} from "../config/providers/registry/minimax-code/index.ts";
 import {
   applyGatewayEvent,
   buildGatewayPayload,
@@ -21,6 +24,7 @@ import {
   ensureAccessToken,
   gatewayErrorInBody,
   gatewayErrorStatus,
+  isContextWindowFailure,
   gatewayResultToCompletion,
   GatewayAuthError,
   GatewayStatusError,
@@ -29,6 +33,7 @@ import {
   readAuthProfile,
   refreshAuthProfile,
   resolveAuthFile,
+  resolveEffort,
   resolveGatewayInputLimit,
   type GatewayStreamState,
 } from "./minimaxCodeGateway.ts";
@@ -62,7 +67,14 @@ const MINIMAX_CODE_URL = "minimax-code://gateway";
  * list, and it only belongs there for an outage of the gateway.
  */
 function gatewayFailureStatus(error: unknown): number {
-  if (error instanceof GatewayStatusError) return error.status;
+  if (error instanceof GatewayStatusError) {
+    // A request that does not fit the window of the model is a property of
+    // the request, not a failure of the model. The gateway answers it with a
+    // 400, and a 400 with a model scope locks the model out of the fallbacks
+    // (incident 2026-10-21) — it is answered with a 413 instead.
+    if (isContextWindowFailure(error.message)) return 413;
+    return error.status;
+  }
   if (error instanceof GatewayAuthError) return error.status;
   // The gateway could not be reached: that is an outage of the upstream, and
   // a 502 keeps the model out of the combos while it lasts.
@@ -79,6 +91,51 @@ function isTransportFailure(error: unknown): boolean {
   return /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|socket hang up|network|terminated/i.test(
     message
   );
+}
+
+/**
+ * Ceiling on the estimated input size of one LOCAL CLI request.
+ *
+ * The local transport has a lower ceiling than the managed gateway, and the
+ * reason is the agent, not the model: the CLI adds its own scaffolding (the
+ * system prompt and the host tools) on top of the prompt, so the request
+ * that reaches the model is larger than the one that was sent.
+ *
+ * Incident 2026-10-21: a request of ~322k input tokens ran on this transport
+ * for 236 s and came back as `limit_exceeded`. That error trips the in-memory
+ * model lockout, which took the MiniMax leg out of every combo for ~27
+ * minutes, so a request of that size is refused here with a fast 413.
+ */
+const LOCAL_TRANSPORT_MAX_INPUT_TOKENS = 200_000;
+
+/**
+ * Whether a prompt is too large for the local transport.
+ *
+ * The same estimate the gateway path uses, so both refusals name the same
+ * unit. The local transport sends the prompt as one string, so it is measured
+ * as a single message.
+ */
+export function isLocalRequestOversized(prompt: string): boolean {
+  const estimate = estimateGatewayInputTokens({
+    messages: [{ role: "user", content: prompt }],
+  });
+  return estimate > LOCAL_TRANSPORT_MAX_INPUT_TOKENS;
+}
+
+/**
+ * The effort level one request runs with.
+ *
+ * The catalog declares effort levels for MiniMax-M3.1-Flash only, and the CLI
+ * refuses `--effort` for a model without them ("does not support reasoning
+ * effort selection"), so a level for such a model is dropped here instead of
+ * failing the run.
+ */
+export function resolveModelEffort(model: string, body: JsonRecord): string | undefined {
+  const effort = resolveEffort(body);
+  if (!effort) return undefined;
+  const levels = MINIMAX_CODE_EFFORT_LEVELS_BY_MODEL[model];
+  if (levels && !levels.includes(effort)) return undefined;
+  return effort;
 }
 
 /**
@@ -109,9 +166,7 @@ function cliFailureStatus(message: string): number {
  * same way. Only the statuses that are a property of the request are marked
  * — a 403 or a 429 stay what they are.
  */
-function gatewayFailureClassification(
-  error: unknown
-): { type: string; code?: string } | undefined {
+function gatewayFailureClassification(error: unknown): { type: string; code?: string } | undefined {
   const status = gatewayFailureStatus(error);
   if (status !== 400 && status !== 413 && status !== 422) return undefined;
   return { type: "invalid_request_error" };
@@ -331,6 +386,7 @@ export function buildMinimaxCodeExecArgs(options: {
   permission?: string;
   timeoutMs?: number;
   mode?: string;
+  effort?: string;
   extraArgs?: string[];
 }): string[] {
   const args = [
@@ -350,6 +406,9 @@ export function buildMinimaxCodeExecArgs(options: {
     "--cwd",
     options.cwd,
   ];
+  // The CLI validates the level against the levels its own model catalog
+  // declares for the model and refuses a model that has none.
+  if (options.effort) args.push("--effort", options.effort);
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   if (Number.isFinite(maxSteps) && maxSteps > 0) args.push("--max-steps", String(maxSteps));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
@@ -590,15 +649,10 @@ export async function probeCliVersion(command: string): Promise<string | null> {
     // the child process, and its `stdout` is the readable stream of the
     // child — not the output of the command.
     const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(
-        command,
-        ["--version"],
-        { timeout: 5_000, encoding: "utf8" },
-        (error, out) => {
-          if (error) reject(error);
-          else resolve(String(out));
-        }
-      );
+      execFile(command, ["--version"], { timeout: 5_000, encoding: "utf8" }, (error, out) => {
+        if (error) reject(error);
+        else resolve(String(out));
+      });
     });
     const line = stdout
       .split("\n")
@@ -761,7 +815,11 @@ export class MinimaxCodeExecutor extends BaseExecutor {
   /** Host tools are opt-in: they let a request reach the host machine. */
   private hostToolsAllowed(): boolean {
     const raw = this.options.allowHostTools ?? process.env.MINIMAX_CODE_ALLOW_HOST_TOOLS;
-    return String(raw ?? "").trim().toLowerCase() === "true";
+    return (
+      String(raw ?? "")
+        .trim()
+        .toLowerCase() === "true"
+    );
   }
 
   private resolveModeForRequest(body: JsonRecord): string {
@@ -775,7 +833,8 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     prompt: string,
     mode: string,
     maxSteps: number,
-    signal?: AbortSignal | null
+    signal?: AbortSignal | null,
+    effort?: string
   ): MinimaxCodeRunOptions {
     const cwd = this.resolveCwd();
     const args =
@@ -787,6 +846,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         permission: this.resolvePermission(),
         timeoutMs: this.resolveTimeoutMs(),
         mode,
+        effort,
         extraArgs: this.options.extraArgs,
       });
     return {
@@ -818,7 +878,8 @@ export class MinimaxCodeExecutor extends BaseExecutor {
   /** One turn on the shared agent. */
   private async runSharedAgentTurn(
     options: MinimaxCodeRunOptions,
-    model: string
+    model: string,
+    effort?: string
   ): Promise<MinimaxCodeRunResult> {
     const text = await runMinimaxCodeAcpTurn({
       command: options.command,
@@ -828,6 +889,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       cwd: options.cwd,
       prompt: options.prompt,
       model,
+      effort,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
       env: options.env,
@@ -888,7 +950,11 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       // documented bound.
       const remaining = timeoutMs - (Date.now() - startedAt);
       if (remaining <= 0) throw error;
-      return await callGateway({ ...options, accessToken: refreshed.accessToken, timeoutMs: remaining });
+      return await callGateway({
+        ...options,
+        accessToken: refreshed.accessToken,
+        timeoutMs: remaining,
+      });
     }
   }
 
@@ -901,8 +967,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     return (
       `MiniMax Code request is too large for the managed gateway transport: ` +
       `~${tokens} input tokens (limit ${resolveGatewayInputLimit()}). ` +
-      `Trim the conversation and retry. The local MiniMax Code transport runs ` +
-      `the same models with their full context.`
+      `Trim the conversation and retry.`
     );
   }
 
@@ -931,7 +996,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     const bodyError = gatewayErrorInBody(doc);
     if (bodyError) {
       throw new GatewayStatusError(
-        gatewayErrorStatus(bodyError.type),
+        gatewayErrorStatus(bodyError.type, bodyError.message),
         `MiniMax gateway error: ${bodyError.message}`
       );
     }
@@ -1077,9 +1142,10 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       this.options.runner ??
       (this.sharedAgentEnabled()
         ? (runOptions: MinimaxCodeRunOptions) =>
-            this.runSharedAgentTurn(runOptions, resolution.model)
+            this.runSharedAgentTurn(runOptions, resolution.model, effort)
         : runMinimaxCodeExec);
     const mode = this.resolveModeForRequest(body);
+    const effort = resolveModelEffort(resolution.model, body);
     const clientTools = Array.isArray(body.tools) ? body.tools : [];
     const wantsTools = clientTools.length > 0;
     const transport = this.resolveTransport(wantsTools);
@@ -1094,10 +1160,25 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     input.log?.info?.(
       "MINIMAX_CODE",
       `run started model=${resolution.model} transport=${transport} mode=${mode}` +
+        // The level of the reasoning, when the request named one.
+        (effort ? ` effort=${effort}` : "") +
         // The step budget belongs to the CLI run; the gateway has no steps.
         (transport === "cli" ? ` maxSteps=${maxSteps}` : "") +
         ` clientTools=${clientTools.length} cwd=${this.resolveCwd()}`
     );
+
+    if (transport === "cli" && isLocalRequestOversized(prompt)) {
+      // The local transport would run the request for minutes and answer
+      // `limit_exceeded`, which locks the model out of the fallbacks. A
+      // request-scoped refusal answers with a fast 413 instead.
+      const message =
+        `MiniMax Code request is too large for the local transport: ` +
+        `~${estimateGatewayInputTokens({ messages: [{ role: "user", content: prompt }] })} ` +
+        `input tokens (limit ${LOCAL_TRANSPORT_MAX_INPUT_TOKENS}). ` +
+        `Trim the conversation and retry.`;
+      input.log?.warn?.("MINIMAX_CODE", message);
+      return errorResponse(413, message);
+    }
 
     if (transport === "gateway") {
       try {
@@ -1178,7 +1259,14 @@ export class MinimaxCodeExecutor extends BaseExecutor {
                 )
               );
               await runner({
-                ...this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal),
+                ...this.buildRunOptions(
+                  resolution.model,
+                  prompt,
+                  mode,
+                  maxSteps,
+                  input.signal,
+                  effort
+                ),
                 onDelta: (delta) => {
                   controller.enqueue(
                     encoder.encode(
@@ -1220,7 +1308,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
 
     try {
       const result = await runner(
-        this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal)
+        this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal, effort)
       );
       return completionResponse(resolution.model, prompt, result.text, result.usage);
     } catch (error) {

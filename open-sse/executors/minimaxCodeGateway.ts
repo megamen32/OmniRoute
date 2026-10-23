@@ -22,23 +22,44 @@ import { resolvePublicCred } from "../utils/publicCreds.ts";
 const GATEWAY_URL = "https://agent.minimax.io/mavis/api/v1/llm/v1/messages";
 const DEFAULT_MAX_TOKENS = 8192;
 /**
- * Ceiling on the estimated input size of one MANAGED GATEWAY request.
+ * The context window of the managed gateway.
  *
- * This is the ceiling of the gateway transport, not of the model: the local
- * MiniMax Code transport runs the same models with their full context
- * (1M for MiniMax-M3.1-Flash, 512k for MiniMax-M3) and has no such guard.
+ * The model catalog the MiniMax Code product ships declares 512000 for
+ * MiniMax-M3 and MiniMax-M3.1-Flash and offers 1000000 as a second window,
+ * behind the `higher_usage` hint — the larger window costs more of the plan.
+ * The gateway answers within the larger window: a request of 1024056 input
+ * tokens was answered with 200 in 42.8 s (MiniMax-M3.1-Flash) and one of
+ * 1024072 tokens with 200 in 34.5 s (MiniMax-M3) on 2026-10-23, while a
+ * request of ~2.05M tokens was refused with `context window exceeds limit
+ * (2013)` in 6.3 s.
  *
- * Incident 2026-10-21: a request with ~322k input tokens was accepted by the
- * managed gateway, ran for 236s and came back as `limit_exceeded`. That error
- * is what trips the in-memory model lockout in the combo fallback, which took
- * the MiniMax leg out of every combo for ~27 minutes. A request that large is
- * never useful on this transport, so it is refused locally with a fast
- * 413 instead of being forwarded.
- *
- * The value is an operator knob: a deployment whose gateway accepts more can
- * raise it without a code change.
+ * The 200000 ceiling this file used to carry came from a failure of the LOCAL
+ * transport and refused requests the gateway answers.
  */
-const DEFAULT_MAX_INPUT_TOKENS = 200_000;
+export const MAX_CONTEXT_WINDOW = 1_000_000;
+
+/**
+ * The window the catalog declares as the default of the models.
+ *
+ * Asking for it narrows the request and the plan counts less of it, so it is
+ * the setting for a deployment whose plan charges by the window.
+ */
+export const CATALOG_DEFAULT_CONTEXT_WINDOW = 512_000;
+
+/**
+ * The effort levels the MiniMax Code product offers.
+ *
+ * The model catalog the product ships declares them for MiniMax-M3.1-Flash:
+ * `thinking.effortOptions = ['default', 'low', 'medium', 'high', 'xhigh',
+ * 'max']` with `defaultEffort = 'default'`. The managed gateway takes the
+ * level as the `effort` field of `output_config` of the request — the field
+ * the Anthropic protocol carries — and the level changes how much the model
+ * reasons: on 2026-10-23 a request of 'low' was answered with 3 output
+ * tokens and no thinking tokens, 'medium' with 7 thinking tokens, 'xhigh' and
+ * 'max' with 15.
+ */
+export const MINIMAX_CODE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
 /**
  * Chars per token, per script.
  *
@@ -274,6 +295,21 @@ export function buildGatewayPayload(body: JsonRecord, model: string): JsonRecord
   const topP = Number(body.top_p);
   if (Number.isFinite(topP)) payload.top_p = topP;
 
+  const contextWindow = resolveContextWindow();
+  if (contextWindow < MAX_CONTEXT_WINDOW) {
+    // The deployment asked for the narrower window of the catalog. The
+    // gateway takes it as a field of the request, and the plan counts less
+    // of the request in it.
+    payload.context_window = contextWindow;
+  }
+
+  const effort = resolveEffort(body);
+  if (effort) {
+    // The gateway reads the level of the reasoning as the `effort` field of
+    // `output_config` — the field the Anthropic protocol carries.
+    payload.output_config = { ...asRecord(body.output_config), effort };
+  }
+
   return payload;
 }
 
@@ -347,7 +383,25 @@ export function gatewayErrorInBody(doc: JsonRecord): { type: string; message: st
  * nothing about the model: the answer is a 500, which leaves the model in
  * place, while a 502 would take it out of every combo of the instance.
  */
-export function gatewayErrorStatus(type: string): number {
+/**
+ * The vocabulary of a request that does not fit the window of the model.
+ *
+ * The gateway answers such a request with a 400 and `invalid params, context
+ * window exceeds limit (2013)` — fast, in seconds. A 400 with a model scope
+ * is classified as a model failure and locks the model out of the fallbacks,
+ * so the refusal is answered with a 413: it says nothing about the health of
+ * the model.
+ */
+const CONTEXT_WINDOW_ERROR =
+  /context window exceeds limit|prompt is too long|maximum context length|input is too long|context[_ ]length[_ ]exceeded|model_context_window_exceeded|too many tokens|token limit exceeded|exceeds the maximum allowed input length|exceeded model token limit/i;
+
+/** Whether a refusal of the gateway is a request that does not fit the window. */
+export function isContextWindowFailure(message: string): boolean {
+  return CONTEXT_WINDOW_ERROR.test(message);
+}
+
+export function gatewayErrorStatus(type: string, message?: string): number {
+  if (message && isContextWindowFailure(message)) return 413;
   if (/invalid_request|not_found_error|request_too_large|permission_error/i.test(type)) return 400;
   if (/rate_limit|quota|overloaded/i.test(type)) return 429;
   return 500;
@@ -502,7 +556,9 @@ export async function readAuthProfile(path: string): Promise<MinimaxAuthProfile 
  */
 export async function readStateGeneration(path: string): Promise<number | null> {
   try {
-    const state = asRecord(JSON.parse(await readFile(join(dirname(path), "auth-state.json"), "utf8")));
+    const state = asRecord(
+      JSON.parse(await readFile(join(dirname(path), "auth-state.json"), "utf8"))
+    );
     return typeof state.generation === "number" ? state.generation : null;
   } catch {
     return null;
@@ -719,11 +775,7 @@ function resolveTargetRecordKey(records: JsonRecord): string {
  * behind the record that replaces it: the runtime reads it only when the
  * newer credential does not work.
  */
-function keepPreviousCredential(
-  records: JsonRecord,
-  key: string,
-  record: JsonRecord
-): boolean {
+function keepPreviousCredential(records: JsonRecord, key: string, record: JsonRecord): boolean {
   const accessToken = asString(record.accessToken);
   if (!accessToken) return false;
   const backupKey = `${key}${PREVIOUS_CREDENTIAL_SUFFIX}`;
@@ -810,9 +862,7 @@ export async function ensureAccessToken(options: EnsureTokenOptions = {}): Promi
     // model out of every combo of the instance for half an hour — for every
     // session, not only for the one that needed the credential. The answer
     // is 401: the operator has to sign in, the model itself is fine.
-    throw new GatewayAuthError(
-      "MiniMax Code auth profile not found — run `mcode login` first"
-    );
+    throw new GatewayAuthError("MiniMax Code auth profile not found — run `mcode login` first");
   }
   const now = options.now ?? Date.now();
   let lastError: unknown = null;
@@ -1243,16 +1293,53 @@ export function estimateGatewayInputTokens(payload: JsonRecord): number {
 }
 
 /**
+ * The effort level one request asks for.
+ *
+ * A client names the level the Anthropic way (`output_config.effort`), the
+ * OpenAI way (`reasoning_effort`) or the nested way (`reasoning.effort`); a
+ * deployment pins a default with `MINIMAX_CODE_EFFORT`. 'default' means
+ * "let the provider decide" and is not sent at all, and a level the catalog
+ * does not offer is dropped instead of being forwarded as a field the
+ * gateway would answer with a surprise.
+ */
+export function resolveEffort(body: JsonRecord): string | undefined {
+  const raw =
+    asString(asRecord(body.output_config).effort) ||
+    asString(body.reasoning_effort) ||
+    asString(asRecord(body.reasoning).effort) ||
+    asString(process.env.MINIMAX_CODE_EFFORT);
+  const effort = raw.trim().toLowerCase();
+  if (!effort || effort === "default" || effort === "none" || effort === "off") return undefined;
+  return MINIMAX_CODE_EFFORT_LEVELS.includes(effort) ? effort : undefined;
+}
+
+/**
+ * The context window this deployment asks the gateway for.
+ *
+ * `MINIMAX_CODE_CONTEXT_WINDOW` narrows the request to the window the catalog
+ * declares as the default of the models (512000). Without it the gateway runs
+ * in the larger window it answers in anyway (1000000). A value that is
+ * neither of the two is ignored, so a typo cannot ask for a window the model
+ * does not have.
+ */
+export function resolveContextWindow(): number {
+  const raw = Number(process.env.MINIMAX_CODE_CONTEXT_WINDOW);
+  if (raw === CATALOG_DEFAULT_CONTEXT_WINDOW) return CATALOG_DEFAULT_CONTEXT_WINDOW;
+  return MAX_CONTEXT_WINDOW;
+}
+
+/**
  * The input ceiling of the managed gateway transport.
  *
- * `MINIMAX_CODE_MAX_INPUT_TOKENS` overrides the default for a deployment
- * whose gateway accepts more. A value that is not a positive number falls
- * back to the default instead of disabling the guard.
+ * The ceiling is the context window of the gateway, and
+ * `MINIMAX_CODE_MAX_INPUT_TOKENS` lowers it for a deployment that wants a
+ * stricter refusal. It cannot raise it above the window of the gateway.
  */
 export function resolveGatewayInputLimit(): number {
+  const window = resolveContextWindow();
   const raw = Number(process.env.MINIMAX_CODE_MAX_INPUT_TOKENS);
-  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-  return DEFAULT_MAX_INPUT_TOKENS;
+  if (Number.isFinite(raw) && raw > 0) return Math.min(Math.floor(raw), window);
+  return window;
 }
 
 /**
