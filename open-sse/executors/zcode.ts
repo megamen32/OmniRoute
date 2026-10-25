@@ -18,6 +18,24 @@ const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const ZCODE_MODEL_ALLOWLIST = new Set(ZCODE_MODELS.map((model) => model.id));
 const DEFAULT_ZCODE_MODEL = ZCODE_MODELS[0]?.id || "glm-5.2";
+/**
+ * The official ZCode app-server reports an attempt-level cancellation with the
+ * structured code `model_request_cancelled` and the message
+ * "Model request was cancelled." (its ModelRequestCancelled error shape).
+ * The request itself was fine — the ZCode server dropped THIS attempt while
+ * other ZCode requests keep succeeding in parallel — so the failure must not
+ * be recorded against the model (lockout) or the provider (breaker / cooldown).
+ */
+const ZCODE_REQUEST_CANCELLED_CODE = "model_request_cancelled";
+const ZCODE_REQUEST_CANCELLED_MESSAGE = "Model request was cancelled.";
+/**
+ * Request-scoped marker attached to a cancelled attempt so every downstream
+ * resilience consumer (combo model lockout, provider circuit breaker, provider
+ * cooldown, connection cooldown) classifies it as request-scoped instead of as
+ * an upstream failure. Registered in REQUEST_SCOPED_UPSTREAM_ERROR_CODES
+ * (open-sse/services/combo/comboPredicates.ts).
+ */
+const UPSTREAM_REQUEST_CANCELLED_CODE = "upstream_request_cancelled";
 type JsonRecord = Record<string, unknown>;
 type ZcodeCommand = { command: string; args: string[] };
 type ZcodeModelResolution = { ok: true; model: string } | { ok: false; error: string };
@@ -387,6 +405,27 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Whether a native failure is the ZCode server's attempt-level cancellation.
+ *
+ * Matched NARROWLY and POSITIVELY — the server's own structured code
+ * (`model_request_cancelled`) or its exact cancellation sentence. A broad
+ * "cancel" substring would also catch unrelated conditions the server reports
+ * (e.g. the transport-level "Request was cancelled." DOMException, or the
+ * protocol's own "ZCode RPC request canceled"), which are NOT model-request
+ * cancellations and must keep today's behaviour.
+ */
+export function isZcodeRequestCancelled(error: unknown): boolean {
+  if (errorText(error).trim() === ZCODE_REQUEST_CANCELLED_MESSAGE) return true;
+  const nativeError = asRecord(error);
+  const data = asRecord(nativeError.data);
+  return [nativeError, data, asRecord(data.error)].some(
+    (detail) =>
+      typeof detail.code === "string" &&
+      detail.code.trim().toLowerCase() === ZCODE_REQUEST_CANCELLED_CODE
+  );
+}
+
 async function prepareZcodeRequest(
   body: unknown,
   model: string,
@@ -528,6 +567,22 @@ export class ZcodeExecutor extends BaseExecutor {
           type: "rate_limit_error",
           code: "insufficient_quota",
           reason: "quota_exhausted",
+        });
+      }
+      if (isZcodeRequestCancelled(error)) {
+        // The ZCode server cancelled THIS attempt (the request itself was
+        // fine; other ZCode requests keep succeeding in parallel). It says
+        // nothing about the model or the provider, so the failure must stay
+        // request-scoped: no model lockout, no provider circuit-breaker
+        // failure, no provider cooldown.
+        //
+        // Keep the status at 502 (never 499): 499 means "client disconnected"
+        // and STOPS the whole combo loop (#1681), turning a fall-over to the
+        // next leg into a failed request. 499 stays reserved for our own
+        // client-side abort, where nobody is listening anymore.
+        return errorResponse(input.signal?.aborted ? 499 : 502, message, {
+          type: UPSTREAM_REQUEST_CANCELLED_CODE,
+          code: UPSTREAM_REQUEST_CANCELLED_CODE,
         });
       }
       return errorResponse(input.signal?.aborted ? 499 : 502, message);

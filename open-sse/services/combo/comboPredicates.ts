@@ -282,6 +282,14 @@ const REQUEST_SCOPED_UPSTREAM_ERROR_CODES: Record<string, true> = {
   context_window_exceeded: true,
   upstream_empty_response: true,
   upstream_response_failed: true,
+  // The upstream cancelled THIS attempt (the request itself was fine, the
+  // provider is healthy — other requests to the same provider succeed in
+  // parallel). The ZCode app-server reports it as `model_request_cancelled`
+  // / "Model request was cancelled."; the executor re-tags it as
+  // `upstream_request_cancelled` so every resilience consumer below sees one
+  // request-scoped marker: no model lockout, no provider circuit-breaker
+  // failure, no provider cooldown, and no same-connection target skip.
+  upstream_request_cancelled: true,
   // Local combo per-target timer (targetTimeoutRunner) — not a connection health signal.
   combo_target_timeout: true,
   // Local limiter queue-capacity codes — not a provider/connection health signal.
