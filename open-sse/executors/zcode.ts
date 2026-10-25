@@ -11,6 +11,7 @@ import {
 import { ZcodeAppServerClient, type ZcodeClientLike } from "./zcodeProtocol.ts";
 import { errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
 import { MAX_CURSOR_IMAGES, resolveCursorImages } from "../utils/cursorImages.ts";
+import { isDraining } from "../../src/lib/gracefulShutdown.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
 const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
@@ -530,7 +531,13 @@ export class ZcodeExecutor extends BaseExecutor {
           reason: "quota_exhausted",
         });
       }
-      return errorResponse(input.signal?.aborted ? 499 : 502, message);
+      // A graceful shutdown disposes the ZCode protocol client while requests are
+      // still in flight, so the upstream model is never actually asked — the
+      // failure is self-inflicted, not evidence about the model's health. Answer
+      // 499 (client_disconnected), like an aborted caller does: 499 is in neither
+      // the model-lockout error-code list nor the transient-retry list, so it can
+      // neither lock the model out nor be retried as an upstream fault.
+      return errorResponse(input.signal?.aborted || isDraining() ? 499 : 502, message);
     } finally {
       await client.close().catch(() => undefined);
     }
