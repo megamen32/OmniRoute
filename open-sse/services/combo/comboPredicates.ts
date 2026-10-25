@@ -209,6 +209,24 @@ export function shouldSkipForPredictedTtft(
 const PROVIDER_BREAKER_FAILURE_STATUSES = new Set([408, 500, 502, 503, 504]);
 
 /**
+ * True while the instance is draining (graceful shutdown).
+ *
+ * A graceful shutdown tears provider clients down while requests are still in
+ * flight, so the resulting 5xx is evidence about OUR shutdown — not about the
+ * provider's or the model's health. Resilience state (the model lockout, the
+ * whole-provider circuit breaker, the provider cooldown tracker) must never
+ * record it: a self-inflicted teardown would otherwise lock a healthy provider
+ * or model out of every later request, for minutes.
+ *
+ * This is the single seam for that policy in the combo layer — the model
+ * lockout predicate and both provider-level records read it, so they cannot
+ * drift apart. The drain flag is read live on every call — it never latches.
+ */
+export function isShutdownDrainActive(): boolean {
+  return isDraining();
+}
+
+/**
  * Decide whether a failed combo target should record a whole-provider circuit-breaker
  * failure (#1731 / #2743 gap-d). This is the consumer side of `skipProviderBreaker`:
  *
@@ -360,7 +378,7 @@ export function shouldRecordModelLockoutForComboFailure(
   // flight. The resulting failure is evidence about OUR shutdown, not about the
   // model's health, so it must never lock the model out of every later combo.
   // The drain flag is read live on every call — it never latches.
-  if (isDraining()) return false;
+  if (isShutdownDrainActive()) return false;
   if (!requestScopedFailure) return true;
   return isComboTargetTimeoutFailure(error);
 }
