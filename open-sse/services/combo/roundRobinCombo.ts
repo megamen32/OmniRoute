@@ -102,6 +102,7 @@ import {
   getExhaustedTargetSkipReason,
   requestScopedReplayKey,
   resolvePersistedConnectionCooldownSkipReason,
+  isShutdownDrainActive,
 } from "./comboPredicates.ts";
 import { handlePreContentStreamRetry } from "./executeTargetClassify.ts";
 import {
@@ -1254,7 +1255,12 @@ export async function handleRoundRobinCombo({
             !(
               (result.status === 500 || result.status === 429) &&
               hasPerModelQuota(provider, rawModel)
-            )
+            ) &&
+            // Same rationale as the provider breaker in executeTargetAttempt.ts:
+            // a failure raised by our own shutdown must not cool the provider
+            // down for every later request. The drain flag is read live on
+            // every call — it never latches.
+            !isShutdownDrainActive()
           ) {
             recordProviderCooldown(
               provider,

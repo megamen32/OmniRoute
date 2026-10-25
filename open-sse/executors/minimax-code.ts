@@ -38,6 +38,7 @@ import {
   type GatewayStreamState,
 } from "./minimaxCodeGateway.ts";
 import { runMinimaxCodeAcpTurn } from "./minimaxCodeAcp.ts";
+import { isDraining } from "../../src/lib/gracefulShutdown.ts";
 
 /**
  * MiniMax Code provider.
@@ -83,6 +84,34 @@ function gatewayFailureStatus(error: unknown): number {
   // It says nothing about the health of the model, and a 502 would lock the
   // model out of every combo of the instance for half an hour.
   return 500;
+}
+
+/**
+ * The status a failure of this executor is answered with while the instance
+ * is draining.
+ *
+ * A graceful shutdown tears the transport down under the requests that are
+ * still in flight, so the failure is evidence about OUR shutdown, not about
+ * the health of the provider. A 5xx says the opposite: it is in the
+ * model-lockout list and in the provider-breaker list, and it is not exempt
+ * from the connection cooldown — so the account is written as `unavailable`
+ * with a `rateLimitedUntil` into the `provider_connections` table, a state
+ * that outlives the restart. The shutdown the operator asked for must not
+ * cost the account its health.
+ *
+ * 499 is the answer an aborted caller gets, and it carries
+ * `client_disconnected`, which the connection-cooldown policy already exempts
+ * (`shouldSkipConnDisable`) — so the account is not poisoned. It is in neither
+ * the model-lockout nor the provider-breaker status list, so it can neither
+ * lock the model out nor open the provider circuit.
+ *
+ * A refusal that belongs to the request (a 4xx of the gateway) keeps its own
+ * status: that answer is about the request, not about the shutdown.
+ *
+ * The drain flag is read live on every call — it never latches.
+ */
+function drainAwareFailureStatus(status: number): number {
+  return status >= 500 && isDraining() ? 499 : status;
 }
 
 /** A failure of the HTTP transport itself, not of our code. */
@@ -1204,7 +1233,11 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         input.log?.warn?.("MINIMAX_CODE", detail);
         // The failure happens before the stream is opened, so the request
         // answers with a real status instead of an error inside a 200 stream.
-        return errorResponse(status, detail, gatewayFailureClassification(error));
+        return errorResponse(
+          drainAwareFailureStatus(status),
+          detail,
+          gatewayFailureClassification(error)
+        );
       }
     }
 
@@ -1284,7 +1317,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
                 error instanceof Error ? error.message : String(error)
               );
               input.log?.warn?.("MINIMAX_CODE", message);
-              const status = cliFailureStatus(message);
+              const status = drainAwareFailureStatus(cliFailureStatus(message));
               controller.enqueue(
                 encoder.encode(
                   `data: ${JSON.stringify(buildErrorBody(status, message))}\n\ndata: [DONE]\n\n`
@@ -1316,7 +1349,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       input.log?.warn?.("MINIMAX_CODE", message);
       // A refusal of the CLI is not an outage of the model: a 502 would
       // lock the model out of the fallbacks for half an hour.
-      return errorResponse(cliFailureStatus(message), message);
+      return errorResponse(drainAwareFailureStatus(cliFailureStatus(message)), message);
     }
   }
 
