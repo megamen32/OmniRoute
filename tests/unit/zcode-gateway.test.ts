@@ -12,6 +12,7 @@ import {
 } from "node:crypto";
 import { executeZcodeGateway, nativeZcodeBody } from "../../open-sse/executors/zcode/gateway.ts";
 import { buildZcodeModelRequest } from "../../open-sse/executors/zcode.ts";
+import { ZCODE_MODELS } from "../../open-sse/config/providers/registry/zcode/index.ts";
 import type { ExecuteInput } from "../../open-sse/executors/base.ts";
 
 const SOURCE = "https://api.z.ai/api/anthropic/v1/messages";
@@ -159,19 +160,37 @@ test("native request maps model, budget and reasoning effort", () => {
   });
 });
 
-test("native request defaults omitted effort to low and preserves explicit levels", () => {
-  for (const effort of ["low", "high", "max"]) {
-    const requestBody = effort === "low" ? body : { ...body, output_config: { effort } },
-      requestInput = { ...input, body: requestBody };
-    assert.equal(
-      (
-        nativeZcodeBody(requestInput, buildZcodeModelRequest(requestBody)).output_config as Record<
-          string,
-          unknown
-        >
-      ).effort,
-      effort
+test("GLM-5.3 models expose low/high/max and preserve effort through the native gateway", () => {
+  for (const id of ["glm-5.3", "glm-5.3-flash"]) {
+    const metadata = ZCODE_MODELS.find((model) => model.id === id);
+    assert.deepEqual(metadata?.supportedThinkingEfforts, ["low", "high", "max"]);
+    const requestInput = { ...input, model: id };
+    for (const [requested, expected] of [
+      ["low", "low"],
+      ["medium", "high"],
+      ["high", "high"],
+      ["max", "max"],
+    ]) {
+      const requestBody = { ...body, reasoning_effort: requested },
+        result = nativeZcodeBody(
+          { ...requestInput, body: requestBody },
+          buildZcodeModelRequest(requestBody)
+        );
+      assert.equal((result.output_config as Record<string, unknown>).effort, expected, id);
+    }
+  }
+});
+
+test("explicit max is not downgraded by a low default in either effort field", () => {
+  for (const requestBody of [
+    { ...body, reasoning_effort: "max", output_config: { effort: "low" } },
+    { ...body, reasoning_effort: "low", output_config: { effort: "max" } },
+  ]) {
+    const result = nativeZcodeBody(
+      { ...input, body: requestBody },
+      buildZcodeModelRequest(requestBody)
     );
+    assert.equal((result.output_config as Record<string, unknown>).effort, "max");
   }
 });
 

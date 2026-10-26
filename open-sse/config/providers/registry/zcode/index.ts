@@ -10,12 +10,13 @@ const GLM_EXECUTOR_EFFORT_ALIASES = new Set([
   "glm-5.2-high",
   "glm-5.2-max",
 ]);
+const ZCODE_GATEWAY_EFFORT_MODELS = new Set(["glm-5.3", "glm-5.3-flash"]);
 
 export const ZCODE_MODELS = GLM_SHARED_MODELS.filter(
   (model) => !GLM_EXECUTOR_EFFORT_ALIASES.has(model.id)
 ).map((model) => ({
   ...model,
-  supportedThinkingEfforts: [],
+  supportedThinkingEfforts: ZCODE_GATEWAY_EFFORT_MODELS.has(model.id) ? ["low", "high", "max"] : [],
   supportsVision: Boolean(model.supportsVision),
 }));
 

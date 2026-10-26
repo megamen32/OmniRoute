@@ -16,6 +16,13 @@ export type ZcodeRequestAuth = { apiKey: string; headers?: Record<string, string
 function record(value: unknown): RecordValue {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : {};
 }
+function normalizeEffort(value: unknown): "low" | "high" | "max" | null {
+  if (value === undefined || value === null) return null;
+  if (value === "none" || value === "low") return "low";
+  if (value === "medium" || value === "high") return "high";
+  if (value === "max") return "max";
+  throw new Error("Invalid ZCode reasoning level");
+}
 function linkConsumerCancellation(response: Response, controller: AbortController): Response {
   if (!response.body) return response;
   const reader = response.body.getReader();
@@ -54,10 +61,17 @@ export function nativeZcodeBody(input: ExecuteInput, request: RecordValue): Reco
         : null;
   if (!model) throw new Error("Native gateway supports the ZCode individual plan GLM-5.3 models");
   const raw = record(input.body),
-    requestedEffort = record(raw.output_config).effort ?? raw.reasoning_effort ?? "low",
-    effort = requestedEffort === "none" ? "low" : requestedEffort;
-  if (!["low", "high", "max"].includes(String(effort)))
-    throw new Error("Invalid ZCode reasoning level");
+    requestedEfforts = [
+      normalizeEffort(raw.reasoning_effort),
+      normalizeEffort(record(raw.output_config).effort),
+    ].filter((effort): effort is "low" | "high" | "max" => effort !== null),
+    // These fields can contain both client intent and a router default. Keep the strongest
+    // explicit level so a default low never downgrades a requested high or max.
+    effort = requestedEfforts.includes("max")
+      ? "max"
+      : requestedEfforts.includes("high")
+        ? "high"
+        : (requestedEfforts[0] ?? "low");
   const messages: RecordValue[] = [],
     system: RecordValue[] = [];
   for (const value of request.messages as unknown[]) {
