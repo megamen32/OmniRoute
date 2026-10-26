@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   resolveReasoningControls,
   buildReasoningRequestFields,
+  effortLabel,
   type ReasoningControlSpec,
 } from "../../src/app/(dashboard)/dashboard/playground/components/reasoningControlUtils.ts";
 import { CANONICAL_EFFORT_VALUES } from "../../src/shared/reasoning/effortStandardization.ts";
@@ -57,6 +58,15 @@ const SUPPORTED: ReasoningControlSpec = {
   show: true,
   effortOptions: ["low", "medium", "high", "xhigh"],
 };
+
+test("effortLabel: uses shared Russian names for low, medium and max", () => {
+  assert.deepEqual(
+    ["low", "medium", "max"].map((effort) => effortLabel(effort, "ru")),
+    ["Низкий", "Средний", "Максимальный"]
+  );
+  assert.equal(effortLabel("high", "ru"), "Высокий");
+  assert.equal(effortLabel("medium", "en"), "Medium");
+});
 const HIDDEN: ReasoningControlSpec = { show: false, effortOptions: [] };
 
 test("buildReasoningRequestFields: emits nothing when model does not support thinking", () => {

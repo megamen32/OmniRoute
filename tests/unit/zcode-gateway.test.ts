@@ -160,10 +160,10 @@ test("native request maps model, budget and reasoning effort", () => {
   });
 });
 
-test("GLM-5.3 models expose low/high/max and preserve effort through the native gateway", () => {
+test("GLM-5.3 models expose low/medium/max and preserve native effort through the gateway", () => {
   for (const id of ["glm-5.3", "glm-5.3-flash"]) {
     const metadata = ZCODE_MODELS.find((model) => model.id === id);
-    assert.deepEqual(metadata?.supportedThinkingEfforts, ["low", "high", "max"]);
+    assert.deepEqual(metadata?.supportedThinkingEfforts, ["low", "medium", "max"]);
     const requestInput = { ...input, model: id };
     for (const [requested, expected] of [
       ["low", "low"],

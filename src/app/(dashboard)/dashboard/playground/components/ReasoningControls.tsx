@@ -8,9 +8,10 @@
 
 import type { PlaygroundParams } from "./ParamSliders";
 import type { ReasoningControlSpec } from "./reasoningControlUtils";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import Select from "@/shared/components/Select";
 import Toggle from "@/shared/components/Toggle";
+import { effortLabel } from "./reasoningControlUtils";
 
 interface ReasoningControlsProps {
   spec: ReasoningControlSpec;
@@ -18,13 +19,9 @@ interface ReasoningControlsProps {
   setParams: (params: PlaygroundParams) => void;
 }
 
-/** Human-friendly label for a canonical/tier effort value (e.g. "xhigh" -> "Xhigh"). */
-function effortLabel(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
 export default function ReasoningControls({ spec, params, setParams }: ReasoningControlsProps) {
   const t = useTranslations("playground");
+  const locale = useLocale();
   if (!spec.show) return null;
 
   function update<K extends keyof PlaygroundParams>(key: K, value: PlaygroundParams[K]) {
@@ -58,7 +55,7 @@ export default function ReasoningControls({ spec, params, setParams }: Reasoning
         <option value="">{t("effortDefault")}</option>
         {spec.effortOptions.map((opt) => (
           <option key={opt} value={opt}>
-            {effortLabel(opt)}
+            {effortLabel(opt, locale)}
           </option>
         ))}
       </Select>

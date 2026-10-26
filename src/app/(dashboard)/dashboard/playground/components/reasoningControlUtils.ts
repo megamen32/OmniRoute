@@ -18,6 +18,19 @@ export interface ModelReasoningCapabilities {
   effort_tiers?: unknown;
 }
 
+const RU_EFFORT_LABELS: Record<string, string> = {
+  low: "Низкий",
+  medium: "Средний",
+  high: "Высокий",
+  xhigh: "Очень высокий",
+  max: "Максимальный",
+};
+
+export function effortLabel(value: string, locale: string): string {
+  if (locale.toLowerCase().startsWith("ru")) return RU_EFFORT_LABELS[value] ?? value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 /** What the Playground should render for the current model's reasoning support. */
 export interface ReasoningControlSpec {
   /** Render the effort selector + thinking toggle only when true. */
