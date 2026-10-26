@@ -16,6 +16,7 @@ import { MAX_CURSOR_IMAGES, resolveCursorImages } from "../utils/cursorImages.ts
 import { isDraining } from "../../src/lib/gracefulShutdown.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
+const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
 const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const ZCODE_MODEL_ALLOWLIST = new Set(ZCODE_MODELS.map((model) => model.id));
