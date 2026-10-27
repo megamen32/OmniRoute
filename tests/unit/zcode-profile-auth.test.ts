@@ -41,7 +41,7 @@ async function makeConfig(
           kind: "anthropic",
           options: {
             apiKey: options.startApiKey ?? startKey,
-            baseURL: options.startBaseURL ?? "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+            baseURL: options.startBaseURL ?? "https://zcode.z.ai/api/v1/ultra-zai/anthropic",
           },
         },
       },
@@ -65,7 +65,7 @@ test("Start and Individual resolve to their own endpoint and authorization schem
       {
         plan: "start",
         apiKey: startKey,
-        messagesUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages",
+        messagesUrl: "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages",
         authScheme: "bearer",
       }
     );
@@ -150,7 +150,7 @@ test("profile auth rejects disabled profiles, untrusted origins and malformed St
   }
 
   const wrongOrigin = await makeConfig({
-    startBaseURL: "https://attacker.example/api/v1/zcode-plan/anthropic",
+    startBaseURL: "https://attacker.example/api/v1/ultra-zai/anthropic",
   });
   try {
     await assert.rejects(

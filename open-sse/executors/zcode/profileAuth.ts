@@ -46,9 +46,9 @@ function resolveProfile(providerId: string): {
     return {
       plan: "start",
       configProviderId: ZCODE_START_PLAN_BUILTIN_ID,
-      messagesPath: "/api/v1/zcode-plan/anthropic/v1/messages",
+      messagesPath: "/api/v1/ultra-zai/anthropic/v1/messages",
       expectedOrigin: "https://zcode.z.ai",
-      expectedBasePaths: ["/api/v1/zcode-plan/anthropic"],
+      expectedBasePaths: ["/api/v1/ultra-zai/anthropic"],
       authScheme: "bearer",
     };
   }
