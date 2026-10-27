@@ -48,7 +48,9 @@ function resolveProfile(providerId: string): {
       configProviderId: ZCODE_START_PLAN_BUILTIN_ID,
       messagesPath: "/api/v1/ultra-zai/anthropic/v1/messages",
       expectedOrigin: "https://zcode.z.ai",
-      expectedBasePaths: ["/api/v1/ultra-zai/anthropic"],
+      // Existing local ZCode installations may retain the legacy configured
+      // alias; requests always use the canonical Ultra-ZAI endpoint above.
+      expectedBasePaths: ["/api/v1/ultra-zai/anthropic", "/api/v1/zcode-plan/anthropic"],
       authScheme: "bearer",
     };
   }

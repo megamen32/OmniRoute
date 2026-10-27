@@ -109,6 +109,17 @@ test("Individual profile accepts ZCode's canonical unversioned base URL and appe
   }
 });
 
+test("Start accepts its legacy base URL alias but resolves to the official endpoint", async () => {
+  const legacyBaseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic";
+  const { dir, path } = await makeConfig({ startBaseURL: legacyBaseURL });
+  try {
+    const start = await readZcodePlanGatewayProfile("account:zai-start-plan", path);
+    assert.equal(start.messagesUrl, "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("gateway defaults to Start then Individual while an explicit profile stays pinned", () => {
   assert.deepEqual(resolveZcodeGatewayProviderOrder(), [
     "account:zai-start-plan",
@@ -159,6 +170,18 @@ test("profile auth rejects disabled profiles, untrusted origins and malformed St
     );
   } finally {
     await rm(wrongOrigin.dir, { recursive: true, force: true });
+  }
+
+  const wrongStartPath = await makeConfig({
+    startBaseURL: "https://zcode.z.ai/api/v1/untrusted/anthropic",
+  });
+  try {
+    await assert.rejects(
+      readZcodePlanGatewayProfile("account:zai-start-plan", wrongStartPath.path),
+      /unsupported API origin/
+    );
+  } finally {
+    await rm(wrongStartPath.dir, { recursive: true, force: true });
   }
 
   const malformedToken = await makeConfig({ startApiKey: "not-a-signed-token" });
