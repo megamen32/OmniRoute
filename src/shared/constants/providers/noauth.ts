@@ -116,6 +116,42 @@ export const NOAUTH_PROVIDERS = {
       text: "ZCode runs locally through its native app-server. OmniRoute never receives or stores the Z.ai credential.",
     },
   },
+  "zcode-start": {
+    id: "zcode-start",
+    alias: "zc-start",
+    name: "ZCode Start (GLM Coding Plan)",
+    icon: "terminal",
+    color: "#3B82F6",
+    textIcon: "ZS",
+    website: "https://zcode.z.ai",
+    noAuth: true,
+    hasFree: false,
+    serviceKinds: ["llm"],
+    isLocalCli: false,
+    authHint:
+      "No API key is stored by OmniRoute. This route reads only the separate builtin:zai-start-plan credential from the local ZCode profile.",
+    notice: {
+      text: "ZCode Start is a separate profile and quota. It can be selected explicitly in a combo; credentials are not shared with Individual or GLM API.",
+    },
+  },
+  "zcode-individual": {
+    id: "zcode-individual",
+    alias: "zc-individual",
+    name: "ZCode Individual (GLM Coding Plan)",
+    icon: "terminal",
+    color: "#3B82F6",
+    textIcon: "ZI",
+    website: "https://zcode.z.ai",
+    noAuth: true,
+    hasFree: false,
+    serviceKinds: ["llm"],
+    isLocalCli: false,
+    authHint:
+      "No API key is stored by OmniRoute. This route reads only the separate builtin:zai-coding-plan credential from the local ZCode profile.",
+    notice: {
+      text: "ZCode Individual is a separate profile and quota. It can be selected explicitly in a combo; credentials are not shared with Start or GLM API.",
+    },
+  },
   "minimax-code": {
     id: "minimax-code",
     alias: "mmcode",

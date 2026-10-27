@@ -6,6 +6,10 @@ import {
   zcodeStartProvider,
 } from "../../open-sse/config/providers/registry/zcode/index.ts";
 import { getExecutor } from "../../open-sse/executors/index.ts";
+import {
+  NOAUTH_PROVIDERS,
+  providerAllowsOptionalApiKey,
+} from "../../src/shared/constants/providers.ts";
 
 test("ZCode provider registry exposes a local no-auth GLM Coding Plan backend", () => {
   assert.equal(zcodeProvider.id, "zcode");
@@ -90,4 +94,8 @@ test("ZCode Start and Individual are separate catalog routes for combo quota tra
       ?.supportedThinkingEfforts,
     zcodeProvider.models.find((model) => model.id === "glm-5.3-flash")?.supportedThinkingEfforts
   );
+  assert.equal(NOAUTH_PROVIDERS["zcode-start"].noAuth, true);
+  assert.equal(NOAUTH_PROVIDERS["zcode-individual"].noAuth, true);
+  assert.equal(providerAllowsOptionalApiKey("zcode-start"), true);
+  assert.equal(providerAllowsOptionalApiKey("zcode-individual"), true);
 });

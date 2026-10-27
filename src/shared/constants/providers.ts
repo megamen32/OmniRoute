@@ -31,6 +31,9 @@ export const FREE_APIKEY_PROVIDER_IDS = new Set([
   "auggie",
   // zcode is a local app-server backend; auth stays in the ZCode profile.
   "zcode",
+  // Explicit ZCode subscription routes use their own local credentials and quota identities.
+  "zcode-start",
+  "zcode-individual",
   // MiniMax Code reads its subscription credential from the local MiniMax Code profile.
   "minimax-code",
   // AI Horde works anonymously (`0000000000`) and also accepts a free registered

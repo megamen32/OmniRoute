@@ -98,6 +98,8 @@ const EXCLUDED_NOAUTH_PROVIDERS = [
   "codex-app-server",
   "veoaifree-web",
   "zcode",
+  "zcode-start",
+  "zcode-individual",
 ];
 
 test("fresh install: the emulated-tool-calling no-auth providers are present in the auto-combo pool", async () => {
