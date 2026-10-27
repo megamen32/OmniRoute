@@ -46,7 +46,9 @@ Use the dashboard at `/dashboard/providers` to enable, configure, and test each 
 | `duckduckgo-web` | `ddgw` | DuckDuckGo AI Chat | No-auth | [link](https://duckduckgo.com/duckchat) | No credentials required — DuckDuckGo AI Chat is anonymous and free. | emulated |
 | `uncloseai` | `unc` | UncloseAI | No-auth | [link](https://uncloseai.com) | No auth required. API accepts any non-empty string as key for identification. If older built-in models return 404, use Available Models → Import from /models or Auto-Sync; verified live model: turboderp/Qwen3.8-27B-exl3. | emulated |
 | `veoaifree-web` | `veo-free` | Veo AI Free | No-auth, video | [link](https://veoaifree.com) | No auth required. Rate limited to 6 requests/hour per IP. | — |
-| `zcode` | `zc` | ZCode (GLM Coding Plan) | No-auth | [link](https://zcode.z.ai) | No API key stored by OmniRoute. The local ZCode app-server uses the existing builtin:zai-coding-plan login. | — |
+| `zcode` | `zc` | ZCode (GLM Coding Plan) | Local ZCode profile | [link](https://zcode.z.ai) | Credentials remain in the local ZCode config. Native app-server uses an explicitly selected profile; direct gateway mode tries Start then Individual with separate credentials and falls back only on a pre-stream refusal. | — |
+| `zcode-start` | `zc-start` | ZCode Start | Local ZCode profile | [link](https://zcode.z.ai) | Separate Start Plan credential and quota. Use as the first target in a priority combo. | — |
+| `zcode-individual` | `zc-individual` | ZCode Individual | Local ZCode profile | [link](https://zcode.z.ai) | Separate Individual Plan credential and quota. Use as the second target in a priority combo; GLM API is the third target. | — |
 
 ## OAuth Providers (27)
 

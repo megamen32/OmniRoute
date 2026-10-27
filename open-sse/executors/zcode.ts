@@ -9,15 +9,18 @@ import {
   type ProviderCredentials,
 } from "./base.ts";
 import { ZcodeAppServerClient, type ZcodeClientLike } from "./zcodeProtocol.ts";
-import { executeZcodeGateway } from "./zcode/gateway.ts";
-import { readZcodeIndividualCodingPlanApiKey } from "./zcode/profileAuth.ts";
+import { executeZcodeGatewayWithPlanFallback } from "./zcode/gateway.ts";
+import {
+  resolveZcodeGatewayProviderOrder,
+  ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID,
+} from "./zcode/profileAuth.ts";
 import { errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
 import { MAX_CURSOR_IMAGES, resolveCursorImages } from "../utils/cursorImages.ts";
 import { isDraining } from "../../src/lib/gracefulShutdown.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
 const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
-const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
+const ACCOUNT_PROVIDER_ID = ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID;
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const ZCODE_MODEL_ALLOWLIST = new Set(ZCODE_MODELS.map((model) => model.id));
 const DEFAULT_ZCODE_MODEL = ZCODE_MODELS[0]?.id || "glm-5.2";
@@ -42,6 +45,7 @@ type JsonRecord = Record<string, unknown>;
 type ZcodeCommand = { command: string; args: string[] };
 type ZcodeModelResolution = { ok: true; model: string } | { ok: false; error: string };
 export interface ZcodeExecutorOptions {
+  provider?: string;
   command?: string;
   args?: string[];
   cwd?: string;
@@ -461,7 +465,8 @@ function boundMaxOutputTokens(request: JsonRecord, nativeMaxTokens: number | und
 
 export class ZcodeExecutor extends BaseExecutor {
   constructor(private readonly options: ZcodeExecutorOptions = {}) {
-    super("zcode", { id: "zcode", baseUrl: ZCODE_URL, format: "openai" });
+    const provider = options.provider || "zcode";
+    super(provider, { id: provider, baseUrl: ZCODE_URL, format: "openai" });
   }
   buildUrl(): string {
     return ZCODE_URL;
@@ -483,28 +488,15 @@ export class ZcodeExecutor extends BaseExecutor {
       return errorResponse(400, sanitizeErrorMessage(errorText(error)));
     }
     if (transport === "gateway") {
-      const providerId =
-        this.options.providerId || process.env.ZCODE_PROVIDER_ID || ACCOUNT_PROVIDER_ID;
-      if (providerId !== ACCOUNT_PROVIDER_ID && providerId !== "builtin:zai-coding-plan") {
-        return errorResponse(
-          503,
-          "Direct ZCode streaming currently requires the Individual Coding Plan; Start Plan needs its official host runtime-auth callback."
-        );
-      }
-      let apiKey: string;
-      try {
-        apiKey = await readZcodeIndividualCodingPlanApiKey(providerId);
-      } catch (error) {
-        input.log?.warn?.(
-          "ZCODE_GATEWAY",
-          error instanceof Error ? error.name : "Profile credential unavailable"
-        );
-        return errorResponse(
-          401,
-          "The selected Individual Coding Plan credential is unavailable or its local config is not safely readable."
-        );
-      }
-      return executeZcodeGateway({ ...input, model: resolution.model }, request, { apiKey });
+      const configuredProviderId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
+      const providerIds = this.options.providerId
+        ? [this.options.providerId]
+        : resolveZcodeGatewayProviderOrder(configuredProviderId);
+      return executeZcodeGatewayWithPlanFallback(
+        { ...input, model: resolution.model },
+        request,
+        providerIds
+      );
     }
     const client = this.createClient();
     let nativeQuotaScope = false;

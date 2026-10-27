@@ -7,18 +7,23 @@ import { ensureStreamReadiness } from "../../utils/streamReadiness.ts";
 import { STREAM_READINESS_TIMEOUT_MS } from "../../config/constants.ts";
 import { isDraining } from "../../../src/lib/gracefulShutdown.ts";
 import { resolveSuppressThinkClose, THINKING_MARKER_HEADER } from "../../utils/thinkCloseMarker.ts";
+import { readZcodePlanGatewayProfile, type ZcodeGatewayProfile } from "./profileAuth.ts";
 
 type RecordValue = Record<string, unknown>;
 const ZCODE_STREAM_BUFFER_BYTES = 1024;
-// Official GLM Coding Plan Anthropic API. The executor passes the API key for
-// the explicitly selected Individual profile; this transport never reads a
-// credential file or retries against another profile.
-const GATEWAY_URL = "https://api.z.ai/api/anthropic/v1/messages";
+// The Individual Coding Plan is the backward-compatible default endpoint.
+// Start Plan uses its own ZCode host and Bearer credential.
+const INDIVIDUAL_GATEWAY_URL = "https://api.z.ai/api/anthropic/v1/messages";
 const GATEWAY_HEADERS: Record<string, string> = {
   "content-type": "application/json",
   "anthropic-version": "2023-06-01",
 };
-export type ZcodeRequestAuth = { apiKey: string; headers?: Record<string, string> };
+export type ZcodeRequestAuth = {
+  apiKey: string;
+  messagesUrl?: string;
+  authScheme?: ZcodeGatewayProfile["authScheme"];
+  headers?: Record<string, string>;
+};
 function record(value: unknown): RecordValue {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : {};
 }
@@ -142,6 +147,74 @@ export function nativeZcodeBody(input: ExecuteInput, request: RecordValue): Reco
   };
 }
 
+const PRE_STREAM_PLAN_REFUSALS = new Set([401, 403, 404, 429]);
+
+function responseFromResult(result: ExecutorExecuteResult): Response {
+  return result instanceof Response ? result : result.response;
+}
+
+/**
+ * Use Start first when no profile is explicitly pinned. Only a definitive
+ * pre-stream HTTP refusal can move the request to the separate Individual
+ * credential. Network/5xx/readiness failures are ambiguous and never replayed.
+ */
+export async function executeZcodeGatewayWithPlanFallback(
+  input: ExecuteInput,
+  request: RecordValue,
+  providerIds: string[],
+  resolveProfile: (providerId: string) => Promise<ZcodeGatewayProfile> = readZcodePlanGatewayProfile
+): Promise<ExecutorExecuteResult> {
+  let lastProfileError: unknown;
+  for (let index = 0; index < providerIds.length; index++) {
+    const providerId = providerIds[index];
+    let profile: ZcodeGatewayProfile;
+    try {
+      profile = await resolveProfile(providerId);
+    } catch (error) {
+      lastProfileError = error;
+      if (index + 1 < providerIds.length && !input.signal?.aborted) {
+        input.log?.info?.(
+          "ZCODE_GATEWAY",
+          `${providerId.includes("start-plan") ? "Start" : "Selected"} profile unavailable; checking the next explicitly separate plan`
+        );
+        continue;
+      }
+      return errorResponse(401, "The selected ZCode Coding Plan credential is unavailable.");
+    }
+
+    const result = await executeZcodeGateway(input, request, profile);
+    const response = responseFromResult(result);
+    const isStartProfile = profile.plan === "start";
+    if (
+      isStartProfile &&
+      index + 1 < providerIds.length &&
+      !input.signal?.aborted &&
+      PRE_STREAM_PLAN_REFUSALS.has(response.status)
+    ) {
+      input.log?.warn?.(
+        "ZCODE_GATEWAY",
+        `Start Plan refused before streaming (HTTP ${response.status}); trying the separate Individual profile`
+      );
+      await response.body?.cancel().catch(() => undefined);
+      continue;
+    }
+
+    if (result instanceof Response) return result;
+    return {
+      ...result,
+      transformedBody: {
+        ...(result.transformedBody || {}),
+        zcodePlan: profile.plan,
+      },
+    };
+  }
+
+  if (lastProfileError) {
+    return errorResponse(401, "No enabled ZCode Coding Plan profile is available.");
+  }
+  return errorResponse(401, "No ZCode Coding Plan profile is available.");
+}
+
 export async function executeZcodeGateway(
   input: ExecuteInput,
   request: RecordValue,
@@ -162,12 +235,18 @@ export async function executeZcodeGateway(
     ? AbortSignal.any([input.signal, consumerCancellation.signal])
     : consumerCancellation.signal;
   try {
-    const upstream = await fetch(GATEWAY_URL, {
+    const apiUrl = requestAuth.messagesUrl || INDIVIDUAL_GATEWAY_URL;
+    const authHeaders =
+      requestAuth.authScheme === "bearer"
+        ? { authorization: `Bearer ${apiKey}` }
+        : { "x-api-key": apiKey };
+    const upstream = await fetch(apiUrl, {
       method: "POST",
       headers: {
         ...GATEWAY_HEADERS,
         accept: input.stream ? "text/event-stream" : "application/json",
-        "x-api-key": apiKey,
+        ...(requestAuth.headers || {}),
+        ...authHeaders,
       },
       body: JSON.stringify(body),
       signal,
@@ -223,7 +302,7 @@ export async function executeZcodeGateway(
     response = linkConsumerCancellation(response, consumerCancellation);
     return {
       response,
-      url: GATEWAY_URL,
+      url: apiUrl,
       headers: {},
       transformedBody: {
         model: body.model,

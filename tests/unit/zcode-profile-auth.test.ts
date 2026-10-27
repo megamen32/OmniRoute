@@ -3,12 +3,24 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readZcodeIndividualCodingPlanApiKey } from "../../open-sse/executors/zcode/profileAuth.ts";
+import {
+  readZcodeIndividualCodingPlanApiKey,
+  readZcodePlanGatewayProfile,
+  resolveZcodeGatewayProviderOrder,
+} from "../../open-sse/executors/zcode/profileAuth.ts";
 
-const syntheticKey = "profile-id.synthetic-secret";
+const individualKey = "individual-profile.synthetic-secret";
+const startKey = "header.payload.signature";
 
 async function makeConfig(
-  options: { enabled?: boolean; baseURL?: string; apiKey?: string } = {}
+  options: {
+    individualEnabled?: boolean;
+    individualBaseURL?: string;
+    individualApiKey?: string;
+    startEnabled?: boolean;
+    startBaseURL?: string;
+    startApiKey?: string;
+  } = {}
 ): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), "zcode-profile-auth-"));
   const path = join(dir, "config.json");
@@ -17,11 +29,19 @@ async function makeConfig(
     JSON.stringify({
       provider: {
         "builtin:zai-coding-plan": {
-          enabled: options.enabled ?? true,
+          enabled: options.individualEnabled ?? true,
           kind: "anthropic",
           options: {
-            apiKey: options.apiKey ?? syntheticKey,
-            baseURL: options.baseURL ?? "https://api.z.ai/api/anthropic/v1",
+            apiKey: options.individualApiKey ?? individualKey,
+            baseURL: options.individualBaseURL ?? "https://api.z.ai/api/anthropic/v1",
+          },
+        },
+        "builtin:zai-start-plan": {
+          enabled: options.startEnabled ?? true,
+          kind: "anthropic",
+          options: {
+            apiKey: options.startApiKey ?? startKey,
+            baseURL: options.startBaseURL ?? "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
           },
         },
       },
@@ -31,92 +51,134 @@ async function makeConfig(
   return { dir, path };
 }
 
-test("ZCode gateway auth resolves only the selected Individual Plan profile", async () => {
+test("Start and Individual resolve to their own endpoint and authorization scheme", async () => {
+  const { dir, path } = await makeConfig();
+  try {
+    const start = await readZcodePlanGatewayProfile("account:zai-start-plan", path);
+    assert.deepEqual(
+      {
+        plan: start.plan,
+        apiKey: start.apiKey,
+        messagesUrl: start.messagesUrl,
+        authScheme: start.authScheme,
+      },
+      {
+        plan: "start",
+        apiKey: startKey,
+        messagesUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages",
+        authScheme: "bearer",
+      }
+    );
+
+    const individual = await readZcodePlanGatewayProfile(
+      "account:zai-individual-coding-plan",
+      path
+    );
+    assert.deepEqual(
+      {
+        plan: individual.plan,
+        apiKey: individual.apiKey,
+        messagesUrl: individual.messagesUrl,
+        authScheme: individual.authScheme,
+      },
+      {
+        plan: "individual",
+        apiKey: individualKey,
+        messagesUrl: "https://api.z.ai/api/anthropic/v1/messages",
+        authScheme: "x-api-key",
+      }
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("gateway defaults to Start then Individual while an explicit profile stays pinned", () => {
+  assert.deepEqual(resolveZcodeGatewayProviderOrder(), [
+    "account:zai-start-plan",
+    "account:zai-individual-coding-plan",
+  ]);
+  assert.deepEqual(resolveZcodeGatewayProviderOrder("account:zai-individual-coding-plan"), [
+    "account:zai-individual-coding-plan",
+  ]);
+  assert.deepEqual(resolveZcodeGatewayProviderOrder("account:zai-start-plan"), [
+    "account:zai-start-plan",
+  ]);
+});
+
+test("the Individual compatibility helper remains pinned to the Individual profile", async () => {
   const { dir, path } = await makeConfig();
   try {
     assert.equal(
       await readZcodeIndividualCodingPlanApiKey("account:zai-individual-coding-plan", path),
-      syntheticKey
+      individualKey
     );
-    assert.equal(
-      await readZcodeIndividualCodingPlanApiKey("builtin:zai-coding-plan", path),
-      syntheticKey
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("ZCode gateway auth refuses Start Plan and unrelated profiles", async () => {
-  const { dir, path } = await makeConfig();
-  try {
     await assert.rejects(
       readZcodeIndividualCodingPlanApiKey("account:zai-start-plan", path),
       /only the explicitly selected Individual Plan/
     );
-    await assert.rejects(
-      readZcodeIndividualCodingPlanApiKey("custom:other", path),
-      /only the explicitly selected Individual Plan/
-    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("ZCode gateway auth rejects disabled profiles and untrusted origins", async () => {
-  const disabled = await makeConfig({ enabled: false });
+test("profile auth rejects disabled profiles, untrusted origins and malformed Start tokens", async () => {
+  const disabled = await makeConfig({ startEnabled: false });
   try {
     await assert.rejects(
-      readZcodeIndividualCodingPlanApiKey("account:zai-individual-coding-plan", disabled.path),
+      readZcodePlanGatewayProfile("account:zai-start-plan", disabled.path),
       /profile is not enabled/
     );
   } finally {
     await rm(disabled.dir, { recursive: true, force: true });
   }
 
-  const wrongOrigin = await makeConfig({ baseURL: "https://attacker.example/v1" });
+  const wrongOrigin = await makeConfig({
+    startBaseURL: "https://attacker.example/api/v1/zcode-plan/anthropic",
+  });
   try {
     await assert.rejects(
-      readZcodeIndividualCodingPlanApiKey("account:zai-individual-coding-plan", wrongOrigin.path),
+      readZcodePlanGatewayProfile("account:zai-start-plan", wrongOrigin.path),
       /unsupported API origin/
     );
   } finally {
     await rm(wrongOrigin.dir, { recursive: true, force: true });
   }
 
-  const credentialInUrl = await makeConfig({ baseURL: "https://user:pass@api.z.ai/v1" });
+  const malformedToken = await makeConfig({ startApiKey: "not-a-signed-token" });
   try {
     await assert.rejects(
-      readZcodeIndividualCodingPlanApiKey(
-        "account:zai-individual-coding-plan",
-        credentialInUrl.path
-      ),
+      readZcodePlanGatewayProfile("account:zai-start-plan", malformedToken.path),
+      /invalid signed credential format/
+    );
+  } finally {
+    await rm(malformedToken.dir, { recursive: true, force: true });
+  }
+
+  const wrongIndividualOrigin = await makeConfig({
+    individualBaseURL: "https://attacker.example/api/anthropic/v1",
+  });
+  try {
+    await assert.rejects(
+      readZcodePlanGatewayProfile("account:zai-individual-coding-plan", wrongIndividualOrigin.path),
       /unsupported API origin/
     );
   } finally {
-    await rm(credentialInUrl.dir, { recursive: true, force: true });
-  }
-
-  const malformedKey = await makeConfig({ apiKey: "not-a-safe-credential\r\nX-Injected: yes" });
-  try {
-    await assert.rejects(
-      readZcodeIndividualCodingPlanApiKey("account:zai-individual-coding-plan", malformedKey.path),
-      /no valid signed credential/
-    );
-  } finally {
-    await rm(malformedKey.dir, { recursive: true, force: true });
+    await rm(wrongIndividualOrigin.dir, { recursive: true, force: true });
   }
 });
 
-test("ZCode gateway auth rejects group/world-readable credentials on Unix", async () => {
-  if (process.platform === "win32") return;
+test("profile auth rejects unrelated provider IDs and over-permissive configs", async () => {
   const { dir, path } = await makeConfig();
   try {
-    await chmod(path, 0o640);
-    await assert.rejects(
-      readZcodeIndividualCodingPlanApiKey("account:zai-individual-coding-plan", path),
-      /permissions are too broad/
-    );
+    await assert.rejects(readZcodePlanGatewayProfile("custom:other", path), /Unsupported/);
+    if (process.platform !== "win32") {
+      await chmod(path, 0o640);
+      await assert.rejects(
+        readZcodePlanGatewayProfile("account:zai-start-plan", path),
+        /permissions are too broad/
+      );
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

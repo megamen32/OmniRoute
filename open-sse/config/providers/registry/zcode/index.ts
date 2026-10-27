@@ -39,3 +39,27 @@ export const zcodeProvider: RegistryEntry = {
   // capability metadata without advertising aliases or tiers that it would ignore.
   models: ZCODE_MODELS,
 };
+
+/** Explicit Start profile: separate provider identity for routing and quota monitoring. */
+export const zcodeStartProvider: RegistryEntry = {
+  ...zcodeProvider,
+  id: "zcode-start",
+  alias: "zc-start",
+  executor: "zcode-start",
+  models: ZCODE_MODELS.map((model) => ({
+    ...model,
+    name: `${model.name || model.id} (Z-code Start)`,
+  })),
+};
+
+/** Explicit Individual profile: separate provider identity for routing and quota monitoring. */
+export const zcodeIndividualProvider: RegistryEntry = {
+  ...zcodeProvider,
+  id: "zcode-individual",
+  alias: "zc-individual",
+  executor: "zcode-individual",
+  models: ZCODE_MODELS.map((model) => ({
+    ...model,
+    name: `${model.name || model.id} (Z-code Individual)`,
+  })),
+};

@@ -440,6 +440,16 @@
       "configSource": "maxai",
       "provider": "maxai"
     },
+    "minimax-code": {
+      "className": "MinimaxCodeExecutor",
+      "configSource": "<custom-config>",
+      "provider": "minimax-code"
+    },
+    "mmcode": {
+      "className": "MinimaxCodeExecutor",
+      "configSource": "<custom-config>",
+      "provider": "minimax-code"
+    },
     "moonshot": {
       "className": "MoonshotExecutor",
       "configSource": "moonshot",
@@ -680,6 +690,16 @@
       "configSource": "<custom-config>",
       "provider": "zcode"
     },
+    "zcode-individual": {
+      "className": "ZcodeExecutor",
+      "configSource": "<custom-config>",
+      "provider": "zcode-individual"
+    },
+    "zcode-start": {
+      "className": "ZcodeExecutor",
+      "configSource": "<custom-config>",
+      "provider": "zcode-start"
+    },
     "zed-hosted": {
       "className": "ZedHostedExecutor",
       "configSource": "zed-hosted",
@@ -701,6 +721,6 @@
       "provider": "zai-web"
     }
   },
-  "keyCount": 140,
+  "keyCount": 144,
   "sharedInstances": []
 }

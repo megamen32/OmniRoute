@@ -1,7 +1,12 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { executeZcodeGateway, nativeZcodeBody } from "../../open-sse/executors/zcode/gateway.ts";
+import {
+  executeZcodeGateway,
+  executeZcodeGatewayWithPlanFallback,
+  nativeZcodeBody,
+} from "../../open-sse/executors/zcode/gateway.ts";
+import type { ZcodeGatewayProfile } from "../../open-sse/executors/zcode/profileAuth.ts";
 import { buildZcodeModelRequest } from "../../open-sse/executors/zcode.ts";
 import { ZCODE_MODELS } from "../../open-sse/config/providers/registry/zcode/index.ts";
 import type { ExecuteInput } from "../../open-sse/executors/base.ts";
@@ -310,4 +315,100 @@ test("consumer cancellation reaches the Coding Plan stream without replay", asyn
   await reader.cancel();
   assert.equal(backendState.requestSignal?.aborted, true);
   assert.equal(backendState.counts.inference, 1);
+});
+
+test("Start Plan pre-stream quota refusal falls back once to the separate Individual credential", async (t) => {
+  const profiles: Record<string, ZcodeGatewayProfile> = {
+    "account:zai-start-plan": {
+      plan: "start",
+      providerId: "account:zai-start-plan",
+      apiKey: "start.header.signature",
+      messagesUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages",
+      authScheme: "bearer",
+    },
+    "account:zai-individual-coding-plan": {
+      plan: "individual",
+      providerId: "account:zai-individual-coding-plan",
+      apiKey: "individual-profile.synthetic-secret",
+      messagesUrl: TARGET,
+      authScheme: "x-api-key",
+    },
+  };
+  const requests: Array<{ url: string; authorization: string | null; apiKey: string | null }> = [];
+  t.mock.method(globalThis, "fetch", async (url: unknown, options: RequestInit = {}) => {
+    const headers = new Headers(options.headers);
+    requests.push({
+      url: String(url),
+      authorization: headers.get("authorization"),
+      apiKey: headers.get("x-api-key"),
+    });
+    if (requests.length === 1) {
+      return Response.json(
+        { error: { type: "rate_limit_error", message: "Start quota exhausted" } },
+        { status: 429 }
+      );
+    }
+    return new Response(encoder.encode(start + delta("individual stream") + end), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  });
+
+  const result = await executeZcodeGatewayWithPlanFallback(
+    input,
+    native,
+    ["account:zai-start-plan", "account:zai-individual-coding-plan"],
+    async (providerId) => profiles[providerId]
+  );
+  assert.ok(!(result instanceof Response));
+  assert.equal(result.transformedBody?.zcodePlan, "individual");
+  assert.deepEqual(requests, [
+    {
+      url: profiles["account:zai-start-plan"].messagesUrl,
+      authorization: "Bearer start.header.signature",
+      apiKey: null,
+    },
+    {
+      url: TARGET,
+      authorization: null,
+      apiKey: "individual-profile.synthetic-secret",
+    },
+  ]);
+  let streamed = "";
+  const reader = result.response.body!.getReader();
+  for (;;) {
+    const part = await reader.read();
+    if (part.done) break;
+    streamed += new TextDecoder().decode(part.value);
+  }
+  assert.ok(streamed.includes("individual stream"));
+  assert.ok(streamed.includes("[DONE]"));
+  assert.equal(requests.length, 2);
+});
+
+test("Start Plan network or server failures are ambiguous and are not replayed on Individual", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return Response.json(
+      { error: { type: "api_error", message: "upstream unavailable" } },
+      {
+        status: 502,
+      }
+    );
+  });
+  const result = await executeZcodeGatewayWithPlanFallback(
+    input,
+    native,
+    ["account:zai-start-plan", "account:zai-individual-coding-plan"],
+    async (providerId) => ({
+      plan: providerId.includes("start") ? "start" : "individual",
+      providerId: providerId as ZcodeGatewayProfile["providerId"],
+      apiKey: `${providerId}.synthetic-secret`,
+      messagesUrl: providerId.includes("start") ? "https://zcode.z.ai/messages" : TARGET,
+      authScheme: providerId.includes("start") ? "bearer" : "x-api-key",
+    })
+  );
+  assert.ok(result instanceof Response);
+  assert.equal(result.status, 502);
+  assert.equal(calls, 1);
 });
