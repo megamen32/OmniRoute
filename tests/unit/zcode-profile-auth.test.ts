@@ -93,6 +93,22 @@ test("Start and Individual resolve to their own endpoint and authorization schem
   }
 });
 
+test("Individual profile accepts ZCode's canonical unversioned base URL and appends /v1/messages", async () => {
+  const { dir, path } = await makeConfig({
+    individualBaseURL: "https://api.z.ai/api/anthropic",
+  });
+  try {
+    const individual = await readZcodePlanGatewayProfile(
+      "account:zai-individual-coding-plan",
+      path
+    );
+    assert.equal(individual.messagesUrl, "https://api.z.ai/api/anthropic/v1/messages");
+    assert.equal(individual.authScheme, "x-api-key");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("gateway defaults to Start then Individual while an explicit profile stays pinned", () => {
   assert.deepEqual(resolveZcodeGatewayProviderOrder(), [
     "account:zai-start-plan",
@@ -156,7 +172,7 @@ test("profile auth rejects disabled profiles, untrusted origins and malformed St
   }
 
   const wrongIndividualOrigin = await makeConfig({
-    individualBaseURL: "https://attacker.example/api/anthropic/v1",
+    individualBaseURL: "https://attacker.example/api/anthropic",
   });
   try {
     await assert.rejects(

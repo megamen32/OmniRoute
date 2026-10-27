@@ -39,16 +39,16 @@ function resolveProfile(providerId: string): {
   configProviderId: string;
   messagesPath: string;
   expectedOrigin: string;
-  expectedPath: string;
+  expectedBasePaths: string[];
   authScheme: "bearer" | "x-api-key";
 } {
   if (providerId === ZCODE_START_PLAN_PROVIDER_ID || providerId === ZCODE_START_PLAN_BUILTIN_ID) {
     return {
       plan: "start",
       configProviderId: ZCODE_START_PLAN_BUILTIN_ID,
-      messagesPath: "v1/messages",
+      messagesPath: "/api/v1/zcode-plan/anthropic/v1/messages",
       expectedOrigin: "https://zcode.z.ai",
-      expectedPath: "/api/v1/zcode-plan/anthropic",
+      expectedBasePaths: ["/api/v1/zcode-plan/anthropic"],
       authScheme: "bearer",
     };
   }
@@ -59,9 +59,12 @@ function resolveProfile(providerId: string): {
     return {
       plan: "individual",
       configProviderId: ZCODE_INDIVIDUAL_PLAN_BUILTIN_ID,
-      messagesPath: "messages",
+      messagesPath: "/api/anthropic/v1/messages",
       expectedOrigin: "https://api.z.ai",
-      expectedPath: "/api/anthropic/v1",
+      // ZCode's official local config uses /api/anthropic; the HTTP endpoint
+      // still includes the Anthropic API's /v1/messages suffix. Accept the
+      // already-versioned path too for older valid profile configs.
+      expectedBasePaths: ["/api/anthropic", "/api/anthropic/v1"],
       authScheme: "x-api-key",
     };
   }
@@ -106,7 +109,7 @@ export async function readZcodePlanGatewayProfile(
     }
     if (
       baseUrl.origin !== profileSpec.expectedOrigin ||
-      baseUrl.pathname.replace(/\/+$/, "") !== profileSpec.expectedPath ||
+      !profileSpec.expectedBasePaths.includes(baseUrl.pathname.replace(/\/+$/, "")) ||
       baseUrl.username ||
       baseUrl.password ||
       baseUrl.search ||
@@ -128,10 +131,7 @@ export async function readZcodePlanGatewayProfile(
       throw new Error("Start ZCode Coding Plan profile has an invalid signed credential format");
     }
 
-    const endpoint = new URL(
-      `${profileSpec.expectedPath}/${profileSpec.messagesPath}`,
-      baseUrl.origin
-    );
+    const endpoint = new URL(profileSpec.messagesPath, baseUrl.origin);
     return {
       plan: profileSpec.plan,
       providerId: providerId as ZcodePlanProviderId,
