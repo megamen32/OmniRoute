@@ -8,9 +8,24 @@ import {
   readZcodePlanGatewayProfile,
   resolveZcodeGatewayProviderOrder,
 } from "../../open-sse/executors/zcode/profileAuth.ts";
+import { formatZcodeTransportErrorDiagnostic } from "../../open-sse/executors/zcode/transportError.ts";
 
 const individualKey = "individual-profile.synthetic-secret";
 const startKey = "header.payload.signature";
+
+test("ZCode transport diagnostics retain error codes without leaking exception messages", () => {
+  const cause = Object.assign(new Error("upstream secret detail"), { code: "ECONNRESET" });
+  const error = Object.assign(new Error("authorization bearer secret"), {
+    code: "UND_ERR_SOCKET",
+    cause,
+  });
+  const diagnostic = formatZcodeTransportErrorDiagnostic(error);
+  assert.equal(
+    diagnostic,
+    "Native transport exception (name=Error code=UND_ERR_SOCKET causeName=Error causeCode=ECONNRESET)"
+  );
+  assert.doesNotMatch(diagnostic, /secret|authorization|upstream/i);
+});
 
 async function makeConfig(
   options: {

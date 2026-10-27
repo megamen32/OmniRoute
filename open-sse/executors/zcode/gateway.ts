@@ -8,6 +8,7 @@ import { STREAM_READINESS_TIMEOUT_MS } from "../../config/constants.ts";
 import { isDraining } from "../../../src/lib/gracefulShutdown.ts";
 import { resolveSuppressThinkClose, THINKING_MARKER_HEADER } from "../../utils/thinkCloseMarker.ts";
 import { readZcodePlanGatewayProfile, type ZcodeGatewayProfile } from "./profileAuth.ts";
+import { formatZcodeTransportErrorDiagnostic } from "./transportError.ts";
 
 type RecordValue = Record<string, unknown>;
 const ZCODE_STREAM_BUFFER_BYTES = 1024;
@@ -313,10 +314,7 @@ export async function executeZcodeGateway(
       model: body.model,
     };
   } catch (error) {
-    input.log?.warn?.(
-      "ZCODE_GATEWAY",
-      error instanceof Error ? error.name : "Native transport failure"
-    );
+    input.log?.warn?.("ZCODE_GATEWAY", formatZcodeTransportErrorDiagnostic(error));
     return errorResponse(
       input.signal?.aborted || isDraining() ? 499 : 502,
       input.signal?.aborted || isDraining()
