@@ -539,6 +539,40 @@ test("a consumed refresh token falls through to the next record", async () => {
   assert.equal(token, "older-access-token");
 });
 
+test("a refresh transport failure does not retry another profile", async () => {
+  const { ensureAccessToken } = await loadGateway();
+  const { authFile } = await writeProfile({
+    "com.minimax.mcode.oauth.prod.en\u0000newer": record({
+      accessToken: "expired-newer-access-token",
+      refreshToken: "newer-refresh-token",
+      expiresAtMs: Date.now() - 1000,
+      generation: 10,
+    }),
+    "com.minimax.mcode.oauth.prod.en\u0000older": record({
+      accessToken: "expired-older-access-token",
+      refreshToken: "older-refresh-token",
+      expiresAtMs: Date.now() - 1000,
+      generation: 9,
+    }),
+  });
+
+  let calls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    calls += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  await assert.rejects(
+    ensureAccessToken({ path: authFile, fetchImpl }),
+    (error: Error & { status?: number }) => {
+      assert.equal(error.status, 500);
+      assert.match(error.message, /MiniMax token refresh failed/);
+      return true;
+    }
+  );
+  assert.equal(calls, 1);
+});
+
 test("a transient gateway error is retried with a backoff", async () => {
   const { callGateway } = await loadGateway();
   const { createServer } = await import("node:http");

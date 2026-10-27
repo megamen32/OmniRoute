@@ -887,9 +887,11 @@ export async function ensureAccessToken(options: EnsureTokenOptions = {}): Promi
       const refreshed = await refreshAuthProfile(profile, options);
       return refreshed.accessToken;
     } catch (error) {
-      // The refresh token of this record was already consumed by the CLI or by
-      // another client. Another record of the same profile can still hold a
-      // live token, so the next one is tried before the request is failed.
+      // Only an explicit account-service auth refusal says this record's
+      // refresh token was consumed or revoked. A transport/server failure
+      // affects every record, so retrying the same endpoint with another token
+      // only adds latency and duplicate requests.
+      if (!(error instanceof GatewayAuthError)) throw error;
       lastError = error;
     }
   }
