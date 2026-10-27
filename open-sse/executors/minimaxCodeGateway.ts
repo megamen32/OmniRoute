@@ -878,7 +878,8 @@ export async function ensureAccessToken(options: EnsureTokenOptions = {}): Promi
   }
   const now = options.now ?? Date.now();
   let lastError: unknown = null;
-  for (const profile of profiles) {
+  for (let profileIndex = 0; profileIndex < profiles.length; profileIndex += 1) {
+    const profile = profiles[profileIndex];
     if (!options.force && profile.expiresAtMs && profile.expiresAtMs - now > REFRESH_MARGIN_MS) {
       return profile.accessToken;
     }
@@ -891,7 +892,13 @@ export async function ensureAccessToken(options: EnsureTokenOptions = {}): Promi
       // refresh token was consumed or revoked. A transport/server failure
       // affects every record, so retrying the same endpoint with another token
       // only adds latency and duplicate requests.
-      if (!(error instanceof GatewayAuthError)) throw error;
+      if (!(error instanceof GatewayAuthError)) {
+        const usableFallback = profiles
+          .slice(profileIndex + 1)
+          .find((candidate) => candidate.expiresAtMs - now > REFRESH_MARGIN_MS);
+        if (usableFallback) return usableFallback.accessToken;
+        throw error;
+      }
       lastError = error;
     }
   }
