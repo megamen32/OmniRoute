@@ -83,7 +83,14 @@ export function isProviderCircuitOpenResult(
 ): boolean {
   const breakerHeader = result.headers?.get?.("x-omniroute-provider-breaker");
   if (typeof breakerHeader === "string" && breakerHeader.toLowerCase() === "open") return true;
-  return /provider_circuit_open/i.test(errorText);
+  // Protected priority-target skips use a diagnostic envelope that currently has no
+  // provider_circuit_open code/header. Recognize that exact local message too, or the
+  // single-model breaker path counts its own pre-dispatch refusal as another 503 failure
+  // and continually extends the cooldown without ever probing the upstream.
+  return (
+    /provider_circuit_open/i.test(errorText) ||
+    /\bprovider\s+[\w.@:/-]{1,100}\s+circuit breaker is open\b/i.test(errorText)
+  );
 }
 
 /**

@@ -70,11 +70,17 @@ export function buildProtectedPriorityStopResponse(opts: {
   cause?: ProtectedPriorityStopCause;
 }): Response {
   const previous = buildRedactedSummary(opts.state.comboErrors);
-  return errorResponseWithComboDiagnostics(
+  const response = errorResponseWithComboDiagnostics(
     protectedPriorityStopStatus(opts.cause),
     previous ? `${opts.message}; earlier attempts: ${previous}` : opts.message,
     buildComboDiag(opts.state, opts.traceInvocationId, "protected_priority_stop")
   );
+  if (opts.cause === "circuit_open") {
+    // Single-model breaker accounting cannot parse a response body synchronously.
+    // Mark this pre-dispatch refusal with the same header used by providerCircuitOpenResponse.
+    response.headers.set("x-omniroute-provider-breaker", "open");
+  }
+  return response;
 }
 
 /** Record a target stop, returning a terminal response only for protected targets. */
