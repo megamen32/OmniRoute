@@ -103,6 +103,34 @@ test("T14: runWithProxyContext fails an in-flight request fast when the proxy is
   releaseRequest();
 });
 
+test("T14: HTTPS proxy dispatch is not gated by the raw TCP fast-fail probe", async () => {
+  const proxyUrl = "https://127.0.0.1:1";
+  invalidateProxyHealth(proxyUrl);
+
+  let probeCount = 0;
+  __setProxyHealthTcpCheckForTesting(async () => {
+    probeCount += 1;
+    return false;
+  });
+
+  try {
+    const result = await runWithProxyContext(proxyUrl, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return "request-dispatched";
+    });
+
+    assert.equal(result, "request-dispatched");
+    assert.equal(
+      probeCount,
+      0,
+      "TLS-wrapped proxy requests must not be rejected by the TCP-only probe"
+    );
+  } finally {
+    __setProxyHealthTcpCheckForTesting(null);
+    invalidateProxyHealth(proxyUrl);
+  }
+});
+
 test("SOCKS5 ordinary data-plane: no T14 TCP health probe", async () => {
   const proxyUrl = "socks5://127.0.0.1:1080";
   invalidateProxyHealth(proxyUrl);

@@ -582,7 +582,13 @@ export async function runWithProxyContext(
         );
         return runDirect();
       }
-    } else if (new URL(resolvedProxyUrl).protocol !== "socks5:") {
+    } else if (
+      new URL(resolvedProxyUrl).protocol !== "socks5:" &&
+      new URL(resolvedProxyUrl).protocol !== "https:"
+    ) {
+      // TLS-wrapped HTTP proxies can accept authenticated CONNECT even when
+      // Node's raw TCP reachability probe reports them unreachable. Let the
+      // real proxied request decide instead of rejecting it before dispatch.
       // Fire the probe WITHOUT awaiting; dispatch optimistically below.
       unreachableProbe = isProxyReachable(resolvedProxyUrl);
     }
