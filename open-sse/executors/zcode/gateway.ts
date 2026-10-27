@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { ExecuteInput, ExecutorExecuteResult } from "../base.ts";
 import { translateSseResponse } from "../glm.ts";
 import { translateNonStreamingResponse } from "../../handlers/responseTranslator.ts";
@@ -8,10 +7,17 @@ import { ensureStreamReadiness } from "../../utils/streamReadiness.ts";
 import { STREAM_READINESS_TIMEOUT_MS } from "../../config/constants.ts";
 import { isDraining } from "../../../src/lib/gracefulShutdown.ts";
 import { resolveSuppressThinkClose, THINKING_MARKER_HEADER } from "../../utils/thinkCloseMarker.ts";
-import { fetchNativeZcode } from "./nativeProtocol.ts";
 
 type RecordValue = Record<string, unknown>;
 const ZCODE_STREAM_BUFFER_BYTES = 1024;
+// Official GLM Coding Plan Anthropic API. The executor passes the API key for
+// the explicitly selected Individual profile; this transport never reads a
+// credential file or retries against another profile.
+const GATEWAY_URL = "https://api.z.ai/api/anthropic/v1/messages";
+const GATEWAY_HEADERS: Record<string, string> = {
+  "content-type": "application/json",
+  "anthropic-version": "2023-06-01",
+};
 export type ZcodeRequestAuth = { apiKey: string; headers?: Record<string, string> };
 function record(value: unknown): RecordValue {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : {};
@@ -156,27 +162,34 @@ export async function executeZcodeGateway(
     ? AbortSignal.any([input.signal, consumerCancellation.signal])
     : consumerCancellation.signal;
   try {
-    const session = randomUUID(),
-      requestId = input.correlationId || randomUUID();
-    const result = await fetchNativeZcode(apiKey, body, session, requestId, signal);
-    if (!result.response.ok) {
+    const upstream = await fetch(GATEWAY_URL, {
+      method: "POST",
+      headers: {
+        ...GATEWAY_HEADERS,
+        accept: input.stream ? "text/event-stream" : "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!upstream.ok) {
       if (input.signal?.aborted || isDraining()) {
-        await result.response.body?.cancel();
+        await upstream.body?.cancel();
         return errorResponse(499, "ZCode request cancelled");
       }
-      const parsed = record(await result.response.json().catch(() => null)),
+      const parsed = record(await upstream.json().catch(() => null)),
         error = record(parsed.error);
       const message = String(
         error.message ?? parsed.message ?? "Native ZCode request refused"
       ).replaceAll(apiKey, "[redacted]");
-      const response = errorResponse(result.response.status, message);
-      const retry = result.response.headers.get("retry-after");
+      const response = errorResponse(upstream.status, message);
+      const retry = upstream.headers.get("retry-after");
       if (retry) response.headers.set("retry-after", retry);
       return response;
     }
     let response: Response;
     if (input.stream) {
-      const ready = await ensureStreamReadiness(result.response, {
+      const ready = await ensureStreamReadiness(upstream, {
         timeoutMs: STREAM_READINESS_TIMEOUT_MS,
         provider: "zcode",
         model: input.model,
@@ -204,13 +217,13 @@ export async function executeZcodeGateway(
       response.headers.set("x-accel-buffering", "no");
     } else
       response = Response.json(
-        translateNonStreamingResponse(await result.response.json(), FORMATS.CLAUDE, FORMATS.OPENAI)
+        translateNonStreamingResponse(await upstream.json(), FORMATS.CLAUDE, FORMATS.OPENAI)
       );
     response.headers.delete("set-cookie");
     response = linkConsumerCancellation(response, consumerCancellation);
     return {
       response,
-      url: result.url,
+      url: GATEWAY_URL,
       headers: {},
       transformedBody: {
         model: body.model,
@@ -229,7 +242,7 @@ export async function executeZcodeGateway(
       input.signal?.aborted || isDraining() ? 499 : 502,
       input.signal?.aborted || isDraining()
         ? "ZCode request cancelled"
-        : "Native ZCode handshake or transport failed"
+        : "ZCode Coding Plan transport failed"
     );
   }
 }

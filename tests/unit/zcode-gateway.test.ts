@@ -1,22 +1,12 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import {
-  createCipheriv,
-  createHash,
-  createHmac,
-  generateKeyPairSync,
-  hkdfSync,
-  randomBytes,
-  randomUUID,
-  verify,
-} from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { executeZcodeGateway, nativeZcodeBody } from "../../open-sse/executors/zcode/gateway.ts";
 import { buildZcodeModelRequest } from "../../open-sse/executors/zcode.ts";
 import { ZCODE_MODELS } from "../../open-sse/config/providers/registry/zcode/index.ts";
 import type { ExecuteInput } from "../../open-sse/executors/base.ts";
 
-const SOURCE = "https://api.z.ai/api/anthropic/v1/messages";
-const TARGET = "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages";
+const TARGET = "https://api.z.ai/api/anthropic/v1/messages";
 const body = { messages: [{ role: "user", content: "hello" }], max_tokens: 2048 };
 const input: ExecuteInput = { model: "glm-5.3-flash", body, stream: true, credentials: {} };
 const native = buildZcodeModelRequest(body);
@@ -55,84 +45,16 @@ function fixture() {
   return { key: "fixture-" + randomUUID() + ".synthetic-secret" };
 }
 function backend(t: TestContext, key: string, respond: () => Response) {
-  const [id, secret] = key.split("."),
-    pair = generateKeyPairSync("ed25519");
-  const counts = { config: 0, handshake: 0, inference: 0 };
+  const counts = { inference: 0 };
   let requestSignal: AbortSignal | undefined;
-  const derive = (info: string) =>
-    Buffer.from(
-      hkdfSync(
-        "sha256",
-        Buffer.from(secret),
-        Buffer.from("WD_CLIENT_SIGN_KDF_SALT"),
-        Buffer.from(info),
-        32
-      )
-    );
   t.mock.method(globalThis, "fetch", async (url: unknown, options: RequestInit = {}) => {
     const h = new Headers(options.headers);
-    if (String(url).endsWith("/api/v1/agent/configs")) {
-      counts.config++;
-      assert.equal(h.get("x-api-key"), key);
-      return Response.json({
-        code: 0,
-        data: {
-          codingPlanSignature: { enable: true },
-          proxyEndpoint: { mapping: [{ from: SOURCE, to: TARGET }] },
-        },
-      });
-    }
-    if (String(url).endsWith("/api/paas/c1f3a7e2/v2/client")) {
-      counts.handshake++;
-      const request = JSON.parse(String(options.body));
-      assert.equal(h.get("authorization"), key);
-      assert.equal(
-        request.sig,
-        createHmac("sha256", derive("getSignKey_hmac"))
-          .update(["get_sign_key", id, request.ts, request.nonce].join("\n"))
-          .digest("base64")
-      );
-      const iv = randomBytes(12),
-        cipher = createCipheriv("aes-256-gcm", derive("ed25519_priv"), iv);
-      cipher.setAAD(Buffer.from(id));
-      const encoded = pair.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
-      const encrypted = Buffer.concat([cipher.update(encoded, "utf8"), cipher.final()]);
-      return Response.json({
-        code: 200,
-        data: {
-          privateCipher: Buffer.concat([iv, encrypted, cipher.getAuthTag()]).toString("base64"),
-        },
-      });
-    }
     assert.equal(url, TARGET, "native routing must not use the generic API");
     counts.inference++;
     requestSignal = options.signal as AbortSignal | undefined;
-    assert.equal(h.get("authorization"), "Bearer " + key);
     assert.equal(h.get("x-api-key"), key);
-    assert.equal(h.get("x-app-id"), "zcode");
-    const ts = h.get("x-client-ts")!,
-      session = h.get("x-session-id")!,
-      nonce = h.get("x-client-nonce")!,
-      version = h.get("x-client-version")!;
-    assert.equal(
-      verify(
-        null,
-        Buffer.from([id, ts, version, session, nonce].join("\n")),
-        pair.publicKey,
-        Buffer.from(h.get("x-client-sig")!, "base64")
-      ),
-      true
-    );
-    const seed = createHash("sha256")
-      .update([id, "zcode", session, ts].join("\n"))
-      .digest("hex")
-      .slice(0, 32);
-    assert.equal(
-      createHash("sha256")
-        .update(seed + "\n" + h.get("x-client-pow"))
-        .digest()[0],
-      0
-    );
+    assert.equal(h.get("anthropic-version"), "2023-06-01");
+    assert.equal(h.has("x-client-sig"), false, "the documented Coding Plan HTTP route is unsigned");
     const request = JSON.parse(String(options.body));
     if (request.stream === true)
       assert.equal(h.get("accept"), "text/event-stream", "stream requests must negotiate SSE");
@@ -213,7 +135,7 @@ test("native request maps no-effort to the minimum supported low level", () => {
 });
 
 test(
-  "native signing is valid and deltas arrive before completion",
+  "official Coding Plan HTTP auth is scoped and deltas arrive before completion",
   { timeout: 10000 },
   async (t) => {
     const f = fixture();
@@ -260,7 +182,7 @@ test(
     assert.ok(text.includes("reasoning_content"));
     assert.ok(text.includes("private reasoning"));
     assert.ok(text.includes("[DONE]"));
-    assert.deepEqual(counts, { config: 1, handshake: 1, inference: 1 });
+    assert.deepEqual(counts, { inference: 1 });
     assert.equal(JSON.stringify(result.transformedBody).includes(f.key), false);
   }
 );
@@ -343,7 +265,7 @@ test("tool output and usage translate; upstream refusal is returned without repl
     assert.equal(refusal.status, code);
     assert.equal(refusal.headers.get("retry-after"), "30");
   }
-  assert.deepEqual(counts, { config: 1, handshake: 1, inference: 4 });
+  assert.deepEqual(counts, { inference: 4 });
 });
 
 test("missing scoped credential and pre-aborted request do not dispatch", async (t) => {
@@ -366,7 +288,7 @@ test("missing scoped credential and pre-aborted request do not dispatch", async 
   assert.equal(calls, 0);
 });
 
-test("consumer cancellation reaches the native stream without replay", async (t) => {
+test("consumer cancellation reaches the Coding Plan stream without replay", async (t) => {
   const f = fixture();
   const backendState = backend(
     t,
