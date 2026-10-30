@@ -22,6 +22,7 @@ import { getModelContextOverride } from "@/lib/db/modelContextOverrides";
 import {
   getModelCapabilityOverride,
   getReasoningEffortsOverride,
+  getStructuredOutputOverride,
 } from "@/lib/db/modelCapabilityOverrides";
 import { getModelCompatVisionOverride } from "@/lib/db/models/compat";
 import {
@@ -669,6 +670,22 @@ function getCapabilityOverride(
     : null;
 }
 
+/**
+ * Exact provider/model structured-output override with the same canonical-then-raw
+ * fallback as getCapabilityOverride. It takes precedence over the synced catalog value.
+ */
+function getStructuredOutputCapabilityOverride(resolved: {
+  provider: string | null;
+  model: string | null;
+  rawModel: string | null;
+}): boolean | null {
+  const canonical = getStructuredOutputOverride(resolved.provider, resolved.model);
+  if (canonical !== null) return canonical;
+  return resolved.rawModel && resolved.rawModel !== resolved.model
+    ? getStructuredOutputOverride(resolved.provider, resolved.rawModel)
+    : null;
+}
+
 function getContextOverride(
   resolved: {
     provider: string | null;
@@ -1014,6 +1031,10 @@ export function getResolvedModelCapabilities(
   const supportsAudio = resolveAudioCapability(spec, registryModel, modalitiesInput);
   const supportsVideo = resolveVideoCapability(spec, registryModel, modalitiesInput);
 
+  const structuredOutputOverride = usePersistedOverrides
+    ? getStructuredOutputCapabilityOverride(resolved)
+    : null;
+
   // #8250: when resolve promoted vision over a contradictory attachment=false,
   // expose attachment=true so catalog / Vision Bridge / clients see one verdict.
   let attachment = synced?.attachment ?? null;
@@ -1039,7 +1060,7 @@ export function getResolvedModelCapabilities(
     supportsVideo,
     supportsMaxTokens: heuristicMaxTokens(lookupKey),
     attachment,
-    structuredOutput: synced?.structured_output ?? null,
+    structuredOutput: structuredOutputOverride ?? synced?.structured_output ?? null,
     temperature: synced?.temperature ?? null,
     contextWindow,
     maxInputTokens: (() => {
