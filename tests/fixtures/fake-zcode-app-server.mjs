@@ -130,6 +130,34 @@ function handleFrame(body) {
         transportKind: "stdio",
       });
       break;
+    case "getEntitlementSnapshot":
+      if (process.env.ZCODE_FAKE_QUOTA_MODE === "unavailable") {
+        response(id, { authenticated: false, provider: { id: "account:zai-start-plan" } });
+      } else {
+        response(id, {
+          authenticated: true,
+          provider: { id: "account:zai-start-plan" },
+          remaining: { count: 500000000, percentage: 1, nextResetTime: 1793581200000 },
+          subscription: { details: [{ productName: "Fixture ZCode Start" }] },
+          quota: {
+            level: "Start",
+            limits: [
+              {
+                unit: 500000000,
+                number: 500000000,
+                usage: 0,
+                currentValue: 0,
+                remaining: 500000000,
+                percentage: 1,
+                nextResetTime: 1793581200000,
+                meter: "model_usage",
+                unitType: "token",
+              },
+            ],
+          },
+        });
+      }
+      break;
     case "generateWorkspaceText":
       if (
         request.selection?.providerId !== "account:zai-individual-coding-plan" ||

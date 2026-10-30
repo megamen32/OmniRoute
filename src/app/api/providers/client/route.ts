@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getProviderConnections } from "@/lib/db/providers";
 import { maskStoredApiKey } from "@/lib/apiKeyExposure";
 import { sanitizeProviderSpecificDataForResponse } from "@/lib/providers/requestDefaults";
+import { createZcodeStartVirtualConnection } from "@/lib/usage/zcodeVirtualConnection";
 
 // GET /api/providers/client - List connections for the dashboard widgets.
 // No consumer needs credentials, and this route is reachable anonymously when
@@ -21,6 +22,13 @@ export async function GET() {
         ? sanitizeProviderSpecificDataForResponse(c.providerSpecificData)
         : undefined,
     }));
+
+    // ZCode Start authenticates inside its local app-server and intentionally
+    // has no provider_connections row. Expose a dashboard-only target so its
+    // native entitlement cache can be rendered and refreshed.
+    if (!connections.some((connection) => connection.provider === "zcode-start")) {
+      clientConnections.push(createZcodeStartVirtualConnection());
+    }
 
     return NextResponse.json({ connections: clientConnections });
   } catch (error) {

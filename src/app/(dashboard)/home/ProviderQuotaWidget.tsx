@@ -182,7 +182,9 @@ export default function ProviderQuotaWidget({
       const relevant = ((connectionData.connections || []) as Connection[]).filter(
         (connection) =>
           supportsProviderQuota(connection.provider, connection) &&
-          (connection.authType === "oauth" || connection.authType === "apikey")
+          (connection.authType === "oauth" ||
+            connection.authType === "apikey" ||
+            (connection.provider === "zcode-start" && connection.authType === "none"))
       );
       setConnections(relevant);
       setQuotaData(quotaResponseData.caches || {});

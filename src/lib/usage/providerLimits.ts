@@ -61,6 +61,10 @@ import {
   type CredentialRefreshOptions,
   type ProviderConnectionLike,
 } from "./providerLimits/credentialRefresh";
+import {
+  createZcodeStartVirtualConnection,
+  isZcodeStartVirtualConnection,
+} from "./zcodeVirtualConnection";
 export { shouldAttemptRotatingRefresh } from "./providerLimits/credentialRefresh";
 type JsonRecord = Record<string, unknown>;
 type SyncSource = "manual" | "scheduled";
@@ -223,12 +227,25 @@ function shouldRefreshProviderLimitsCache(
 export function isSupportedUsageConnection(connection: ProviderConnectionLike | null): boolean {
   if (!connection?.provider) return false;
 
+  if (isZcodeStartVirtualConnection(connection)) return true;
+
   if (connection.authType === "oauth") {
     return supportsProviderQuota(connection.provider, connection);
   }
   if (connection.authType !== "apikey" && connection.authType !== "api_key") return false;
   if (PROVIDER_LIMITS_APIKEY_PROVIDERS.has(connection.provider)) return true;
   return supportsProviderQuota(connection.provider, connection);
+}
+
+function mergeUsageCache(
+  provider: string,
+  next: ProviderLimitsCacheEntry,
+  previous: ProviderLimitsCacheEntry | null
+): ProviderLimitsCacheEntry {
+  // A missing/expired native ZCode entitlement must not keep presenting the
+  // previous full allowance as current. Persist the latest unavailable state.
+  if (provider === "zcode-start" && next.message && !next.quotas) return next;
+  return mergeProviderLimitsCacheEntry(provider, next, previous);
 }
 
 function withStatus(error: Error, status: number): Error & { status: number } {
@@ -923,15 +940,28 @@ async function fetchLiveProviderLimitsWithOptions(
   connection: ProviderConnectionLike;
   usage: JsonRecord;
 }> {
-  let connection = (await getProviderConnectionById(
-    connectionId
-  )) as unknown as ProviderConnectionLike | null;
+  let connection =
+    connectionId === createZcodeStartVirtualConnection().id
+      ? (createZcodeStartVirtualConnection() as unknown as ProviderConnectionLike)
+      : ((await getProviderConnectionById(
+          connectionId
+        )) as unknown as ProviderConnectionLike | null);
   if (!connection) {
     throw withStatus(new Error("Connection not found"), 404);
   }
 
   if (!isSupportedUsageConnection(connection)) {
     throw withStatus(new Error("Usage not available for this connection"), 400);
+  }
+
+  // Virtual no-auth dashboard target: query ZCode's local authenticated session
+  // directly and keep its quota cache under a dedicated virtual key.
+  if (isZcodeStartVirtualConnection(connection)) {
+    const usage = sanitizeUsageQuotasForProvider(
+      connection.provider,
+      (await getUsageForProvider(connection as unknown as JsonRecord, options)) as JsonRecord
+    );
+    return { connection, usage };
   }
 
   if (connection.authType !== "oauth") {
@@ -1122,7 +1152,7 @@ export async function fetchAndPersistProviderLimits(
   });
   const newCache = toProviderLimitsCacheEntry(usage, source);
   const previous = getProviderLimitsCache(connectionId);
-  const cache = mergeProviderLimitsCacheEntry(connection.provider, newCache, previous);
+  const cache = mergeUsageCache(connection.provider, newCache, previous);
 
   // Don't persist error-only entries (429 etc.) — would wipe prior good cache.
   // Serve the prior entry instead; only successful fetches update the cache.
@@ -1180,6 +1210,9 @@ export async function syncAllProviderLimits(
   const connectionRows = (await getProviderConnections({
     isActive: true,
   })) as unknown as ProviderConnectionLike[];
+  if (!connectionRows.some((connection) => connection.provider === "zcode-start")) {
+    connectionRows.push(createZcodeStartVirtualConnection() as unknown as ProviderConnectionLike);
+  }
   const connections = connectionRows.filter(isSupportedUsageConnection);
   const cacheEntries: Array<{ connectionId: string; entry: ProviderLimitsCacheEntry }> = [];
   const caches: Record<string, ProviderLimitsCacheEntry> = {};
@@ -1214,7 +1247,7 @@ export async function syncAllProviderLimits(
       forceRefresh,
     });
     const nextCache = toProviderLimitsCacheEntry(usage, source);
-    const cache = mergeProviderLimitsCacheEntry(connection.provider, nextCache, existingCache);
+    const cache = mergeUsageCache(connection.provider, nextCache, existingCache);
     return { connectionId: connection.id, cache };
   };
 

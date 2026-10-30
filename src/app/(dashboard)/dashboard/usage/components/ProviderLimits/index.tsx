@@ -562,7 +562,9 @@ export default function ProviderLimits({
         (conn) =>
           isProviderQuotaVisible(conn) &&
           supportsProviderQuota(conn.provider, conn) &&
-          (conn.authType === "oauth" || conn.authType === "apikey")
+          (conn.authType === "oauth" ||
+            conn.authType === "apikey" ||
+            (conn.provider === "zcode-start" && conn.authType === "none"))
       ),
     [connections]
   );

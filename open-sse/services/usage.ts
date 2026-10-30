@@ -96,6 +96,7 @@ import { getAgentrouterUsage } from "./usage/agentrouter.ts";
 import { getKilocodeUsage } from "./usage/kilocode.ts";
 import { getChatPlaygroundUsage } from "./usage/chatplayground.ts";
 import { getCloudflareAiUsage } from "./usage/cloudflareAi.ts";
+import { getZcodeUsage } from "./usage/zcode.ts";
 
 type JsonRecord = Record<string, unknown>;
 type UsageProviderConnection = JsonRecord & {
@@ -150,6 +151,8 @@ export async function getUsageForProvider(
   }
 
   switch (provider) {
+    case "zcode-start":
+      return await getZcodeUsage(provider);
     case "github":
       return await getGitHubUsage(accessToken, providerSpecificData, id || "");
     case "antigravity":
