@@ -547,3 +547,17 @@ export const PROVIDERS = {
   ZED_HOSTED: "zed-hosted",
   MUSE_CODE: "muse-code",
 };
+
+/** Z.ai (ZCode) CLI OAuth flow — served by zcode.z.ai flow API; OmniRoute drives the same contract as the official CLI. */
+export const ZAI_CONFIG = {
+  id: "zai",
+  displayName: "Z.ai (ZCode)",
+  enabled: true,
+  order: 2,
+  flowBaseUrl: "https://zcode.z.ai/api/v1",
+  authorizeUrl: "https://chat.z.ai/api/oauth/authorize",
+  tokenUrl: "https://zcode.z.ai/api/v1/oauth/token",
+  appId: "zcode",
+  redirectUri: "https://zcode.z.ai/api/v1/oauth/cli/callback/zai",
+  pollProvider: "zai",
+} as const;
