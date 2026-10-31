@@ -34,6 +34,7 @@ import { workbuddy } from "./workbuddy";
 import { zed } from "./zed";
 import { zedHosted } from "./zed-hosted";
 import { museCode } from "./muse-code";
+import { zai } from "./zai";
 
 export const PROVIDERS = {
   claude,
@@ -74,6 +75,10 @@ export const PROVIDERS = {
   zed,
   "zed-hosted": zedHosted,
   "muse-code": museCode,
+  // Z.ai (ZCode) device-code flow — shared by both plan providers; the OAuth
+  // connection stores access/refresh tokens and open-sse refreshes generically.
+  "zcode-start": zai,
+  "zcode-individual": zai,
 };
 
 export default PROVIDERS;
