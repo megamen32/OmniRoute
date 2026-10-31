@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,10 +8,7 @@ import {
   type ProviderCredentials,
 } from "./base.ts";
 import { buildErrorBody, errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
-import {
-  MINIMAX_CODE_EFFORT_LEVELS_BY_MODEL,
-  MINIMAX_CODE_MODELS,
-} from "../config/providers/registry/minimax-code/index.ts";
+import { MINIMAX_CODE_MODELS } from "../config/providers/registry/minimax-code/index.ts";
 import {
   applyGatewayEvent,
   buildGatewayPayload,
@@ -22,23 +16,15 @@ import {
   isGatewayPayloadOversized,
   callGateway,
   ensureAccessToken,
-  gatewayErrorInBody,
-  gatewayErrorStatus,
-  isContextWindowFailure,
   gatewayResultToCompletion,
   GatewayAuthError,
-  GatewayStatusError,
   parseGatewayResult,
   parseGatewaySse,
   readAuthProfile,
   refreshAuthProfile,
   resolveAuthFile,
-  resolveEffort,
-  resolveGatewayInputLimit,
   type GatewayStreamState,
 } from "./minimaxCodeGateway.ts";
-import { runMinimaxCodeAcpTurn } from "./minimaxCodeAcp.ts";
-import { isDraining } from "../../src/lib/gracefulShutdown.ts";
 
 /**
  * MiniMax Code provider.
@@ -46,8 +32,7 @@ import { isDraining } from "../../src/lib/gracefulShutdown.ts";
  * Requests are executed by the locally installed MiniMax Code CLI
  * (`mcode exec`), which runs the same agent runtime the desktop app uses and
  * keeps the credential in the local MiniMax profile (`~/.minimax`). OmniRoute
- * stores no credential of its own: the provider reads that local profile to
- * authenticate a run and writes a rotated credential back to it.
+ * never receives or stores the MiniMax credential.
  *
  * The CLI reports its run as JSONL (`--output-format stream-json`):
  *   exec.started / session.started / turn.started
@@ -57,297 +42,13 @@ import { isDraining } from "../../src/lib/gracefulShutdown.ts";
  *   exec.completed                -> final result (status + output)
  */
 
-const MINIMAX_CODE_URL = "minimax-code://gateway";
-/**
- * The status a gateway failure has to be answered with.
- *
- * The status of the upstream answer decides what the runtime does with the
- * failure. A 4xx belongs to the request and keeps its own status; a failure
- * of the transport itself — the gateway could not be reached — is a 502, and
- * everything else is ours and stays a 500. A 502 is in the model-lockout
- * list, and it only belongs there for an outage of the gateway.
- */
-function gatewayFailureStatus(error: unknown): number {
-  if (error instanceof GatewayStatusError) {
-    // A request that does not fit the window of the model is a property of
-    // the request, not a failure of the model. The gateway answers it with a
-    // 400, and a 400 with a model scope locks the model out of the fallbacks
-    // (incident 2026-10-21) — it is answered with a 413 instead.
-    if (isContextWindowFailure(error.message)) return 413;
-    return error.status;
-  }
-  if (error instanceof GatewayAuthError) return error.status;
-  // The gateway could not be reached: that is an outage of the upstream, and
-  // a 502 keeps the model out of the combos while it lasts.
-  if (isTransportFailure(error)) return 502;
-  // Anything else is ours — a bug in the payload builder or in the parser.
-  // It says nothing about the health of the model, and a 502 would lock the
-  // model out of every combo of the instance for half an hour.
-  return 500;
-}
-
-/**
- * The status a failure of this executor is answered with while the instance
- * is draining.
- *
- * A graceful shutdown tears the transport down under the requests that are
- * still in flight, so the failure is evidence about OUR shutdown, not about
- * the health of the provider. A 5xx says the opposite: it is in the
- * model-lockout list and in the provider-breaker list, and it is not exempt
- * from the connection cooldown — so the account is written as `unavailable`
- * with a `rateLimitedUntil` into the `provider_connections` table, a state
- * that outlives the restart. The shutdown the operator asked for must not
- * cost the account its health.
- *
- * 499 is the answer an aborted caller gets, and it carries
- * `client_disconnected`, which the connection-cooldown policy already exempts
- * (`shouldSkipConnDisable`) — so the account is not poisoned. It is in neither
- * the model-lockout nor the provider-breaker status list, so it can neither
- * lock the model out nor open the provider circuit.
- *
- * A refusal that belongs to the request (a 4xx of the gateway) keeps its own
- * status: that answer is about the request, not about the shutdown.
- *
- * The drain flag is read live on every call — it never latches.
- */
-function drainAwareFailureStatus(status: number): number {
-  return status >= 500 && isDraining() ? 499 : status;
-}
-
-/** A failure of the HTTP transport itself, not of our code. */
-function isTransportFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|socket hang up|network|terminated/i.test(
-    message
-  );
-}
-
-/**
- * Whether the gateway could not be reached at all.
- *
- * The local CLI is the fallback of the managed gateway, and it is a fallback
- * for an outage of the gateway service only: a gateway that answers with a
- * status refused or rejected the request, and the local CLI would not change
- * that answer — the credential of the CLI is the credential of the user, but
- * the request is the same request. A 5xx of the gateway says the model
- * itself is unavailable, and the local CLI talks to the same model.
- *
- * A failure of the transport is the other case: the gateway service could
- * not be reached, and the local CLI is a different path to the model that
- * answers the request while the gateway is down.
- */
-function isGatewayUnreachable(error: unknown): boolean {
-  if (error instanceof GatewayStatusError) return false;
-  if (error instanceof GatewayAuthError) return false;
-  return isTransportFailure(error);
-}
-
-/**
- * Ceiling on the estimated input size of one LOCAL CLI request.
- *
- * The local transport has a lower ceiling than the managed gateway, and the
- * reason is the agent, not the model: the CLI adds its own scaffolding (the
- * system prompt and the host tools) on top of the prompt, so the request
- * that reaches the model is larger than the one that was sent.
- *
- * Incident 2026-10-21: a request of ~322k input tokens ran on this transport
- * for 236 s and came back as `limit_exceeded`. That error trips the in-memory
- * model lockout, which took the MiniMax leg out of every combo for ~27
- * minutes, so a request of that size is refused here with a fast 413.
- */
-const LOCAL_TRANSPORT_MAX_INPUT_TOKENS = 200_000;
-
-/**
- * Ceiling on the size in BYTES of one LOCAL CLI request.
- *
- * The CLI buffers the request in its own SSE hub before it reaches the model,
- * and that hub has a hard byte ceiling: a subscriber holds at most
- * `512 * 1024 = 524_288` bytes and at most 128 items (`maxBytes`/`vEr` and
- * `maxItems`/`_Er` in the CLI bundle), and it overflows as soon as
- * `queuedBytes + byteSize > maxBytes` — the error the CLI reports as
- * `SSE subscriber overflow: <n> items / <n> bytes`. The size of an item is
- * its UTF-8 byte length, the same measure this guard uses.
- *
- * The published item is the whole request frame, so the prompt is only a part
- * of it: the frame carries the session and turn ids around the prompt, and
- * the CLI adds its own scaffolding (the system prompt and the host tools) on
- * top of it. That overhead is not a constant of the bundle — it depends on
- * the session and on the mode — so the ceiling below is the measured one: a
- * prompt of 500 000 bytes was answered by the CLI, a prompt of 585 KiB always
- * died with the overflow. 500 000 bytes is therefore the largest prompt size
- * that is known to fit (524 288 bytes minus the 24 288 bytes of overhead the
- * measurement leaves room for), and it sits below the byte equivalent of the
- * token ceiling above, so the byte guard binds first for a text that fits in
- * the token estimate.
- *
- * The overflow is a property of the request, never of the health of the
- * model: a request that does not fit is refused the same way on every account
- * and every run.
- */
-export const LOCAL_TRANSPORT_MAX_PROMPT_BYTES = 500_000;
-
-/**
- * Whether a prompt is too large for the local transport.
- *
- * The same estimate the gateway path uses, so both refusals name the same
- * unit. The local transport sends the prompt as one string, so it is measured
- * as a single message.
- */
-export function isLocalRequestOversized(prompt: string): boolean {
-  const estimate = estimateGatewayInputTokens({
-    messages: [{ role: "user", content: prompt }],
-  });
-  return estimate > LOCAL_TRANSPORT_MAX_INPUT_TOKENS;
-}
-
-/**
- * Whether a prompt is too large in BYTES for the local transport.
- *
- * The measure is the UTF-8 byte length, because that is what the hub of the
- * CLI counts: a prompt of multi-byte characters (Cyrillic, CJK, emoji) is
- * bigger in bytes than in UTF-16 code units, and a guard that counted code
- * units would let exactly the requests that overflow through.
- */
-export function isLocalRequestOversizedInBytes(prompt: string): boolean {
-  return Buffer.byteLength(prompt, "utf8") > LOCAL_TRANSPORT_MAX_PROMPT_BYTES;
-}
-
-/**
- * The effort level one request runs with.
- *
- * The catalog declares effort levels for MiniMax-M3.1-Flash only, and the CLI
- * refuses `--effort` for a model without them ("does not support reasoning
- * effort selection"), so a level for such a model is dropped here instead of
- * failing the run.
- */
-export function resolveModelEffort(model: string, body: JsonRecord): string | undefined {
-  const effort = resolveEffort(body);
-  if (!effort) return undefined;
-  const levels = MINIMAX_CODE_EFFORT_LEVELS_BY_MODEL[model];
-  if (levels && !levels.includes(effort)) return undefined;
-  return effort;
-}
-
-/**
- * The status a refusal of the local CLI transport has to be answered with.
- *
- * The CLI refuses a request for a reason that belongs to the request ("too
- * large", "no such model") and for a reason that belongs to this host (the
- * binary is missing, the agent died). None of them says anything about the
- * health of the model, and a 502 is in the model-lockout list: one refusal
- * would take the model out of every combo for half an hour.
- */
-export function cliFailureStatus(message: string): number {
-  if (isCliAuthFailure(message)) return 401;
-  if (/too large|too long|context length|exceeds the maximum|maximum context/i.test(message)) {
-    return 413;
-  }
-  if (/model .*(not found|not supported|unknown)|unknown model|invalid model/i.test(message)) {
-    return 400;
-  }
-  if (isCliRequestTooLargeFailure(message)) return 413;
-  return 500;
-}
-
-/**
- * Whether the CLI refused the request because it does not fit.
- *
- * The CLI reports that refusal in two ways: the overflow of its own SSE hub
- * (`SSE subscriber overflow: <n> items / <n> bytes`) and the run status
- * `limit_exceeded`. Both are a property of the request — the same request is
- * refused the same way on every account — so both are answered with a 413.
- */
-function isCliRequestTooLargeFailure(message: string): boolean {
-  // A quota is a condition of the account, not of the request: the recovery
-  // is a subscription and not a smaller prompt, so quota wording keeps the
-  // status it has today.
-  if (isCliQuotaFailure(message)) return false;
-  if (/sse subscriber overflow/i.test(message)) return true;
-  // The run status has to be a standalone token: the CLI reports an exhausted
-  // entitlement as `entitlement_limit_exceeded`, and that is a quota, not a
-  // refusal of the request.
-  return /(^|[^0-9a-z_])limit_exceeded([^0-9a-z_]|$)/i.test(message);
-}
-
-/**
- * Whether the message reports an exhausted quota of the CLI.
- *
- * The wording of the account (`quota`, `insufficient_quota`, `quota_exhausted`,
- * `entitlement`) is not a refusal of the request: it has to keep its own
- * status instead of becoming a request-scoped 413.
- */
-function isCliQuotaFailure(message: string): boolean {
-  return /quota|entitlement/i.test(message);
-}
-
-/**
- * The error classification of a failure of the local CLI.
- *
- * A request-scoped refusal is marked as one, so the fallback layer keeps it
- * out of the model lockout: another account of the same model would fail the
- * same way. Only the statuses that are a property of the request are marked
- * — a 401 or a 500 stay what they are.
- */
-export function cliFailureClassification(
-  status: number
-): { type: string; code?: string } | undefined {
-  if (status !== 400 && status !== 413 && status !== 422) return undefined;
-  return { type: "invalid_request_error" };
-}
-
-/**
- * The error classification of a gateway failure.
- *
- * A request-scoped refusal is marked as one, so the fallback layer keeps it
- * out of the model lockout: another account of the same model would fail the
- * same way. Only the statuses that are a property of the request are marked
- * — a 403 or a 429 stay what they are.
- */
-function gatewayFailureClassification(error: unknown): { type: string; code?: string } | undefined {
-  const status = gatewayFailureStatus(error);
-  if (status !== 400 && status !== 413 && status !== 422) return undefined;
-  return { type: "invalid_request_error" };
-}
-
-/**
- * The local CLI refuses the run when it is not signed in.
- *
- * That refusal says nothing about the health of the model, and it must not be
- * answered with a 502: a 502 is in the model-lockout list, so a missing
- * credential takes the model out of every combo for half an hour — for every
- * session on the instance, not only for the one that needed the credential.
- * The answer is 401: the credential is missing or expired, and the operator
- * has to sign in again.
- */
-function isCliAuthFailure(message: string): boolean {
-  return /authentication required/i.test(message) || /mcode login/i.test(message);
-}
-/**
- * Budget of one managed-gateway call.
- *
- * The whole call (the refresh, the attempt, the backoff and the retry) has to
- * stay under the per-target timeout of the routing machinery (120 s): a
- * target that runs longer is cut off with a synthetic 504, and a 504 is in
- * the model-lockout list, so a slow gateway would take the model out of
- * every fallback combo of the instance. The budget therefore has to be
- * shorter than that timeout, and it covers every attempt of the call.
- */
-const DEFAULT_GATEWAY_TIMEOUT_MS = 100_000;
+const MINIMAX_CODE_URL = "minimax-code://cli/exec";
 const MINIMAX_CODE_PROVIDER_ID = "minimax";
 const DEFAULT_MODEL = MINIMAX_CODE_MODELS[0]?.id || "MiniMax-M3.1-Flash";
 const MINIMAX_CODE_MODEL_ALLOWLIST = new Set(MINIMAX_CODE_MODELS.map((model) => model.id));
-/**
- * Budget of one local CLI run.
- *
- * The budget has to stay under the per-target timeout of the routing
- * machinery (120 s): a run that is cut off by that timer is answered with a
- * synthetic 504, and a 504 is in the model-lockout list — the model would be
- * taken out of every combo of the instance for minutes because one turn was
- * slow. The provider answers first instead, with a status that says nothing
- * about the health of the model.
- */
-const DEFAULT_TURN_TIMEOUT_MS = 100_000;
+const DEFAULT_TURN_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_STEPS = 1;
+const DEFAULT_MAX_STEPS_WITH_TOOLS = 8;
 const DEFAULT_CONTEXT_MODE = "lightweight";
 const DEFAULT_PERMISSION_POLICY = "smart";
 
@@ -404,8 +105,6 @@ export interface MinimaxCodeRunResult {
 }
 
 export interface MinimaxCodeExecutorOptions {
-  /** Profile directory of the shared agent (default: the code profile). */
-  agentDataDir?: string;
   /** Path to the `mcode` binary (default: `mcode` from PATH). */
   command?: string;
   /** Replaces the computed `mcode exec` arguments — used by tests. */
@@ -414,19 +113,18 @@ export interface MinimaxCodeExecutorOptions {
   cwd?: string;
   /** Maximum assistant steps for one run (default: 1 — a single answer). */
   maxSteps?: number;
-  /** Tool permission policy handed to the CLI (default: `smart`). */
+  /** Step budget for runs that carry client tools (default: 8). */
+  maxStepsWithTools?: number;
+  /** Tool permission policy handed to the CLI (default: `off`). */
   permission?: string;
   /** CLI context mode: `lightweight` (conversation) or `standard` (full agent). */
   mode?: string;
   /**
    * Transport used for a run.
-   *   "gateway"— the managed gateway (the default). It has no fallback: a
-   *              failing gateway answers with the status of the failure and
-   *              names the transport. A missing credential answers with a 401
-   *              — it is not an outage of the model.
    *   "auto"   — client tools go through the managed gateway (native function
    *              calling, the client executes the tools), plain chat stays on
    *              the local CLI in the fast lightweight profile.
+   *   "gateway"— always the managed gateway.
    *   "cli"    — always the local CLI.
    */
   transport?: "auto" | "gateway" | "cli";
@@ -440,13 +138,6 @@ export interface MinimaxCodeExecutorOptions {
   timeoutMs?: number;
   /** Extra CLI arguments appended to the run. */
   extraArgs?: string[];
-  /**
-   * Allow a CLI run to use the host tools (shell, file, memory, web).
-   *
-   * Off by default: the host tools let a request reach the machine the
-   * provider runs on.
-   */
-  allowHostTools?: boolean;
   /** Injection point for the process runner (tests). */
   runner?: (options: MinimaxCodeRunOptions) => Promise<MinimaxCodeRunResult>;
   env?: NodeJS.ProcessEnv;
@@ -523,7 +214,6 @@ export function buildMinimaxCodeExecArgs(options: {
   permission?: string;
   timeoutMs?: number;
   mode?: string;
-  effort?: string;
   extraArgs?: string[];
 }): string[] {
   const args = [
@@ -531,7 +221,7 @@ export function buildMinimaxCodeExecArgs(options: {
     "--model",
     `${MINIMAX_CODE_PROVIDER_ID}/${options.model}`,
     "--permission",
-    options.permission || DEFAULT_PERMISSION_POLICY,
+    options.permission || "off",
     "--mode",
     options.mode || DEFAULT_CONTEXT_MODE,
     "--output-format",
@@ -543,9 +233,6 @@ export function buildMinimaxCodeExecArgs(options: {
     "--cwd",
     options.cwd,
   ];
-  // The CLI validates the level against the levels its own model catalog
-  // declares for the model and refuses a model that has none.
-  if (options.effort) args.push("--effort", options.effort);
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   if (Number.isFinite(maxSteps) && maxSteps > 0) args.push("--max-steps", String(maxSteps));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
@@ -558,19 +245,20 @@ export function buildMinimaxCodeExecArgs(options: {
 /**
  * Pick the transport for one request.
  *
- * The managed gateway is the transport of every request: it speaks the native
- * tool protocol, it needs no CLI installed on the server and it answers in
- * seconds. The local CLI is not a second transport any more — it is the
- * fallback of the gateway, for a gateway that cannot be reached.
+ * A request that carries client `tools` comes from an agentic client
+ * (OpenCode, Codex, ...). Those tools live on the client machine and the
+ * model has to call them, so the run goes to the managed gateway: it speaks
+ * the native tool protocol and returns the calls to the client.
  *
- * `cli` stays an explicit opt-out for a deployment that wants every request
- * to run on the locally installed CLI. `auto` is an alias of the default.
+ * A plain chat request has nothing to execute, so it stays on the local CLI
+ * in the lightweight profile — no tools, small prompt, half the latency.
  */
 export function resolveMinimaxCodeTransport(
-  configured: "auto" | "gateway" | "cli"
+  configured: "auto" | "gateway" | "cli",
+  hasTools: boolean
 ): "gateway" | "cli" {
-  if (configured === "cli") return "cli";
-  return "gateway";
+  if (configured !== "auto") return configured;
+  return hasTools ? "gateway" : "cli";
 }
 
 export function createExecState(): MinimaxCodeExecState {
@@ -647,13 +335,6 @@ export async function runMinimaxCodeExec(
   let stderr = "";
   let buffer = "";
   let timedOut = false;
-
-  if (options.cwd) {
-    // The default workspace does not exist on a fresh host, and a spawn with a
-    // missing working directory fails with ENOENT — indistinguishable from a
-    // CLI that is not installed.
-    await mkdir(options.cwd, { recursive: true }).catch(() => undefined);
-  }
 
   const child = spawn(options.command, options.args, {
     cwd: options.cwd,
@@ -769,41 +450,20 @@ function sseChunk(
   return `data: ${JSON.stringify(chunk)}\n\n`;
 }
 
-/**
- * The version of the local CLI, probed once per process.
- *
- * A broken or missing install is the most common reason for a CLI run to
- * fail, and the version in the run log is what tells the two apart.
- */
-let cliVersionCache: string | null | undefined;
-
-export async function probeCliVersion(command: string): Promise<string | null> {
-  if (cliVersionCache !== undefined) return cliVersionCache;
-  cliVersionCache = null;
-  try {
-    // execFile is the callback API: awaited without a callback it hands back
-    // the child process, and its `stdout` is the readable stream of the
-    // child — not the output of the command.
-    const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(command, ["--version"], { timeout: 5_000, encoding: "utf8" }, (error, out) => {
-        if (error) reject(error);
-        else resolve(String(out));
-      });
-    });
-    const line = stdout
-      .split("\n")
-      .map((entry) => entry.trim())
-      .find((entry) => entry.length > 0);
-    cliVersionCache = line ? line.slice(0, 120) : null;
-  } catch {
-    cliVersionCache = null;
-  }
-  return cliVersionCache;
+function sseErrorResponse(status: number, message: string): Response {
+  const body = `data: ${JSON.stringify(buildErrorBody(status, message))}\n\ndata: [DONE]\n\n`;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }
 
 export class MinimaxCodeExecutor extends BaseExecutor {
   private readonly options: MinimaxCodeExecutorOptions;
-  private unknownTransport: string | null = null;
 
   constructor(options: MinimaxCodeExecutorOptions = {}) {
     super("minimax-code", { id: "minimax-code", baseUrl: MINIMAX_CODE_URL, format: "openai" });
@@ -818,66 +478,30 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     return null;
   }
 
-  /**
-   * Where a CLI run works.
-   *
-   * Not the server's working directory: an agent that runs in the OmniRoute
-   * checkout can read and write the server's own files. The default is a
-   * dedicated, empty workspace.
-   */
   private resolveCwd(): string {
-    return (
-      this.options.cwd ||
-      process.env.MINIMAX_CODE_CWD ||
-      join(homedir(), ".omniroute", "minimax-code-workspace")
-    );
+    return this.options.cwd || process.env.MINIMAX_CODE_CWD || process.cwd();
   }
 
-  /**
-   * The CLI binary.
-   *
-   * `MINIMAX_CODE_BIN` may pin an absolute path. Without it the name is
-   * resolved against PATH once, and the absolute path is written to the run
-   * log: a bare name can point at a different binary under a different PATH.
-   */
   private resolveCommand(): string {
     return this.options.command || process.env.MINIMAX_CODE_BIN || "mcode";
   }
 
-  /** The CLI binary as an absolute path, when it can be resolved. */
-  private resolveCommandPath(): string {
-    const command = this.resolveCommand();
-    if (command.includes("/")) return command;
-    for (const dir of (process.env.PATH || "").split(":")) {
-      if (!dir) continue;
-      const candidate = join(dir, command);
-      try {
-        if (existsSync(candidate)) return candidate;
-      } catch {
-        // An unreadable PATH entry is not a reason to fail the run.
-      }
-    }
-    return command;
-  }
-
   private resolveTimeoutMs(): number {
-    const configured =
+    return (
       this.options.timeoutMs ??
-      Number(process.env.MINIMAX_CODE_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS);
-    // A timeout of zero or a negative number would abort every run at once
-    // and answer 500, which no combo can fail over from.
-    if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_TURN_TIMEOUT_MS;
-    return Math.floor(configured);
+      Number(process.env.MINIMAX_CODE_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS)
+    );
   }
 
-  /**
-   * The step budget of a CLI run.
-   *
-   * A request that carries client tools never reaches the CLI — the local
-   * transport cannot hand a tool call back to the client — so the budget is
-   * the one of a plain chat run.
-   */
-  private resolveMaxSteps(): number {
+  private resolveMaxSteps(hasTools: boolean): number {
+    if (hasTools) {
+      // An agentic client expects the model to work through its tools and then
+      // report back, so the run needs a real step budget.
+      const raw =
+        this.options.maxStepsWithTools ??
+        Number(process.env.MINIMAX_CODE_MAX_STEPS_TOOLS || DEFAULT_MAX_STEPS_WITH_TOOLS);
+      return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_STEPS_WITH_TOOLS;
+    }
     const raw =
       this.options.maxSteps ?? Number(process.env.MINIMAX_CODE_MAX_STEPS || DEFAULT_MAX_STEPS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_STEPS;
@@ -890,54 +514,34 @@ export class MinimaxCodeExecutor extends BaseExecutor {
   }
 
   private resolveMode(): string {
-    const raw = this.options.mode || process.env.MINIMAX_CODE_MODE || DEFAULT_CONTEXT_MODE;
-    // Normalised: the host-tools gate compares against "standard", so a
-    // differently cased value must not slip past it.
-    return String(raw).trim().toLowerCase() || DEFAULT_CONTEXT_MODE;
+    return this.options.mode || process.env.MINIMAX_CODE_MODE || DEFAULT_CONTEXT_MODE;
   }
 
   private resolveGatewayTimeoutMs(): number {
-    const configured =
+    return (
       this.options.gatewayTimeoutMs ??
-      Number(process.env.MINIMAX_CODE_GATEWAY_TIMEOUT_MS || DEFAULT_GATEWAY_TIMEOUT_MS);
-    // A timeout of zero or a negative number would abort every call at once
-    // and answer 502, which locks the model out of the fallbacks.
-    if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_GATEWAY_TIMEOUT_MS;
-    return Math.floor(configured);
+      Number(process.env.MINIMAX_CODE_GATEWAY_TIMEOUT_MS || 120_000)
+    );
   }
 
-  /**
-   * The configured transport, normalized.
-   *
-   * The default is the managed gateway: it is the transport that speaks the
-   * native tool protocol, and it needs no CLI installed on the server. The
-   * local CLI is the fallback of the gateway, and it stays available as an
-   * explicit transport for a deployment that asks for it.
-   */
   private configuredTransport(): "auto" | "gateway" | "cli" {
     const raw = this.options.transport || process.env.MINIMAX_CODE_TRANSPORT || "gateway";
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "auto" || normalized === "gateway" || normalized === "cli") {
-      return normalized;
-    }
-    this.unknownTransport = raw;
-    return "gateway";
+    return raw === "auto" || raw === "cli" ? raw : "gateway";
   }
 
   /**
    * Pick the transport for one request.
    *
-   * The managed gateway is the transport of every request — a request that
-   * carries client `tools` and a plain chat request alike. The tools live on
-   * the client machine and the model has to call them, so the gateway has to
-   * speak the native tool protocol; and a plain chat request is faster on the
-   * gateway than on the local CLI.
+   * A request that carries client `tools` comes from an agentic client
+   * (OpenCode, Codex, ...). Those tools live on the client machine and the
+   * model has to call them, so the run goes to the managed gateway: it
+   * speaks the native tool protocol and returns the calls to the client.
    *
-   * The local CLI is the fallback of the gateway, not a transport of its own:
-   * it runs the request when the gateway cannot be reached.
+   * A plain chat request has nothing to execute, so it stays on the local CLI
+   * in the lightweight profile — no tools, small prompt, half the latency.
    */
-  private resolveTransport(): "gateway" | "cli" {
-    return resolveMinimaxCodeTransport(this.configuredTransport());
+  private resolveTransport(hasTools: boolean): "gateway" | "cli" {
+    return resolveMinimaxCodeTransport(this.configuredTransport(), hasTools);
   }
 
   /**
@@ -949,16 +553,6 @@ export class MinimaxCodeExecutor extends BaseExecutor {
    * request stays on the lightweight profile — no tools, a small prompt and
    * roughly half the latency.
    */
-  /** Host tools are opt-in: they let a request reach the host machine. */
-  private hostToolsAllowed(): boolean {
-    const raw = this.options.allowHostTools ?? process.env.MINIMAX_CODE_ALLOW_HOST_TOOLS;
-    return (
-      String(raw ?? "")
-        .trim()
-        .toLowerCase() === "true"
-    );
-  }
-
   private resolveModeForRequest(body: JsonRecord): string {
     const tools = body.tools;
     if (Array.isArray(tools) && tools.length > 0) return "standard";
@@ -970,8 +564,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     prompt: string,
     mode: string,
     maxSteps: number,
-    signal?: AbortSignal | null,
-    effort?: string
+    signal?: AbortSignal | null
   ): MinimaxCodeRunOptions {
     const cwd = this.resolveCwd();
     const args =
@@ -983,7 +576,6 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         permission: this.resolvePermission(),
         timeoutMs: this.resolveTimeoutMs(),
         mode,
-        effort,
         extraArgs: this.options.extraArgs,
       });
     return {
@@ -1000,47 +592,6 @@ export class MinimaxCodeExecutor extends BaseExecutor {
   }
 
   /**
-   * Whether the local transport runs on the shared agent.
-   *
-   * The switch is a deployment setting, not a code constant: a host that
-   * wants a process per request keeps the one-shot CLI run.
-   */
-  private sharedAgentEnabled(): boolean {
-    const raw = String(process.env.MINIMAX_CODE_SHARED_AGENT ?? "")
-      .trim()
-      .toLowerCase();
-    return raw === "1" || raw === "true" || raw === "yes";
-  }
-
-  /** One turn on the shared agent. */
-  private async runSharedAgentTurn(
-    options: MinimaxCodeRunOptions,
-    model: string,
-    effort?: string
-  ): Promise<MinimaxCodeRunResult> {
-    const text = await runMinimaxCodeAcpTurn({
-      command: options.command,
-      // The shared agent speaks the Agent Client Protocol; the one-shot
-      // arguments of the CLI path do not apply to it.
-      args: ["acp"],
-      cwd: options.cwd,
-      prompt: options.prompt,
-      model,
-      effort,
-      timeoutMs: options.timeoutMs,
-      signal: options.signal,
-      env: options.env,
-      dataDir: this.options.agentDataDir,
-      onDelta: options.onDelta,
-    });
-    return {
-      text,
-      usage: null,
-      state: { text, usage: null, status: "completed", error: null },
-    };
-  }
-
-  /**
    * One call against the managed gateway. A token that expired mid-flight is
    * refreshed through the account OAuth endpoint and the call is repeated once.
    */
@@ -1051,16 +602,8 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     log?: ExecuteInput["log"]
   ): Promise<Response> {
     const path = this.options.authFile;
-    const timeoutMs = this.resolveGatewayTimeoutMs();
-    // The budget starts before the refresh: the refresh is a call to the
-    // account endpoint and has to share the bound of the whole call.
-    const startedAt = Date.now();
     const accessToken = await ensureAccessToken({
       path,
-      // The injected transport has to reach the first refresh as well: a
-      // refresh that escapes it would talk to the real account endpoint.
-      fetchImpl: this.options.fetchImpl,
-      timeoutMs: Math.max(1_000, timeoutMs - (Date.now() - startedAt)),
       onRefresh: () => log?.info?.("MINIMAX_CODE", "managed gateway access token refreshed"),
     });
     const options = {
@@ -1068,7 +611,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
       accessToken,
       stream,
       signal,
-      timeoutMs,
+      timeoutMs: this.resolveGatewayTimeoutMs(),
       fetchImpl: this.options.fetchImpl,
     };
     try {
@@ -1082,30 +625,8 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         fetchImpl: this.options.fetchImpl,
         onRefresh: () => log?.info?.("MINIMAX_CODE", "managed gateway access token refreshed"),
       });
-      // The retry after a refresh shares the budget of the call: it must not
-      // restart it, or a dead gateway would hold the slot for twice the
-      // documented bound.
-      const remaining = timeoutMs - (Date.now() - startedAt);
-      if (remaining <= 0) throw error;
-      return await callGateway({
-        ...options,
-        accessToken: refreshed.accessToken,
-        timeoutMs: remaining,
-      });
+      return await callGateway({ ...options, accessToken: refreshed.accessToken });
     }
-  }
-
-  /**
-   * The refusal for a request that is too large for the managed gateway
-   * transport. It names the transport and the model context, so the message
-   * is not read as a limit of the model itself.
-   */
-  private oversizedGatewayMessage(tokens: number): string {
-    return (
-      `MiniMax Code request is too large for the managed gateway transport: ` +
-      `~${tokens} input tokens (limit ${resolveGatewayInputLimit()}). ` +
-      `Trim the conversation and retry.`
-    );
   }
 
   /** One-shot call against the managed gateway: native tool calling, no agent. */
@@ -1117,27 +638,14 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     const payload = buildGatewayPayload(body, model);
     if (isGatewayPayloadOversized(payload)) {
       const tokens = estimateGatewayInputTokens(payload);
-      const message = this.oversizedGatewayMessage(tokens);
+      const message =
+        `MiniMax Code request is too large: ~${tokens} input tokens ` +
+        `(limit 200000). Trim the conversation and retry.`;
       input.log?.warn?.("MINIMAX_CODE", message);
-      // 413, not 400: a request-scoped refusal says nothing about the health
-      // of the model. A 400 with a model scope is classified as a model
-      // failure and locks the model out of the fallbacks, which takes the leg
-      // down for every other session (incident 2026-10-21).
-      return errorResponse(413, message);
+      return errorResponse(400, message);
     }
     const response = await this.callManagedGateway(payload, false, input.signal, input.log);
-    const doc = asRecord(await response.json());
-    // A 200 answer can carry the refusal of the gateway in its body. Parsing
-    // it as a normal answer hands the client an empty completion and loses
-    // the refusal.
-    const bodyError = gatewayErrorInBody(doc);
-    if (bodyError) {
-      throw new GatewayStatusError(
-        gatewayErrorStatus(bodyError.type, bodyError.message),
-        `MiniMax gateway error: ${bodyError.message}`
-      );
-    }
-    const result = parseGatewayResult(doc);
+    const result = parseGatewayResult(asRecord(await response.json()));
     return Response.json(gatewayResultToCompletion(model, result));
   }
 
@@ -1150,11 +658,11 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     const payload = buildGatewayPayload(body, model);
     if (isGatewayPayloadOversized(payload)) {
       const tokens = estimateGatewayInputTokens(payload);
-      const message = this.oversizedGatewayMessage(tokens);
+      const message =
+        `MiniMax Code request is too large: ~${tokens} input tokens ` +
+        `(limit 200000). Trim the conversation and retry.`;
       input.log?.warn?.("MINIMAX_CODE", message);
-      // The failure happens before the stream is opened, so the request
-      // answers with a real status — the same as the non-streaming path.
-      return errorResponse(413, message);
+      return sseErrorResponse(400, message);
     }
     const response = await this.callManagedGateway(payload, true, input.signal, input.log);
     const upstream = response.body;
@@ -1229,12 +737,9 @@ export class MinimaxCodeExecutor extends BaseExecutor {
               error instanceof Error ? error.message : String(error)
             );
             input.log?.warn?.("MINIMAX_CODE", message);
-            const status = gatewayFailureStatus(error);
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify(
-                  buildErrorBody(status, message, undefined, gatewayFailureClassification(error))
-                )}\n\ndata: [DONE]\n\n`
+                `data: ${JSON.stringify(buildErrorBody(502, message))}\n\ndata: [DONE]\n\n`
               )
             );
           } finally {
@@ -1254,60 +759,25 @@ export class MinimaxCodeExecutor extends BaseExecutor {
     });
   }
 
-  /**
-   * Run one request through the MiniMax Code transport.
-   *
-   * @executorRecovery custom
-   * @executorRecoveryReason Owns its own dispatch: the request goes either to the managed MiniMax subscription gateway or to the local MiniMax Code CLI, and the answer of each is turned into an OpenAI answer here. None of the three recovery kinds of the base loop applies to this payload — it carries no reasoning enum, no field the base recovery knows how to repair, and no Gemini budget — and the refusals of the request keep their own status (413 above the ceiling of the gateway, 400 for a refusal of the gateway), so they are never read as an outage of the model.
-   * @executorRecoveryTest tests/unit/minimax-code-executor.test.ts
-   */
   async execute(input: ExecuteInput): Promise<ExecutorExecuteResult> {
     const resolution = resolveMinimaxCodeModel(input.model);
     if (!resolution.ok) {
       const message = "error" in resolution ? resolution.error : "Invalid MiniMax Code model";
-      return errorResponse(400, message);
+      return input.stream ? sseErrorResponse(400, message) : errorResponse(400, message);
     }
 
     const body = asRecord(input.body);
     const messages = Array.isArray(body.messages) ? (body.messages as OpenAIMsg[]) : [];
     const prompt = buildMinimaxCodePrompt(messages);
-    // The local transport runs on one shared agent when the deployment asks
-    // for it: the runtime costs a few hundred megabytes and a few seconds of
-    // start-up, and that cost is paid once for the whole process instead of
-    // once per request.
-    const runner =
-      this.options.runner ??
-      (this.sharedAgentEnabled()
-        ? (runOptions: MinimaxCodeRunOptions) =>
-            this.runSharedAgentTurn(runOptions, resolution.model, effort)
-        : runMinimaxCodeExec);
+    const runner = this.options.runner ?? runMinimaxCodeExec;
     const mode = this.resolveModeForRequest(body);
-    const effort = resolveModelEffort(resolution.model, body);
-    const clientTools = Array.isArray(body.tools) ? body.tools : [];
-    const wantsTools = clientTools.length > 0;
-    const transport = this.resolveTransport();
-    const maxSteps = this.resolveMaxSteps();
-    if (this.unknownTransport) {
-      input.log?.warn?.(
-        "MINIMAX_CODE",
-        `unknown MINIMAX_CODE_TRANSPORT=${this.unknownTransport}; using the managed gateway`
-      );
-      this.unknownTransport = null;
-    }
+    const wantsTools = Array.isArray(body.tools) && body.tools.length > 0;
+    const transport = this.resolveTransport(wantsTools);
+    const maxSteps = this.resolveMaxSteps(wantsTools);
     input.log?.info?.(
       "MINIMAX_CODE",
-      `run started model=${resolution.model} transport=${transport} mode=${mode}` +
-        // The level of the reasoning, when the request named one.
-        (effort ? ` effort=${effort}` : "") +
-        // The step budget belongs to the CLI run; the gateway has no steps.
-        (transport === "cli" ? ` maxSteps=${maxSteps}` : "") +
-        ` clientTools=${clientTools.length} cwd=${this.resolveCwd()}`
+      `run started model=${resolution.model} transport=${transport} mode=${mode} maxSteps=${maxSteps} clientTools=${wantsTools ? body.tools.length : 0}`
     );
-
-    // The local CLI runs the request when the transport is the local CLI, and
-    // when the managed gateway could not be reached: the CLI is the fallback
-    // of the gateway, not a transport of its own.
-    let localTransport = transport === "cli";
 
     if (transport === "gateway") {
       try {
@@ -1318,136 +788,11 @@ export class MinimaxCodeExecutor extends BaseExecutor {
         const message = sanitizeErrorMessage(
           error instanceof Error ? error.message : String(error)
         );
-        const failureStatus = gatewayFailureStatus(error);
-        if (isDraining() && failureStatus >= 500) {
-          // Our own shutdown tore the transport down under a request that was
-          // still in flight. That failure is evidence about OUR shutdown, not
-          // about the health of the provider, so the answer is 499
-          // (client_disconnected) — the status an aborted caller already gets.
-          // 499 is exempt from the connection cooldown, so the account is not
-          // written as `unavailable` in the database, a state that outlives
-          // the restart; and it is in neither the model-lockout nor the
-          // provider-breaker status list.
-          //
-          // The local CLI is deliberately NOT started here: it runs for
-          // minutes, and the instance is going away. The request dies with
-          // the shutdown, which is what the caller asked for.
-          //
-          // A refusal that belongs to the request (a 4xx of the gateway) keeps
-          // its own status — that answer is about the request, not about the
-          // shutdown — so only a 5xx takes this branch.
-          input.log?.warn?.(
-            "MINIMAX_CODE",
-            `gateway transport failed while the instance is draining: ${message}`
-          );
-          return errorResponse(499, message);
-        }
-        if (isGatewayUnreachable(error)) {
-          // The gateway could not be reached at all. The local CLI is the
-          // fallback of the gateway for that case: it reads the credential of
-          // the user's own MiniMax Code profile, so the request is answered
-          // while the gateway is down. A request that carries client tools is
-          // not answered by it: the CLI has no way to hand a tool call back
-          // to the client, and it is refused below with a request-scoped 400.
-          input.log?.warn?.(
-            "MINIMAX_CODE",
-            `gateway transport failed, falling back to the local CLI: ${message}`
-          );
-          localTransport = true;
-        } else {
-          // The status of the gateway answer decides what the runtime does with
-          // the failure. A 4xx is a property of the request and keeps its own
-          // status: a refusal that arrives as a 502 is recorded as a model
-          // outage, and the model lockout that follows takes the MiniMax leg
-          // out of every combo for minutes (incident 2026-10-21). Only a
-          // failure of the transport itself is a 502; everything else is ours
-          // and stays a 500.
-          const status = gatewayFailureStatus(error);
-          const detail =
-            status === 502
-              ? `MiniMax managed gateway unavailable (${message})`
-              : `MiniMax gateway rejected the request (${status}): ${message}`;
-          input.log?.warn?.("MINIMAX_CODE", detail);
-          // The failure happens before the stream is opened, so the request
-          // answers with a real status instead of an error inside a 200 stream.
-          return errorResponse(
-            drainAwareFailureStatus(status),
-            detail,
-            gatewayFailureClassification(error)
-          );
-        }
+        input.log?.warn?.(
+          "MINIMAX_CODE",
+          `gateway transport failed, falling back to the local CLI: ${message}`
+        );
       }
-    }
-
-    if (localTransport) {
-      // The local transport would run the request for minutes and answer
-      // `limit_exceeded`, which locks the model out of the fallbacks. A
-      // request-scoped refusal answers with a fast 413 instead.
-      if (isLocalRequestOversized(prompt)) {
-        const tokenEstimate = estimateGatewayInputTokens({
-          messages: [{ role: "user", content: prompt }],
-        });
-        const message =
-          `MiniMax Code request is too large for the local transport: ` +
-          `~${tokenEstimate} input tokens (limit ${LOCAL_TRANSPORT_MAX_INPUT_TOKENS} tokens, ` +
-          `${LOCAL_TRANSPORT_MAX_PROMPT_BYTES} bytes). ` +
-          `Trim the conversation and retry.`;
-        input.log?.warn?.("MINIMAX_CODE", message);
-        return errorResponse(413, message);
-      }
-      // The hub of the CLI has a byte ceiling of its own, and it is lower
-      // than the token ceiling for a text of one byte per character: a
-      // request that fits in the token estimate can still overflow the hub.
-      if (isLocalRequestOversizedInBytes(prompt)) {
-        const byteLength = Buffer.byteLength(prompt, "utf8");
-        const message =
-          `MiniMax Code request is too large for the local transport: ` +
-          `${byteLength} bytes (limit ${LOCAL_TRANSPORT_MAX_PROMPT_BYTES} bytes, ` +
-          `${LOCAL_TRANSPORT_MAX_INPUT_TOKENS} tokens). ` +
-          `Trim the conversation and retry.`;
-        input.log?.warn?.("MINIMAX_CODE", message);
-        return errorResponse(413, message);
-      }
-    }
-
-    if (localTransport && wantsTools) {
-      // The local CLI cannot execute client tools: it has no way to hand a
-      // tool call back to the client, and answering with prose would make the
-      // client believe the turn is over without a single tool having run.
-      // The host-tools opt-in is about the agent's own tools, not about the
-      // caller's protocol, so it does not unlock this path.
-      const message =
-        transport === "cli"
-          ? "MiniMax Code: the local CLI transport cannot execute client tools — " +
-            "use the managed gateway transport for a request that carries tools."
-          : "MiniMax Code: the managed gateway could not be reached and the local CLI " +
-            "transport cannot execute client tools — the request carries tools and the CLI " +
-            "has no way to hand a tool call back to the client.";
-      input.log?.warn?.("MINIMAX_CODE", message);
-      // The refusal is a property of the request, not of the model: it is
-      // answered with a request-scoped status so it cannot lock the model
-      // out of the fallbacks.
-      return errorResponse(400, message, { type: "invalid_request_error" });
-    }
-
-    const cliPath = this.resolveCommandPath();
-    const cliVersion = await probeCliVersion(cliPath);
-    input.log?.info?.(
-      "MINIMAX_CODE",
-      `local CLI ${cliPath}${cliVersion ? ` (${cliVersion})` : " (version unknown)"}`
-    );
-
-    if (mode === "standard" && !this.hostToolsAllowed()) {
-      // The `standard` context gives the agent the host tools (shell, file,
-      // memory, web). A run must not reach them by default — not even when
-      // the mode is pinned through MINIMAX_CODE_MODE, and not even when the
-      // request itself carries no tools.
-      const message =
-        "MiniMax Code: the local CLI runs in `standard` mode, which gives the agent the host " +
-        "tools (shell, file, memory, web). Set MINIMAX_CODE_ALLOW_HOST_TOOLS=true to allow it, " +
-        "or use the managed gateway transport.";
-      input.log?.warn?.("MINIMAX_CODE", message);
-      return errorResponse(400, message);
     }
 
     if (input.stream) {
@@ -1465,14 +810,7 @@ export class MinimaxCodeExecutor extends BaseExecutor {
                 )
               );
               await runner({
-                ...this.buildRunOptions(
-                  resolution.model,
-                  prompt,
-                  mode,
-                  maxSteps,
-                  input.signal,
-                  effort
-                ),
+                ...this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal),
                 onDelta: (delta) => {
                   controller.enqueue(
                     encoder.encode(
@@ -1490,12 +828,9 @@ export class MinimaxCodeExecutor extends BaseExecutor {
                 error instanceof Error ? error.message : String(error)
               );
               input.log?.warn?.("MINIMAX_CODE", message);
-              const status = drainAwareFailureStatus(cliFailureStatus(message));
               controller.enqueue(
                 encoder.encode(
-                  `data: ${JSON.stringify(
-                    buildErrorBody(status, message, undefined, cliFailureClassification(status))
-                  )}\n\ndata: [DONE]\n\n`
+                  `data: ${JSON.stringify(buildErrorBody(502, message))}\n\ndata: [DONE]\n\n`
                 )
               );
             } finally {
@@ -1516,16 +851,13 @@ export class MinimaxCodeExecutor extends BaseExecutor {
 
     try {
       const result = await runner(
-        this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal, effort)
+        this.buildRunOptions(resolution.model, prompt, mode, maxSteps, input.signal)
       );
       return completionResponse(resolution.model, prompt, result.text, result.usage);
     } catch (error) {
       const message = sanitizeErrorMessage(error instanceof Error ? error.message : String(error));
       input.log?.warn?.("MINIMAX_CODE", message);
-      // A refusal of the CLI is not an outage of the model: a 502 would
-      // lock the model out of the fallbacks for half an hour.
-      const status = drainAwareFailureStatus(cliFailureStatus(message));
-      return errorResponse(status, message, cliFailureClassification(status));
+      return errorResponse(502, message);
     }
   }
 

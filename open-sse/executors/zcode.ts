@@ -11,7 +11,6 @@ import {
 import { ZcodeAppServerClient, type ZcodeClientLike } from "./zcodeProtocol.ts";
 import { errorResponse, sanitizeErrorMessage } from "../utils/error.ts";
 import { MAX_CURSOR_IMAGES, resolveCursorImages } from "../utils/cursorImages.ts";
-import { isDraining } from "../../src/lib/gracefulShutdown.ts";
 
 const ZCODE_URL = "zcode://app-server/stdio";
 const DEFAULT_PROVIDER_ID = "builtin:zai-coding-plan";
@@ -19,24 +18,6 @@ const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const ZCODE_MODEL_ALLOWLIST = new Set(ZCODE_MODELS.map((model) => model.id));
 const DEFAULT_ZCODE_MODEL = ZCODE_MODELS[0]?.id || "glm-5.2";
-/**
- * The official ZCode app-server reports an attempt-level cancellation with the
- * structured code `model_request_cancelled` and the message
- * "Model request was cancelled." (its ModelRequestCancelled error shape).
- * The request itself was fine — the ZCode server dropped THIS attempt while
- * other ZCode requests keep succeeding in parallel — so the failure must not
- * be recorded against the model (lockout) or the provider (breaker / cooldown).
- */
-const ZCODE_REQUEST_CANCELLED_CODE = "model_request_cancelled";
-const ZCODE_REQUEST_CANCELLED_MESSAGE = "Model request was cancelled.";
-/**
- * Request-scoped marker attached to a cancelled attempt so every downstream
- * resilience consumer (combo model lockout, provider circuit breaker, provider
- * cooldown, connection cooldown) classifies it as request-scoped instead of as
- * an upstream failure. Registered in REQUEST_SCOPED_UPSTREAM_ERROR_CODES
- * (open-sse/services/combo/comboPredicates.ts).
- */
-const UPSTREAM_REQUEST_CANCELLED_CODE = "upstream_request_cancelled";
 type JsonRecord = Record<string, unknown>;
 type ZcodeCommand = { command: string; args: string[] };
 type ZcodeModelResolution = { ok: true; model: string } | { ok: false; error: string };
@@ -402,61 +383,6 @@ async function withAbort<T>(promise: Promise<T>, signal?: AbortSignal | null): P
   }
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Whether a native failure is the ZCode server's attempt-level cancellation.
- *
- * Matched NARROWLY and POSITIVELY — the server's own structured code
- * (`model_request_cancelled`) or its exact cancellation sentence. A broad
- * "cancel" substring would also catch unrelated conditions the server reports
- * (e.g. the transport-level "Request was cancelled." DOMException, or the
- * protocol's own "ZCode RPC request canceled"), which are NOT model-request
- * cancellations and must keep today's behaviour.
- */
-export function isZcodeRequestCancelled(error: unknown): boolean {
-  if (errorText(error).trim() === ZCODE_REQUEST_CANCELLED_MESSAGE) return true;
-  const nativeError = asRecord(error);
-  const data = asRecord(nativeError.data);
-  return [nativeError, data, asRecord(data.error)].some(
-    (detail) =>
-      typeof detail.code === "string" &&
-      detail.code.trim().toLowerCase() === ZCODE_REQUEST_CANCELLED_CODE
-  );
-}
-
-async function prepareZcodeRequest(
-  body: unknown,
-  model: string,
-  signal?: AbortSignal | null
-): Promise<JsonRecord> {
-  const request = buildZcodeModelRequest(asRecord(body));
-  const hasImages = (request.messages as JsonRecord[]).some(
-    (message) =>
-      Array.isArray(message.content) &&
-      message.content.some((block) => asRecord(block).type === "image")
-  );
-  if (hasImages && !ZCODE_MODELS.find((entry) => entry.id === model)?.supportsVision)
-    throw new Error(`ZCode model "${model}" does not support image input`);
-  await resolveRequestImages(request, signal);
-  return request;
-}
-
-// The native runtime validates that maxOutputTokens is a positive integer
-// inside the model's option range on every turn, while the RPC selection
-// payload must stay schema-clean. Bound a caller-provided limit into the
-// registry range; otherwise use the bound.
-function boundMaxOutputTokens(request: JsonRecord, nativeMaxTokens: number | undefined): void {
-  if (typeof nativeMaxTokens !== "number") return;
-  const callerMax =
-    typeof request.maxOutputTokens === "number" && request.maxOutputTokens >= 1
-      ? Math.floor(request.maxOutputTokens)
-      : undefined;
-  request.maxOutputTokens = Math.min(callerMax ?? nativeMaxTokens, nativeMaxTokens);
-}
-
 export class ZcodeExecutor extends BaseExecutor {
   constructor(private readonly options: ZcodeExecutorOptions = {}) {
     super("zcode", { id: "zcode", baseUrl: ZCODE_URL, format: "openai" });
@@ -473,31 +399,80 @@ export class ZcodeExecutor extends BaseExecutor {
       return errorResponse(400, "error" in resolution ? resolution.error : "Invalid ZCode model");
     let request: JsonRecord;
     try {
-      request = await prepareZcodeRequest(input.body, resolution.model, input.signal);
+      request = buildZcodeModelRequest(asRecord(input.body));
+      const hasImages = (request.messages as JsonRecord[]).some(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content.some((block) => asRecord(block).type === "image")
+      );
+      if (hasImages && !ZCODE_MODELS.find((model) => model.id === resolution.model)?.supportsVision)
+        throw new Error(`ZCode model "${resolution.model}" does not support image input`);
+      await resolveRequestImages(request, input.signal);
     } catch (error) {
-      return errorResponse(400, sanitizeErrorMessage(errorText(error)));
+      return errorResponse(
+        400,
+        sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
+      );
     }
     const client = this.createClient();
     let nativeQuotaScope = false;
     try {
-      const cwd = resolve(this.workingDirectory());
-      const workspace = { workspacePath: cwd, workspaceIdentity: cwd };
+      const workspace = {
+        workspacePath: resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd()),
+        workspaceIdentity: resolve(this.options.cwd || process.env.ZCODE_CWD || process.cwd()),
+      };
       await withAbort(client.start(), input.signal);
       const initialized = asRecord(
         await withAbort(client.call("zcode-agent", "initialize", [workspace]), input.signal)
       );
       if (initialized.available !== true) throw new Error("ZCode model runtime is unavailable");
-      const { selection, nativeMaxTokens } = await this.waitForSelection(
-        client,
-        resolution.model,
-        input.signal
-      );
+      // The signed-in account can hydrate after initialize while custom providers
+      // are already ready. Wait for the exact model; never substitute a provider.
+      const readyDeadline = Date.now() + (this.options.startupTimeoutMs ?? 10_000);
+      let selection: ZcodeTurnSelection;
+      let nativeMaxTokens: number | undefined;
+      for (;;) {
+        const registry = await withAbort(
+          client.call("model-selection", "getView", []),
+          input.signal
+        );
+        try {
+          selection = resolveZcodeSelection(
+            registry,
+            resolution.model,
+            this.options.providerId || process.env.ZCODE_PROVIDER_ID
+          );
+          nativeMaxTokens = resolveZcodeMaxTokens(
+            registry,
+            resolution.model,
+            this.options.providerId || process.env.ZCODE_PROVIDER_ID
+          );
+          break;
+        } catch (error) {
+          if (Date.now() >= readyDeadline) throw error;
+          await withAbort(
+            new Promise((resolve) =>
+              setTimeout(resolve, Math.min(250, readyDeadline - Date.now()))
+            ),
+            input.signal
+          );
+        }
+      }
       input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
-      boundMaxOutputTokens(request, nativeMaxTokens);
+      // The native runtime validates that maxOutputTokens is a positive integer
+      // inside the model's option range on every turn, while the RPC selection
+      // payload must stay schema-clean. Bound a caller-provided limit into the
+      // registry range; otherwise use the bound.
+      if (typeof nativeMaxTokens === "number") {
+        const callerMax =
+          typeof request.maxOutputTokens === "number" && request.maxOutputTokens >= 1
+            ? Math.floor(request.maxOutputTokens)
+            : undefined;
+        request.maxOutputTokens = Math.min(callerMax ?? nativeMaxTokens, nativeMaxTokens);
+      }
       // Scope quota evidence to this native Coding Plan inference RPC.
-      nativeQuotaScope =
-        [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID].includes(selection.providerId) &&
-        /^glm-/i.test(resolution.model);
+      nativeQuotaScope = [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID].includes(selection.providerId)
+        && /^glm-/i.test(resolution.model);
       const result = asRecord(
         await withAbort(
           client.call("zcode-agent", "generateWorkspaceText", [
@@ -524,109 +499,34 @@ export class ZcodeExecutor extends BaseExecutor {
         transport: "local-zcode-model",
       };
     } catch (error) {
-      const message = sanitizeErrorMessage(errorText(error));
+      const message = sanitizeErrorMessage(error instanceof Error ? error.message : String(error));
       input.log?.warn?.("ZCODE", message);
       // No stream has started: retain a real HTTP error, not a 200 error-only SSE
       // that the readiness guard rewrites into STREAM_EARLY_EOF.
       const nativeError = asRecord(error);
       const data = asRecord(nativeError.data);
-      const details = [
-        nativeError,
-        data,
-        asRecord(data.error),
-        asRecord(nativeError.cause),
-        asRecord(nativeError.response),
-        asRecord(data.response),
-      ];
+      const details = [nativeError, data, asRecord(data.error), asRecord(nativeError.cause),
+        asRecord(nativeError.response), asRecord(data.response)];
       const contradictoryError = details.some((detail) => {
         const code = typeof detail.code === "string" ? detail.code : "";
         const name = typeof detail.name === "string" ? detail.name : "";
-        return (
-          /auth|unauthor|forbidden|network|econn|etimed|timeout|abort|cancel|bad_gateway|service_unavailable|internal_error/i.test(
-            `${code} ${name}`
-          ) ||
-          [detail.status, detail.statusCode, detail.httpStatus].some(
-            (status) =>
-              Number.isInteger(Number(status)) &&
-              Number(status) >= 400 &&
-              Number(status) <= 599 &&
-              Number(status) !== 429
-          )
-        );
+        return /auth|unauthor|forbidden|network|econn|etimed|timeout|abort|cancel|bad_gateway|service_unavailable|internal_error/i.test(`${code} ${name}`)
+          || [detail.status, detail.statusCode, detail.httpStatus].some((status) =>
+            Number.isInteger(Number(status)) && Number(status) >= 400 && Number(status) <= 599 && Number(status) !== 429);
       });
-      const exactQuota =
-        nativeQuotaScope &&
-        !contradictoryError &&
-        !input.signal?.aborted &&
-        /^\[1310\]\[Weekly\/Monthly Limit Exhausted(?:\. Your limit will reset at [^\]\r\n]+)?\](?:\[[A-Za-z0-9_-]+\])?$/i.test(
-          errorText(error)
-        );
+      const exactQuota = nativeQuotaScope && !contradictoryError && !input.signal?.aborted
+        && /^\[1310\]\[Weekly\/Monthly Limit Exhausted(?:\. Your limit will reset at [^\]\r\n]+)?\](?:\[[A-Za-z0-9_-]+\])?$/i.test((error instanceof Error ? error.message : String(error)));
       if (exactQuota) {
         // This is terminal provider quota evidence, not proof that the native
         // input was never accepted. Do not attach pre-admission/replay flags.
         return errorResponse(429, message, {
-          type: "rate_limit_error",
-          code: "insufficient_quota",
-          reason: "quota_exhausted",
+          type: "rate_limit_error", code: "insufficient_quota", reason: "quota_exhausted",
         });
       }
-      if (input.signal?.aborted || isDraining()) {
-        // A graceful shutdown disposes the ZCode protocol client while requests are
-        // still in flight, so the upstream model is never actually asked — the
-        // failure is self-inflicted, not evidence about the model's health. Answer
-        // 499 (client_disconnected), like an aborted caller does: 499 is in neither
-        // the model-lockout error-code list nor the transient-retry list, so it can
-        // neither lock the model out nor be retried as an upstream fault.
-        return errorResponse(499, message);
-      }
-      if (isZcodeRequestCancelled(error)) {
-        // The ZCode server cancelled THIS attempt (the request itself was
-        // fine; other ZCode requests keep succeeding in parallel). It says
-        // nothing about the model or the provider, so the failure must stay
-        // request-scoped: no model lockout, no provider circuit-breaker
-        // failure, no provider cooldown.
-        //
-        // Keep the status at 502 (never 499): 499 means "client disconnected"
-        // and STOPS the whole combo loop (#1681), turning a fall-over to the
-        // next leg into a failed request. 499 stays reserved for our own
-        // client-side abort, where nobody is listening anymore.
-        return errorResponse(502, message, {
-          type: UPSTREAM_REQUEST_CANCELLED_CODE,
-          code: UPSTREAM_REQUEST_CANCELLED_CODE,
-        });
-      }
-      return errorResponse(502, message);
+      return errorResponse(input.signal?.aborted ? 499 : 502, message);
     } finally {
       await client.close().catch(() => undefined);
     }
-  }
-  // The signed-in account can hydrate after initialize while custom providers
-  // are already ready. Wait for the exact model; never substitute a provider.
-  private async waitForSelection(
-    client: ZcodeClientLike,
-    model: string,
-    signal?: AbortSignal | null
-  ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
-    const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
-    const readyDeadline = Date.now() + (this.options.startupTimeoutMs ?? 10_000);
-    for (;;) {
-      const registry = await withAbort(client.call("model-selection", "getView", []), signal);
-      try {
-        return {
-          selection: resolveZcodeSelection(registry, model, providerId),
-          nativeMaxTokens: resolveZcodeMaxTokens(registry, model, providerId),
-        };
-      } catch (error) {
-        if (Date.now() >= readyDeadline) throw error;
-        await withAbort(
-          new Promise((resolve) => setTimeout(resolve, Math.min(250, readyDeadline - Date.now()))),
-          signal
-        );
-      }
-    }
-  }
-  private workingDirectory(): string {
-    return this.options.cwd || process.env.ZCODE_CWD || process.cwd();
   }
   private turnTimeoutMs(): number {
     return (

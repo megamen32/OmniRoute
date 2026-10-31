@@ -177,6 +177,8 @@ function errorFromPayload(payload: unknown, fallback: string): Error {
     const error = new Error(message);
     if (typeof record.code === "string") Object.assign(error, { code: record.code });
     if (record.data !== undefined) Object.assign(error, { data: record.data });
+    // Preserve the full diagnostic payload (providerCode / responseBodySummary / etc.)
+    Object.assign(error, { rawPayload: record });
     return error;
   }
   return new Error(fallback);

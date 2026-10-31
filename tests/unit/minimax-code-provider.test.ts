@@ -7,7 +7,7 @@ test("MiniMax Code provider registry exposes a local no-auth MiniMax Code backen
   assert.equal(minimaxCodeProvider.alias, "mmcode");
   assert.equal(minimaxCodeProvider.executor, "minimax-code");
   assert.equal(minimaxCodeProvider.format, "openai");
-  assert.equal(minimaxCodeProvider.baseUrl, "minimax-code://gateway");
+  assert.equal(minimaxCodeProvider.baseUrl, "minimax-code://cli/exec");
   assert.equal(minimaxCodeProvider.authType, "none");
   assert.equal(minimaxCodeProvider.authHeader, "none");
   assert.equal(
