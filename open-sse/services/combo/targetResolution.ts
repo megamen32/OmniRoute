@@ -1,5 +1,7 @@
-import { getComboMetrics } from "../comboMetrics.ts";
-import { orderPlanFirstSpeedFallback } from "./planFirstSpeedFallback.ts";
+import {
+  orderPlanFirstSpeedFallback,
+  getPlanFallbackObservations,
+} from "./planFirstSpeedFallback.ts";
 /**
  * resolveComboTargetPipeline — the target-resolution phase of handleComboChat (combo.ts).
  *
@@ -935,7 +937,7 @@ export async function resolveComboTargetPipeline(
   ) {
     orderedTargets = orderPlanFirstSpeedFallback(
       orderedTargets,
-      getComboMetrics(deps.combo.name),
+      getPlanFallbackObservations(deps.combo.name),
       deps.combo.name
     );
   }

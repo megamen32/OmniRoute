@@ -1,3 +1,4 @@
+import { recordPlanFallbackObservation } from "./planFirstSpeedFallback.ts";
 /**
  * Retry loop for a combo target that already passed pre-dispatch gates.
  * Lift-as-is from combo.ts:1533–2616. Classify helpers live in
@@ -352,12 +353,25 @@ export async function executeTargetAttempt(
         decision: "dispatched",
       });
     }
+    const speedAttemptStartedAt = Date.now();
     const result = await deps.handleSingleModelWithTimeout(attemptBody, modelStr, {
       ...targetForAttempt,
       emptyTurnConnectionId,
       effectiveComboStrategy: deps.strategy,
       failoverBeforeRetry: deps.config.failoverBeforeRetry,
     });
+
+    const recordSpeedOutcome = (success: boolean) => {
+      if (deps.config.planFirstSpeedFallback === true) {
+        recordPlanFallbackObservation(
+          deps.combo.name,
+          target.executionKey,
+          Date.now() - speedAttemptStartedAt,
+          success
+        );
+      }
+    };
+    if (!result.ok) recordSpeedOutcome(false);
 
     // Success — validate response quality before returning
     if (result.ok) {
@@ -386,6 +400,7 @@ export async function executeTargetAttempt(
       );
       releaseQualityClone(qualityClone, result, quality);
       if (!quality.valid) {
+        recordSpeedOutcome(false);
         releaseRejectedQualityResponse(qualityClone, result);
         deps.log.warn(
           "COMBO",
@@ -522,6 +537,7 @@ export async function executeTargetAttempt(
         }
       }
 
+      recordSpeedOutcome(true);
       const latencyMs = Date.now() - deps.startTime;
       emit("combo.target.succeeded", {
         comboName: deps.combo.name,

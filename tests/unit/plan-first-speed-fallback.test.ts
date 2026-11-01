@@ -62,3 +62,17 @@ test("low-success and invalid or future observations cannot win on fast errors",
     cn,
   ]);
 });
+
+test("recent target observations decay and reset after staleness", async () => {
+  const { recordPlanFallbackObservation, getPlanFallbackObservations } =
+    await import("../../open-sse/services/combo/planFirstSpeedFallback.ts");
+  const combo = "ewma-test";
+  recordPlanFallbackObservation(combo, "account-a", 1000, true, 1000);
+  recordPlanFallbackObservation(combo, "account-a", 100, true, 2000);
+  assert.equal(getPlanFallbackObservations(combo)?.byTarget?.["account-a"].avgLatencyMs, 730);
+  recordPlanFallbackObservation(combo, "account-a", 100, true, 400000);
+  assert.equal(getPlanFallbackObservations(combo)?.byTarget?.["account-a"].avgLatencyMs, 100);
+  recordPlanFallbackObservation(combo, "account-b", 10, false, 400000);
+  assert.equal(getPlanFallbackObservations(combo)?.byTarget?.["account-b"].successRate, 0);
+  assert.equal(getPlanFallbackObservations(combo)?.byTarget?.["account-a"].successRate, 100);
+});
