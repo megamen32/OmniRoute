@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { zcodeAuthCooldown } from "./authCooldown.ts";
 import type { ExecuteInput, ExecutorExecuteResult } from "../base.ts";
 import { translateSseResponse } from "../glm.ts";
 import { translateNonStreamingResponse } from "../../handlers/responseTranslator.ts";
@@ -183,7 +185,26 @@ export async function executeZcodeGatewayWithPlanFallback(
       return errorResponse(401, "The selected ZCode Coding Plan credential is unavailable.");
     }
 
-    const result = await executeZcodeGateway(input, request, profile);
+    // Hash stays process-local and is never logged. A refreshed credential
+    // immediately gets its own eligibility, without waiting for the old cooldown.
+    const authKey = createHash("sha256")
+      .update(JSON.stringify([providerId, profile.messagesUrl, profile.apiKey]))
+      .digest("hex");
+    if (!zcodeAuthCooldown.acquire(authKey)) {
+      if (index + 1 < providerIds.length && !input.signal?.aborted) continue;
+      return errorResponse(
+        401,
+        "ZCode authorization is cooling down after an expired credential; refresh sign-in or wait for the bounded recovery check."
+      );
+    }
+    let result: ExecutorExecuteResult;
+    try {
+      result = await executeZcodeGateway(input, request, profile);
+      zcodeAuthCooldown.settle(authKey, responseFromResult(result).status);
+    } catch (error) {
+      zcodeAuthCooldown.settle(authKey, 499);
+      throw error;
+    }
     const response = responseFromResult(result);
     const isStartProfile = profile.plan === "start";
     if (

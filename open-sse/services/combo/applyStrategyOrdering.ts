@@ -362,6 +362,13 @@ export async function applyStrategyOrdering(
   initialOrderedTargets: ResolvedComboTarget[],
   deps: ApplyStrategyOrderingDeps
 ): Promise<ApplyStrategyOrderingResult> {
+  if (
+    deps.config.planFirstSpeedFallback === true &&
+    (strategy === "priority" || strategy === "lkgp")
+  ) {
+    // The final tier/speed pass runs after affinity and task-aware ordering.
+    return orderedOnly(initialOrderedTargets);
+  }
   const { ordering } = getStrategyTraits(strategy);
   const orderer =
     ordering === "declared" || ordering === "auto" ? undefined : STRATEGY_ORDERERS[ordering];

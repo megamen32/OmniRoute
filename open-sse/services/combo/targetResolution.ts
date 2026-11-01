@@ -1,3 +1,5 @@
+import { getComboMetrics } from "../comboMetrics.ts";
+import { orderPlanFirstSpeedFallback } from "./planFirstSpeedFallback.ts";
 /**
  * resolveComboTargetPipeline — the target-resolution phase of handleComboChat (combo.ts).
  *
@@ -923,6 +925,20 @@ export async function resolveComboTargetPipeline(
     continuity.sticky.stuck,
     autoUsedExplicitRouter
   );
+
+  // Explicit opt-in is authoritative over session/cache/last-good affinity.
+  // Apply only to operator-ordered strategies: weighted/inflight strategies
+  // retain their original reservation and ordering semantics.
+  if (
+    deps.config.planFirstSpeedFallback === true &&
+    (strategy === "priority" || strategy === "lkgp")
+  ) {
+    orderedTargets = orderPlanFirstSpeedFallback(
+      orderedTargets,
+      getComboMetrics(deps.combo.name),
+      deps.combo.name
+    );
+  }
 
   quotaShareRelease = transferInflightReservation(
     traits.inflightReservation,
