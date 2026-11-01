@@ -19,7 +19,7 @@ mkdir -p .review-logs
 docker run --rm --pull=never --read-only --memory=40g --memory-swap=40g --cpus=4 --pids-limit=512 \
   --tmpfs /work:rw,exec,nosuid,size=12g,mode=1777 \
   --tmpfs /tmp:rw,nosuid,size=1g,mode=1777 \
-  -e HOME=/work -e npm_config_cache=/work/.npm -e NODE_OPTIONS='--max-old-space-size=8192 --heap-prof' \
+  -e BASE="$BASE" -e HEAD="$HEAD" -e HOME=/work -e npm_config_cache=/work/.npm -e NODE_OPTIONS='--max-old-space-size=8192 --heap-prof' \
   -e OMNIROUTE_USE_TURBOPACK=0 -e ONNXRUNTIME_NODE_INSTALL=skip \
   "$IMAGE" bash -ec '
     cd /work
@@ -40,4 +40,4 @@ docker run --rm --pull=never --read-only --memory=40g --memory-swap=40g --cpus=4
       rm -rf "/work/$label"
       test "$code" -eq 0 || exit "$code"
     done
-  ' BASE="$BASE" HEAD="$HEAD" > .review-logs/tmpfs-build44-summary.log 2>&1
+  ' > .review-logs/tmpfs-build44-summary.log 2>&1
