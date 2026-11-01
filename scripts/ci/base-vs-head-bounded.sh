@@ -9,6 +9,26 @@ OUT="${OUTPUT_DIR:-$ROOT/.review-logs/base-vs-head}"
 mkdir -p "$OUT"
 command -v docker >/dev/null || { echo "BLOCKED: docker runner capability absent" >&2; exit 78; }
 docker info >/dev/null 2>&1 || { echo "BLOCKED: Docker daemon unavailable" >&2; exit 78; }
+# Fail closed before any clone/archive/install/build. Docker layers and worktree
+# may share the same backing filesystem even when paths differ.
+docker_root="$(docker info --format '{{.DockerRootDir}}')"
+scratch="${BUILD_SCRATCH_DIR:-$(dirname "$OUT")}"
+mkdir -p "$scratch"
+root_dev="$(stat -c %d /)"
+docker_dev="$(stat -c %d "$docker_root")"
+scratch_dev="$(stat -c %d "$scratch")"
+root_free_kb="$(df -Pk / | awk 'END {print $4}')"
+scratch_free_kb="$(df -Pk "$scratch" | awk 'END {print $4}')"
+# 20 GiB protected production root; 24 GiB dedicated build scratch.
+if ((root_dev == docker_dev || root_dev == scratch_dev)); then
+  if ((root_free_kb < 44*1024*1024)); then
+    echo "BLOCKED: Docker/scratch shares root; require 44 GiB free (24 GiB build + 20 GiB production), observed $((root_free_kb/1024/1024)) GiB" >&2
+    exit 78
+  fi
+elif ((scratch_free_kb < 24*1024*1024 || root_free_kb < 20*1024*1024)); then
+  echo "BLOCKED: scratch needs 24 GiB and root reserve 20 GiB" >&2
+  exit 78
+fi
 available_kb="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
 if ((available_kb < 20*1024*1024)); then echo "BLOCKED: require 20 GiB host MemAvailable to reserve 16 GiB job safely" >&2; exit 78; fi
 for label in base head; do
