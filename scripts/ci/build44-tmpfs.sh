@@ -51,6 +51,20 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
      tail -c 3000 "/out/$label-npm.log"
      exit "$install_rc"
    fi
+   # npm 11 can skip optional better-sqlite3 despite successful npm ci.
+   # Use only the exact lockfile version and the documented native install flow.
+   if ! node -e "require.resolve('better-sqlite3')" >/dev/null 2>&1; then
+     echo "PHASE pinned native dependency $label"
+     set +e
+     timeout --signal=TERM --kill-after=10s 180s npm install better-sqlite3@13.0.3 --no-save --foreground-scripts --package-lock=false --no-audit --no-fund 2>&1 | tail -c 8192 > "/out/$label-native.log"
+     native_rc=${PIPESTATUS[0]}
+     set -e
+     if (( native_rc != 0 )); then
+       echo "NATIVE_FAIL $label exit=$native_rc" | tee -a /out/receipt.txt
+       tail -c 1600 "/out/$label-native.log"
+       exit "$native_rc"
+     fi
+   fi
    echo "PHASE build $label"
    set +e
    timeout --signal=TERM --kill-after=20s 720s npm run build:fast 2>&1 | tail -c 32768 > "/out/$label-build.log"
