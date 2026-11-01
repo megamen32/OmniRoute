@@ -44,7 +44,7 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
    echo "PHASE npm-ci $label"
    set +e
    timeout --signal=TERM --kill-after=15s 300s npm ci --no-audit --no-fund 2>&1 | tail -c 16384 > "/out/$label-npm.log"
-   install_rc=\${PIPESTATUS[0]}
+   install_rc=${PIPESTATUS[0]}
    set -e
    if (( install_rc != 0 )); then
      echo "INSTALL_FAIL $label exit=$install_rc" | tee -a /out/receipt.txt
@@ -54,7 +54,7 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
    echo "PHASE build $label"
    set +e
    timeout --signal=TERM --kill-after=20s 720s npm run build:fast 2>&1 | tail -c 32768 > "/out/$label-build.log"
-   build_rc=\${PIPESTATUS[0]}
+   build_rc=${PIPESTATUS[0]}
    set -e
    echo "BUILD_RESULT $label exit=$build_rc" | tee -a /out/receipt.txt
    tail -c 1800 "/out/$label-build.log"
@@ -68,8 +68,8 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
        paths=(.build)
        [[ -d dist ]] && paths+=(dist)
        set +e
-       tar -czf - "\${paths[@]}" | head -c 1073741824 > "/out/$label-artifact.tar.gz"
-       archive_rc=\${PIPESTATUS[0]}
+       tar -czf - "${paths[@]}" | head -c 1073741824 > "/out/$label-artifact.tar.gz"
+       archive_rc=${PIPESTATUS[0]}
        set -e
        if (( archive_rc != 0 )) || ! tar -tzf "/out/$label-artifact.tar.gz" >/dev/null 2>&1; then
          echo "ARTIFACT_FAIL $label size/integrity" | tee -a /out/receipt.txt
