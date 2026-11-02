@@ -19,7 +19,7 @@ OUT="$(mktemp -d /tmp/omniroute-pr7-build44.XXXXXXXX)"
 chmod 700 "$OUT"
 echo "TASK_OUTPUT=$OUT"
 set +e
-timeout --signal=TERM --kill-after=25s 1950s docker run \
+timeout --signal=TERM --kill-after=25s 2850s docker run \
  --name "$NAME" --label omniroute.pr7.build44=1 \
  --rm --pull=never --read-only --memory=40g --memory-swap=40g --cpus=4 --pids-limit=512 \
  --tmpfs /work:rw,exec,nosuid,size=12g,mode=1777 \
@@ -30,6 +30,9 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
  -e OMNIROUTE_USE_TURBOPACK=0 -e ONNXRUNTIME_NODE_INSTALL=skip \
  -e BASE="$BASE" -e HEAD="$HEAD" "$IMAGE" bash -lc '
  set -Eeuo pipefail
+ echo "PHASE pinned npm10 bootstrap"
+ npm_cli="$(timeout --signal=TERM --kill-after=10s 95s npx --yes npm@10.9.4 --version 2>&1)" || { echo "BOOTSTRAP_FAIL: npm10 unavailable"; exit 82; }
+ [[ "$npm_cli" == "10.9.4" ]] || { echo "BOOTSTRAP_FAIL: npm version mismatch"; exit 82; }
  failures=0
  for label in base head; do
    if [[ "$label" == base ]]; then ref="$BASE"; else ref="$HEAD"; fi
@@ -41,9 +44,9 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
      echo "CHECKOUT_FAIL $label" | tee -a /out/receipt.txt
      exit 81
    fi
-   echo "PHASE npm-ci $label"
+   echo "PHASE pinned npm10 lockfile install $label"
    set +e
-   timeout --signal=TERM --kill-after=15s 300s npm ci --no-audit --no-fund 2>&1 | tail -c 16384 > "/out/$label-npm.log"
+   timeout --signal=TERM --kill-after=15s 420s npx --yes npm@10.9.4 ci --foreground-scripts --no-audit --no-fund 2>&1 | tail -c 16384 > "/out/$label-npm.log"
    install_rc=${PIPESTATUS[0]}
    set -e
    if (( install_rc != 0 )); then
@@ -51,19 +54,10 @@ timeout --signal=TERM --kill-after=25s 1950s docker run \
      tail -c 3000 "/out/$label-npm.log"
      exit "$install_rc"
    fi
-   # npm 11 can skip optional better-sqlite3 despite successful npm ci.
-   # Use only the exact lockfile version and the documented native install flow.
-   if ! node -e "require.resolve('better-sqlite3')" >/dev/null 2>&1; then
-     echo "PHASE pinned native dependency $label"
-     set +e
-     timeout --signal=TERM --kill-after=10s 180s npm install better-sqlite3@13.0.3 --no-save --foreground-scripts --package-lock=false --no-audit --no-fund 2>&1 | tail -c 8192 > "/out/$label-native.log"
-     native_rc=${PIPESTATUS[0]}
-     set -e
-     if (( native_rc != 0 )); then
-       echo "NATIVE_FAIL $label exit=$native_rc" | tee -a /out/receipt.txt
-       tail -c 1600 "/out/$label-native.log"
-       exit "$native_rc"
-     fi
+   echo "PHASE native sqlite validation $label"
+   if ! node -e "const DB=require('better-sqlite3');const db=new DB(':memory:');db.close()" >/dev/null 2>&1; then
+     echo "NATIVE_FAIL $label: better-sqlite3@13.0.3 missing or not loadable" | tee -a /out/receipt.txt
+     exit 72
    fi
    echo "PHASE build $label"
    set +e
