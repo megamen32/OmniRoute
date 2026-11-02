@@ -108,6 +108,8 @@ export const DEFAULT_COMBO_QUEUE_DEPTH = 20;
 export const MAX_COMBO_QUEUE_DEPTH = 100;
 
 const DEFAULT_COMBO_CONFIG = {
+  // Opt-in only: keep plan tiers ahead of latency-ranked fallback targets.
+  planFirstSpeedFallback: false,
   strategy: "priority",
   maxRetries: 1,
   retryDelayMs: 2000,
