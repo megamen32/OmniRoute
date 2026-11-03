@@ -16,7 +16,6 @@ import {
   isClaudeCodeCompatibleProvider,
   supportsApiKeyOnFreeProvider,
   supportsDualAuthProvider,
-  supportsDeviceCodeLogin,
 } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import {
@@ -53,6 +52,7 @@ import { useModelImportHandlers } from "./hooks/useModelImportHandlers";
 import { useApiKeySave } from "./hooks/useApiKeySave";
 import { useModelVisibilityHandlers } from "./hooks/useModelVisibilityHandlers";
 import { useModelCompatState } from "./hooks/useModelCompatState";
+import { useModelComboUsage } from "./hooks/useModelComboUsage";
 import { useConnectionGate } from "./hooks/useConnectionGate";
 import { useProviderNodeActions } from "./hooks/useProviderNodeActions";
 import ProviderExtraPanels from "./components/ProviderExtraPanels";
@@ -74,6 +74,7 @@ import UpstreamProxyCard from "./components/UpstreamProxyCard";
 import SearchProviderCard from "./components/SearchProviderCard";
 import NoAuthProviderControls from "./components/NoAuthProviderControls";
 import AnonymousFallbackToggle from "./components/AnonymousFallbackToggle";
+import ProviderRetryDelaySelect from "./components/ProviderRetryDelaySelect";
 // providerText used by UpstreamProxyCard (Phase 1t.7)
 
 export default function ProviderDetailPageClient() {
@@ -287,11 +288,7 @@ export default function ProviderDetailPageClient() {
   const providerSupportsOAuth =
     providerInfo?.toggleAuthType === "oauth" ||
     providerInfo?.toggleAuthType === "free" ||
-    oauthProviderId !== providerId ||
-    // A no-auth provider can still offer a dashboard sign-in: MiniMax Code
-    // takes an account code here and writes the credential into the local
-    // MiniMax Code profile.
-    supportsDeviceCodeLogin(providerId);
+    oauthProviderId !== providerId;
   const subscriptionRisk = providerInfo?.subscriptionRisk === true;
 
   // ── Phase 1t.3: connection gate + risk-notice modal state ───────────────
@@ -509,6 +506,9 @@ export default function ProviderDetailPageClient() {
 
   // Phase 1e: compat-state derivations
   const compat = useModelCompatState(modelMeta.customModels, modelMeta.modelCompatOverrides);
+  // Combo membership for every model on this provider — drives the small
+  // "used in combo X" badge behind each model row (#16216).
+  const comboUsage = useModelComboUsage(providerId);
   const { customMap } = compat;
   const effectiveModelNormalize = compat.effectiveModelNormalize;
   const effectiveModelPreserveDeveloper = compat.effectiveModelPreserveDeveloper;
@@ -629,8 +629,8 @@ export default function ProviderDetailPageClient() {
           providerName={providerInfo?.name || providerId}
         />
       )}
-      {!isUpstreamProxyProvider &&
-        (!isFreeNoAuth || providerSupportsPat || supportsDeviceCodeLogin(providerId)) && (
+      {!isUpstreamProxyProvider && <ProviderRetryDelaySelect providerId={providerId} />}
+      {!isUpstreamProxyProvider && (!isFreeNoAuth || providerSupportsPat) && (
         <Card>
           <ProviderAccountRoutingCard
             providerKey={providerId}
@@ -812,6 +812,7 @@ export default function ProviderDetailPageClient() {
             models={models}
             modelMeta={modelMeta}
             modelAliases={modelAliases}
+            comboUsage={comboUsage}
             syncedAvailableModels={syncedAvailableModels}
             syncedCatalogAuthoritative={syncedCatalogAuthoritative}
             compatibleFallbackModels={compatibleFallbackModels}
