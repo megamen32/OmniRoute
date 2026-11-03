@@ -41,7 +41,11 @@
     ".next-playwright/dev/types/**/*.ts",
     ".build/next/types/**/*.ts",
     ".build/next/dev/types/**/*.ts",
-    ".build/next/dev/dev/types/**/*.ts"
+    ".build/next/dev/dev/types/**/*.ts",
+    "/home/roomhacker/agents-projects/omniroute-zcode/.build/stage/next/types/**/*.ts",
+    "/home/roomhacker/agents-projects/omniroute-zcode/.build/stage/next/dev/types/**/*.ts",
+    ".build/stage/next/types/**/*.ts",
+    ".build/stage/next/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
