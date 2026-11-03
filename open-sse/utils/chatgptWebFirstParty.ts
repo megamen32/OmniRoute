@@ -593,6 +593,34 @@ export function describeBridgeLoadFailure(signals: ChatGptWebBridgeFailureSignal
   return `${base}: ${ranked.kind}: ${ranked.detail}`;
 }
 
+/**
+ * chatgpt.com currently serves a page CSP whose `script-src-elem` refuses blob:
+ * scripts, so the bridge module is rejected at the browser layer before any of
+ * its code can even run (blob-module injection fails with a bare "csp" reason,
+ * #14773-class upstream change, observed again 2026-11-03). The page here lives
+ * in an automation-owned clean-room context that renders only first-party
+ * chatgpt.com for a single connection, so ask Chromium via CDP to skip CSP
+ * enforcement for it. Engines without a matching CDP surface keep the previous
+ * failure mode.
+ */
+async function bypassPageCSPForBridge(page: Page): Promise<void> {
+  try {
+    const ctx = page.context() as unknown as {
+      newCDPSession?: (
+        page: Page
+      ) => Promise<{
+        send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+      }>;
+    };
+    if (typeof ctx?.newCDPSession !== "function") return;
+    const session = await ctx.newCDPSession(page);
+    await session.send("Page.setBypassCSP", { enabled: true });
+  } catch {
+    // Nothing to do if CSP cannot be relaxed on this engine: the bridge keeps
+    // failing with the collected signals above.
+  }
+}
+
 async function ensureFirstPartyBridge(page: Page): Promise<void> {
   const ready = await page.evaluate((key) => {
     const root = globalThis as typeof globalThis & Record<string, unknown>;
@@ -600,6 +628,7 @@ async function ensureFirstPartyBridge(page: Page): Promise<void> {
   }, FIRST_PARTY_BRIDGE_KEY);
   if (ready) return;
 
+  await bypassPageCSPForBridge(page);
   const { assetUrl, contract } = await discoverFirstPartyModule(page);
   // The integrity module is required through the page's own runtime, so whichever chunk
   // exposes `__webpack_require__` has to travel with the bridge source.
