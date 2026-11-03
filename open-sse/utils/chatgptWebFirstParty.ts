@@ -603,6 +603,8 @@ export function describeBridgeLoadFailure(signals: ChatGptWebBridgeFailureSignal
  * enforcement for it. Engines without a matching CDP surface keep the previous
  * failure mode.
  */
+const pagesReloadedAfterCSPBypass = new WeakSet<Page>();
+
 async function bypassPageCSPForBridge(page: Page): Promise<void> {
   try {
     const ctx = page.context() as unknown as {
@@ -619,6 +621,15 @@ async function bypassPageCSPForBridge(page: Page): Promise<void> {
     // Nothing to do if CSP cannot be relaxed on this engine: the bridge keeps
     // failing with the collected signals above.
   }
+  // `Page.setBypassCSP` governs documents loaded from now on; the warmup page is
+  // already sitting under chatgpt.com's enforced policy, so bite once per page:
+  // reload under the relaxed policy, then let the caller install the bridge.
+  if (pagesReloadedAfterCSPBypass.has(page)) return;
+  pagesReloadedAfterCSPBypass.add(page);
+  await page.reload({ waitUntil: "load", timeout: 120_000 }).catch(() => {});
+  // Give the SPA one short settle window before bridge discovery runs against a
+  // half-booted shell: discovery reads the page's own script set.
+  await page.waitForTimeout(2_500).catch(() => {});
 }
 
 async function ensureFirstPartyBridge(page: Page): Promise<void> {
