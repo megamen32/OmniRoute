@@ -6,6 +6,16 @@ import { FORMATS } from "../../translator/formats.ts";
 import { errorResponse } from "../../utils/error.ts";
 import { ensureStreamReadiness } from "../../utils/streamReadiness.ts";
 import { STREAM_READINESS_TIMEOUT_MS } from "../../config/constants.ts";
+import { configureUpstreamCa } from "../../mitm/upstreamTrust.ts";
+
+// The start-plan gateway may route through a local MITM proxy whose CA is not
+// in the default store. Trust it once so undici's global dispatcher accepts
+// the intercepted chain.
+try {
+  configureUpstreamCa(process.env.AGENTBRIDGE_UPSTREAM_CA_CERT || undefined);
+} catch {
+  // no CA configured or path missing — proceed with the default trust store
+}
 import { isInstanceDraining as isDraining } from "../../utils/drainStatus.ts";
 import { resolveSuppressThinkClose, THINKING_MARKER_HEADER } from "../../utils/thinkCloseMarker.ts";
 import { fetchNativeZcode } from "./nativeProtocol.ts";
