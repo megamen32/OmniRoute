@@ -6,7 +6,7 @@ import { FORMATS } from "../../translator/formats.ts";
 import { errorResponse } from "../../utils/error.ts";
 import { ensureStreamReadiness } from "../../utils/streamReadiness.ts";
 import { STREAM_READINESS_TIMEOUT_MS } from "../../config/constants.ts";
-import { configureUpstreamCa } from "../../mitm/upstreamTrust.ts";
+import { configureUpstreamCa } from "../../../src/mitm/upstreamTrust.ts";
 
 // The start-plan gateway may route through a local MITM proxy whose CA is not
 // in the default store. Trust it once so undici's global dispatcher accepts
