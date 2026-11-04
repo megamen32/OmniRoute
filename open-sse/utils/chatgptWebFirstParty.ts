@@ -652,7 +652,7 @@ async function bridgeCdpSessionForPage(page: Page): Promise<BridgeCdpSession | n
  * when the engine offers no CDP surface: the bridge then keeps the previous
  * failure mode.
  */
-async function bypassPageCSPForBridge(page: Page, reason: string): Promise<boolean> {
+export async function bypassPageCSPForBridge(page: Page, reason: string): Promise<boolean> {
   const session = await bridgeCdpSessionForPage(page);
   if (!session) return false;
   try {
@@ -675,7 +675,8 @@ async function bypassPageCSPForBridge(page: Page, reason: string): Promise<boole
   // already sitting under chatgpt.com's enforced policy (probe 2026-11-04: the
   // same document keeps blocking blob: scripts even right after the flag), so
   // reload before the bridge is installed.
-  await page.reload({ waitUntil: "load", timeout: 120_000 }).catch(() => {});
+  // Do not wait for unrelated page resources to finish loading.
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 120_000 }).catch(() => {});
   // Give the SPA one short settle window before bridge discovery runs against a
   // half-booted shell: discovery reads the page's own script set.
   await page.waitForTimeout(2_500).catch(() => {});
