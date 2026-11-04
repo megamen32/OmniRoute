@@ -605,51 +605,101 @@ export function describeBridgeLoadFailure(signals: ChatGptWebBridgeFailureSignal
  */
 const pagesReloadedAfterCSPBypass = new WeakSet<Page>();
 
-async function bypassPageCSPForBridge(page: Page): Promise<void> {
-  try {
+interface BridgeCdpSession {
+  send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+}
+
+const bridgeCdpSessions = new WeakMap<Page, Promise<BridgeCdpSession>>();
+
+/** Breadcrumb for the bridge CSP-bypass steps, visible in the application log. */
+function bridgeLog(message: string): void {
+  console.error(`[chatgpt-web][bridge-csp] ${message}`);
+}
+
+async function bridgeCdpSessionForPage(page: Page): Promise<BridgeCdpSession | null> {
+  const cached = bridgeCdpSessions.get(page);
+  if (cached) {
+    try {
+      return await cached;
+    } catch {
+      bridgeCdpSessions.delete(page);
+    }
+  }
+  const created = (async (): Promise<BridgeCdpSession> => {
     const ctx = page.context() as unknown as {
-      newCDPSession?: (
-        page: Page
-      ) => Promise<{
-        send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-      }>;
+      newCDPSession?: (page: Page) => Promise<BridgeCdpSession>;
     };
-    if (typeof ctx?.newCDPSession !== "function") return;
-    const session = await ctx.newCDPSession(page);
+    if (typeof ctx?.newCDPSession !== "function") {
+      throw new Error("context exposes no CDP surface");
+    }
+    return ctx.newCDPSession(page);
+  })();
+  bridgeCdpSessions.set(page, created);
+  try {
+    return await created;
+  } catch (error) {
+    bridgeCdpSessions.delete(page);
+    bridgeLog(
+      `no CDP session for this engine: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return null;
+  }
+}
+
+/**
+ * Ask Chromium via CDP to stop enforcing the page CSP for this page, then reload
+ * the page so the bridge document loads under the relaxed policy. Returns false
+ * when the engine offers no CDP surface: the bridge then keeps the previous
+ * failure mode.
+ */
+async function bypassPageCSPForBridge(page: Page, reason: string): Promise<boolean> {
+  const session = await bridgeCdpSessionForPage(page);
+  if (!session) return false;
+  try {
     await session.send("Page.setBypassCSP", { enabled: true });
   } catch {
-    // Nothing to do if CSP cannot be relaxed on this engine: the bridge keeps
-    // failing with the collected signals above.
+    // A stale session (closed underneath us) is retried once with a fresh one.
+    const retry = await bridgeCdpSessionForPage(page);
+    if (!retry) return false;
+    try {
+      await retry.send("Page.setBypassCSP", { enabled: true });
+    } catch (retryError) {
+      bridgeLog(
+        `Page.setBypassCSP rejected: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+      );
+      return false;
+    }
   }
-  // `Page.setBypassCSP` governs documents loaded from now on; the warmup page is
-  // already sitting under chatgpt.com's enforced policy, so bite once per page:
-  // reload under the relaxed policy, then let the caller install the bridge.
-  if (pagesReloadedAfterCSPBypass.has(page)) return;
-  pagesReloadedAfterCSPBypass.add(page);
+  bridgeLog(`csp bypass enabled, reloading page (reason: ${reason}; url: ${page.url()})`);
+  // `Page.setBypassCSP` governs documents loaded from now on; the page is
+  // already sitting under chatgpt.com's enforced policy (probe 2026-11-04: the
+  // same document keeps blocking blob: scripts even right after the flag), so
+  // reload before the bridge is installed.
   await page.reload({ waitUntil: "load", timeout: 120_000 }).catch(() => {});
   // Give the SPA one short settle window before bridge discovery runs against a
   // half-booted shell: discovery reads the page's own script set.
   await page.waitForTimeout(2_500).catch(() => {});
+  return true;
 }
 
-async function ensureFirstPartyBridge(page: Page): Promise<void> {
-  const ready = await page.evaluate((key) => {
-    const root = globalThis as typeof globalThis & Record<string, unknown>;
-    return typeof root[key] === "object" && root[key] !== null;
-  }, FIRST_PARTY_BRIDGE_KEY);
-  if (ready) return;
+interface BridgeInjectAttempt {
+  ok: boolean;
+  message: string;
+  error: unknown;
+}
 
-  await bypassPageCSPForBridge(page);
-  const { assetUrl, contract } = await discoverFirstPartyModule(page);
-  // The integrity module is required through the page's own runtime, so whichever chunk
-  // exposes `__webpack_require__` has to travel with the bridge source.
-  const candidateAssetUrls =
-    contract.resolveIntegrity && contract.resolveIntegrityModule
-      ? await collectPageAssetCandidates(page)
-      : [];
-  const moduleSource = buildBridgeModuleSource(assetUrl, contract, candidateAssetUrls);
-  const collected = collectBridgeFailureSignals(page, assetUrl);
+async function injectFirstPartyBridge(page: Page): Promise<BridgeInjectAttempt> {
+  let collected: ReturnType<typeof collectBridgeFailureSignals> | undefined;
   try {
+    const { assetUrl, contract } = await discoverFirstPartyModule(page);
+    // The integrity module is required through the page's own runtime, so whichever chunk
+    // exposes `__webpack_require__` has to travel with the bridge source.
+    const candidateAssetUrls =
+      contract.resolveIntegrity && contract.resolveIntegrityModule
+        ? await collectPageAssetCandidates(page)
+        : [];
+    const moduleSource = buildBridgeModuleSource(assetUrl, contract, candidateAssetUrls);
+    collected = collectBridgeFailureSignals(page, assetUrl);
     await page.evaluate(
       ({ bridgeKey, moduleSource: source }) =>
         new Promise<void>((resolve, reject) => {
@@ -692,9 +742,10 @@ async function ensureFirstPartyBridge(page: Page): Promise<void> {
         }),
       { bridgeKey: FIRST_PARTY_BRIDGE_KEY, moduleSource }
     );
+    return { ok: true, message: "", error: undefined };
   } catch (error) {
     const inPage = error instanceof Error ? error.message : String(error);
-    const signals = [...collected.signals];
+    const signals = [...(collected?.signals ?? [])];
     if (inPage.startsWith("csp: ")) {
       signals.unshift({ kind: "csp", detail: inPage.slice("csp: ".length) });
     } else if (inPage && inPage !== "no in-page reason") {
@@ -702,10 +753,40 @@ async function ensureFirstPartyBridge(page: Page): Promise<void> {
     }
     // `cause` keeps the original for anyone reading a stack; the message is what
     // reaches the operator log through buildErrorBody()/sanitizeErrorMessage().
-    throw new Error(describeBridgeLoadFailure(signals), { cause: error });
+    return { ok: false, message: describeBridgeLoadFailure(signals), error };
   } finally {
-    collected.dispose();
+    collected?.dispose();
   }
+}
+
+async function ensureFirstPartyBridge(page: Page): Promise<void> {
+  const ready = await page.evaluate((key) => {
+    const root = globalThis as typeof globalThis & Record<string, unknown>;
+    return typeof root[key] === "object" && root[key] !== null;
+  }, FIRST_PARTY_BRIDGE_KEY);
+  if (ready) return;
+
+  const coldInstall = !pagesReloadedAfterCSPBypass.has(page);
+  pagesReloadedAfterCSPBypass.add(page);
+  if (coldInstall) {
+    // chatgpt.com serves a page CSP whose `script-src-elem` refuses blob
+    // scripts, so the first document the turn meets has to be reloaded under a
+    // relaxed policy before the bridge blob module can even load.
+    bridgeLog(`bridge missing, cold install on ${page.url()}`);
+    await bypassPageCSPForBridge(page, "cold install");
+  }
+  const attempt = await injectFirstPartyBridge(page);
+  if (attempt.ok) return;
+  bridgeLog(
+    `bridge inject failed, retrying after a forced bypass: ${attempt.message.slice(0, 240)}`
+  );
+  // The SPA can wipe the bridge (and boot a fresh document back under the
+  // enforced policy) between the handshake and signing; the clean-room context
+  // is dedicated first-party, so re-asserting the bypass stays scoped. Reload
+  // under the relaxed policy and retry once before surfacing the failure.
+  await bypassPageCSPForBridge(page, attempt.message.slice(0, 160));
+  const retry = await injectFirstPartyBridge(page);
+  if (!retry.ok) throw new Error(retry.message, { cause: retry.error });
 }
 
 /**
