@@ -39,6 +39,7 @@ const startBase = {
 };
 
 export const zcodeStartProvider: RegistryEntry = {
+  ...startBase,
   models: ZCODE_MODELS.map((model) => ({
     ...model,
     name: `${model.name || model.id} (Z-code Start)`,
