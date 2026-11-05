@@ -682,15 +682,41 @@ export class ZcodeExecutor extends BaseExecutor {
   ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
     const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
     const readyDeadline = Date.now() + (this.options.startupTimeoutMs ?? 10_000);
+    // Start-plan entitlements can be invisible to the spawned server's registry
+    // (its hydration egress gets a degraded z.ai context), while the gateway
+    // request itself reaches z.ai fine and z.ai validates the model on its side
+    // (business codes 1005/1310). When the pinned provider is disabled-or-absent
+    // in the view, skip the registry round-trip and select directly.
+    const fallbackProviderId = providerId || ZCODE_FALLBACK_PROVIDER_ID;
     for (;;) {
-      const registry = await withAbort(client.call("model-selection", "getView", []), signal);
+      let registry: unknown;
+      try {
+        registry = await withAbort(client.call("model-selection", "getView", []), signal);
+      } catch (rpcError) {
+        log.warn?.(
+          `model-selection RPC unavailable (${String(rpcError).slice(0, 120)}); using direct selection`
+        );
+        return {
+          selection: { providerId: fallbackProviderId, modelId: model },
+          nativeMaxTokens: undefined,
+        };
+        void readyDeadline;
+      }
       try {
         return {
           selection: resolveZcodeSelection(registry, model, providerId),
-          nativeMaxTokens: resolveZcodeMaxTokens(registry, model, providerId),
+          nativeMaxTokens: fallbackMaxTokens ?? resolveZcodeMaxTokens(registry, model, providerId),
         };
-      } catch (error) {
-        if (Date.now() >= readyDeadline) throw error;
+      } catch {
+        if (Date.now() >= readyDeadline) {
+          log.warn?.(
+            `model ${model} absent from the registry view after ${Math.round((Date.now() - (readyDeadline - (this.options.startupTimeoutMs ?? 10_000))) / 1000)}s; using direct selection`
+          );
+          return {
+            selection: { providerId: fallbackProviderId, modelId: model },
+            nativeMaxTokens: fallbackMaxTokens,
+          };
+        }
         await withAbort(
           new Promise((resolve) => setTimeout(resolve, Math.min(250, readyDeadline - Date.now()))),
           signal
