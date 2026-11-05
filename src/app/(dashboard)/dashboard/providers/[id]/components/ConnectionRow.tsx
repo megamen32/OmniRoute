@@ -24,6 +24,7 @@ import { getCodexEffectiveServiceTier } from "@/lib/providers/codexFastTier";
 import { normalizeCodexLimitPolicy, providerText } from "../providerPageHelpers";
 import { getCodexPlanLabel } from "../codexPlanLabel";
 import CodexAccountDetails from "./CodexAccountDetails";
+import { codexCutoffOverrides } from "./codexQuotaDisplay";
 import ConnectionQuotaPanel from "./ConnectionQuotaPanel";
 import ConnectionIdChip from "./ConnectionIdChip";
 import {
@@ -94,7 +95,6 @@ export default function ConnectionRow({
   isCodex,
   codexGlobalServiceMode,
   isCcCompatible,
-  cliproxyapiEnabled,
   upstreamProxyMode,
   upstreamProxyFallbackBackend,
   onSetUpstreamProxyMode,
@@ -112,7 +112,6 @@ export default function ConnectionRow({
   onToggleAutoSync,
   onToggleCodex5h,
   onToggleCodexWeekly,
-  onToggleCliproxyapiMode,
   onRetest,
   isRetesting,
   onEdit,
@@ -211,6 +210,7 @@ export default function ConnectionRow({
   const rateLimitAutoProtected = connection.rateLimitAutoProtected === true;
   const rateLimitShielded = rateLimitEnabled || rateLimitAutoProtected;
   const quotaVisible = connection.quotaVisible !== false;
+  const codexCutoffs = codexCutoffOverrides(connection.quotaWindowThresholds, quotaCache?.quotas);
   const codexPolicy =
     connection.providerSpecificData &&
     typeof connection.providerSpecificData === "object" &&
@@ -450,6 +450,7 @@ export default function ConnectionRow({
                 rateLimitEnabled ? t("disableRateLimitProtection") : t("enableRateLimitProtection")
               }
             >
+              {isCodex ? `${providerText(t, "rateLimitScope", "Rate limit")}: ` : ""}
               {rateLimitShielded ? t("rateLimitProtected") : t("rateLimitUnprotected")}
             </Button>
             {onToggleQuotaVisibility && (
@@ -892,6 +893,23 @@ export default function ConnectionRow({
       {isCodex && connection.codexAccountPool ? (
         <div className="basis-full min-w-0">
           <CodexAccountDetails pool={connection.codexAccountPool} />
+          {codexCutoffs.length > 0 && (
+            <div className="mt-2 text-xs text-text-muted">
+              {providerText(t, "codexConfiguredCutoffs", "Configured minimum remaining quota")}:{" "}
+              {codexCutoffs.map(({ window, value }) => `${window}: ${value}%`).join(" · ")}
+              {" · "}
+              <a href="/dashboard/quota" className="text-primary underline">
+                {providerText(t, "codexManageCutoffs", "View quota and cutoffs")}
+              </a>
+              <div>
+                {providerText(
+                  t,
+                  "codexCutoffSettingsNote",
+                  "Enforcement also depends on quota preflight settings."
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
       {quotaPanelSupported ? (

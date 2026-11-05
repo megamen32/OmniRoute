@@ -33,6 +33,7 @@ export interface ConnectionRowConnection {
   proxyEnabled?: boolean;
   perKeyProxyEnabled?: boolean;
   quotaVisible?: boolean;
+  quotaWindowThresholds?: Record<string, number> | null;
   codexAccountPool?: CodexAccountPoolProjection;
 }
 

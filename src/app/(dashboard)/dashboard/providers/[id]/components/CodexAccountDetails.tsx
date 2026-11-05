@@ -10,16 +10,6 @@ export interface CodexAccountDetailsProps {
   pool: CodexAccountPoolProjection;
 }
 
-function formatQuota(
-  window: CodexAccountPoolProjection["children"][number]["quota"]["windows"]["5h"],
-  usedLabel: string
-): string {
-  if (!window) return "—";
-  if (window.usedPercentage !== null) return `${Math.round(window.usedPercentage)}% ${usedLabel}`;
-  if (window.usage !== null && window.limit !== null) return `${window.usage}/${window.limit}`;
-  return "—";
-}
-
 export default function CodexAccountDetails({ pool }: CodexAccountDetailsProps) {
   const t = useTranslations("providers");
   const locale = useLocale();
@@ -55,7 +45,9 @@ export default function CodexAccountDetails({ pool }: CodexAccountDetailsProps) 
   return (
     <div className="mt-3 rounded-lg border border-border/60 bg-surface-secondary/30 p-3">
       <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-        <span className="font-medium">{t("codexQuotaPools")}</span>
+        <span className="font-medium">
+          {t.has("codexCooldownStatus") ? t("codexCooldownStatus") : "Codex cooldown / exhaustion"}
+        </span>
         <span className="text-text-muted">
           {limited ? statusLabels.fully_limited : statusLabels.available}
         </span>
@@ -77,10 +69,6 @@ export default function CodexAccountDetails({ pool }: CodexAccountDetailsProps) 
                       ? t("codexPoolCoolingDown")
                       : t("codexPoolAvailable")}
                 </span>
-              </div>
-              <div className="mt-1 grid grid-cols-2 gap-2 text-text-muted">
-                <span>5h: {formatQuota(child.quota.windows["5h"], t("codexPoolUsed"))}</span>
-                <span>7d: {formatQuota(child.quota.windows["7d"], t("codexPoolUsed"))}</span>
               </div>
               {limited && child.cooldown.rateLimitedUntil ? (
                 <div className="mt-1 text-[11px] text-warning">
