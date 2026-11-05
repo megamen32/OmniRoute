@@ -32,9 +32,7 @@ test("fresh recovered usage unlocks Codex, hydrates tiles and preserves Spark an
     b = await seed();
   await recovery.syncCodexQuotaObservation(
     a.id,
-    {
-      quotas: { session: { used: 0, total: 100 }, weekly: { used: 0, total: 100 } },
-    },
+    { quotas: { session: { used: 0, total: 100 }, weekly: { used: 0, total: 100 } } },
     a.providerSpecificData
   );
   const after = await db.getProviderConnectionById(a.id);
@@ -67,9 +65,7 @@ test("newer cooldown written during fetch survives stale observation", async () 
   await db.updateCodexScopeCooldown(a.id, "codex", new Date(Date.now() + 7200000).toISOString());
   await recovery.syncCodexQuotaObservation(
     a.id,
-    {
-      quotas: { session: { used: 0, total: 100 }, weekly: { used: 0, total: 100 } },
-    },
+    { quotas: { session: { used: 0, total: 100 }, weekly: { used: 0, total: 100 } } },
     a.providerSpecificData
   );
   assert.equal(

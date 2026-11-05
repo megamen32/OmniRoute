@@ -27,58 +27,6 @@ export function setCodexUsageFetchForTests(fetchImpl: CodexUsageFetch | null): v
 }
 
 /**
- * Evidence for recovery comes from the successful raw response, before the
- * display parser supplies defaults. An absent secondary field is ambiguous;
- * an explicit null is the only accepted one-window Pro shape.
- */
-function recoveryEvidence(data: unknown): { codex?: "single" } {
-  const record = (value: unknown): Record<string, unknown> =>
-    value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
-  const root = record(data);
-  const limit = record(getFieldValue(root, "rate_limit", "rateLimit"));
-  const field = (obj: Record<string, unknown>, snake: string, camel: string) =>
-    Object.prototype.hasOwnProperty.call(obj, snake) ? obj[snake] : obj[camel];
-  const validWindow = (value: unknown) => {
-    const window = record(value);
-    const used = field(window, "used_percent", "usedPercent");
-    const duration = field(window, "limit_window_seconds", "limitWindowSeconds");
-    const resetAt = field(window, "reset_at", "resetAt");
-    const resetAfter = field(window, "reset_after_seconds", "resetAfterSeconds");
-    const positive = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
-    return (
-      typeof used === "number" &&
-      Number.isFinite(used) &&
-      used >= 0 &&
-      used < 100 &&
-      positive(duration) &&
-      (positive(resetAt) || positive(resetAfter))
-    );
-  };
-  const open = (value: Record<string, unknown>) =>
-    value.allowed === true && field(value, "limit_reached", "limitReached") === false;
-  const first = (value: Record<string, unknown>) => field(value, "primary_window", "primaryWindow");
-  const second = (value: Record<string, unknown>) =>
-    field(value, "secondary_window", "secondaryWindow");
-  const firstWindow = record(first(limit));
-  const duration = field(firstWindow, "limit_window_seconds", "limitWindowSeconds");
-  const plan = getFieldValue(root, "plan_type", "planType");
-  const result: { codex?: "single" } = {};
-  if (
-    open(limit) &&
-    validWindow(first(limit)) &&
-    typeof plan === "string" &&
-    plan.trim().toLowerCase() === "pro" &&
-    duration === 604800 &&
-    second(limit) === null
-  ) {
-    result.codex = "single";
-  }
-  return result;
-}
-
-/**
  * Codex (OpenAI) Usage - Fetch from ChatGPT backend API
  * IMPORTANT: Uses persisted workspaceId from OAuth to ensure correct workspace binding.
  * No fallback to other workspaces - strict binding to user's selected workspace.
@@ -147,14 +95,9 @@ export async function getCodexUsage(
 
     return {
       ...(typeof sparkLimitReached === "boolean" ? { sparkLimitReached } : {}),
-      ...(getFieldValue(rateLimit, "allowed") === false ? { codexLimitDenied: true } : {}),
-      ...(getFieldValue(findCodexSparkRateLimit(data).rateLimit, "allowed") === false
-        ? { sparkLimitDenied: true }
-        : {}),
       plan: String(getFieldValue(data, "plan_type", "planType") || "unknown"),
       limitReached: Boolean(getFieldValue(rateLimit, "limit_reached", "limitReached")),
       quotas,
-      codexRecoveryEvidence: recoveryEvidence(data),
       // Banked reset credits (display-only, eligibility-gated — issue #5199).
       // Absent for most accounts; never throws when the upstream omits it.
       ...(bankedResetCredits !== undefined ? { bankedResetCredits } : {}),
