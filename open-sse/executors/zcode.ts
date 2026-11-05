@@ -22,6 +22,11 @@ const ACCOUNT_PROVIDER_ID = "account:zai-individual-coding-plan";
 // ~/.zcode/v2/config.json). The app-server falls back to it when the account
 // profile is not enabled, and the gateway transport reads its key.
 const BUILTIN_PROVIDER_ID = "builtin:zai-coding-plan";
+// Registry-independent selection target for the start-plan gateway: when the
+// spawned app-server's model-selection view is empty or the RPC is unavailable,
+// the gateway request still reaches z.ai and z.ai validates the model itself.
+const ZCODE_FALLBACK_PROVIDER_ID = "account:zai-start-plan";
+const fallbackMaxTokens = 128_000;
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const ZCODE_MODEL_ALLOWLIST = new Set(ZCODE_MODELS.map((model) => model.id));
 const DEFAULT_ZCODE_MODEL = ZCODE_MODELS[0]?.id || "glm-5.2";
