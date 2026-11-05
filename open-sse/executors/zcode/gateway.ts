@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExecuteInput, ExecutorExecuteResult } from "../base.ts";
 import { translateSseResponse } from "../glm.ts";
 import { translateNonStreamingResponse } from "../../handlers/responseTranslator.ts";
@@ -142,16 +145,46 @@ function nativeTools(request: RecordValue): RecordValue[] {
   });
 }
 
+const ZCODE_DEVICE_ID_ENV = "ZCODE_DEVICE_ID";
+
+function nativeMetadata(): RecordValue | null {
+  let deviceId = process.env[ZCODE_DEVICE_ID_ENV]?.trim() || "";
+  let sessionId = "";
+  if (!deviceId) {
+    try {
+      const store = readFileSync(join(homedir(), ".zcode", "v2", "credentials.json"), "utf8");
+      const parsed = JSON.parse(store) as RecordValue;
+      const info = parsed["oauth:zai:user_info"];
+      if (typeof info === "string" && info) {
+        const user = JSON.parse(info) as RecordValue;
+        if (typeof user.user_id === "string") sessionId = user.user_id;
+      }
+    } catch {
+      // credential store unreadable — send without metadata (weekly fallback)
+    }
+  }
+  const raw = JSON.stringify({
+    device_id: deviceId || undefined,
+    account_uuid: "",
+    session_id: sessionId || undefined,
+  });
+  return { user_id: raw };
+}
+
 // Input has already passed the same validation/image preparation as native RPC.
 export function nativeZcodeBody(input: ExecuteInput, request: RecordValue): RecordValue {
   const model = nativeModelId(input.model);
   const effort = nativeEffort(input.body);
   const { messages, system } = nativeConversation(request);
   const tools = nativeTools(request);
+  // z.ai meters the Start-plan entitlement per bound device/session: requests
+  // without metadata.user_id fall into the generic coding-plan weekly pool
+  // (code 1310) even with a valid session credential.
+  const metadata = nativeMetadata();
   return {
     model,
     max_tokens: Math.min(Number(request.maxOutputTokens) || 128000, 128000),
-    metadata: {},
+    ...(metadata ? { metadata } : {}),
     ...(system.length ? { system } : {}),
     messages,
     thinking: { type: "enabled" },
