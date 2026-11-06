@@ -1,4 +1,5 @@
 import type { CredentialSelectionOptions } from "./credentialSelectionOptions";
+import { claimCodexRecoveryCanary } from "./codexRecoveryCanary";
 export type { CredentialSelectionOptions } from "./credentialSelectionOptions";
 import { qoderSupportsCallerTools } from "@omniroute/open-sse/services/qoderCapabilities";
 import { randomUUID } from "crypto";
@@ -1301,6 +1302,27 @@ export async function getProviderCredentials(
       connectionFilterStatus.set(c.id, "available");
       return true;
     });
+
+    // Never erase an upstream 429 based on partial usage telemetry.
+    // When all otherwise eligible Codex accounts are model-locked, admit one
+    // existing request as a bounded canary after a newer positive quota poll.
+    // This preserves ACL, terminal, provider and scoped-window cooldowns.
+    if (provider === "codex" && requestedModel && availableConnections.length === 0
+      && !allowSuppressedConnections && explicitProbeKind !== "probe") {
+      const candidate = connections.find((connection) =>
+        connectionFilterStatus.get(connection.id) === "modelLocked"
+        && claimCodexRecoveryCanary(
+          connection,
+          requestedModel,
+          getModelLockoutInfo(provider, connection.id, requestedModel),
+        )
+      );
+      if (candidate) {
+        availableConnections = [candidate];
+        connectionFilterStatus.set(candidate.id, "quotaRecoveryCanary");
+        log.info("AUTH", `codex | isolated quota-recovery canary for ${candidate.id.slice(0, 8)} model=${requestedModel}`);
+      }
+    }
 
     if (provider === "antigravity" || provider === "agy") {
       const projectAwareConnections =
