@@ -89,6 +89,7 @@ test("surface: webhook modules runtime exports", () => {
         "decryptMetadata",
         "deliverWebhook",
         "dispatchEvent",
+        "drainPendingWebhookEvents",
         "encryptMetadata",
         "notifyWebhookEvent",
       ],
