@@ -64,6 +64,7 @@ type Run = {
   history: RecordValue[];
   toolsHash: string;
   pending: PendingTool[];
+  toolsListed: boolean;
   relay: Server;
   busy: boolean;
   expires: ReturnType<typeof setTimeout>;
@@ -216,6 +217,9 @@ export class NativeZcodeSessionBridge {
           .filter((message) => record(record(message.info).semantics).kind === "assistant_response")
           .at(-1);
         if (response && session.status === "idle" && record(response.info).finish === "stop") {
+          if (input.tools.length && !run.toolsListed) {
+            throw new NativeSessionError("ZCode caller tools did not connect", 503);
+          }
           const text = list(response.parts)
             .filter((part) => part.type === "text")
             .map((part) => String(part.text ?? ""))
@@ -284,7 +288,8 @@ export class NativeZcodeSessionBridge {
             capabilities: { tools: {} },
             serverInfo: { name: "omniroute-caller", version: "1.0.0" },
           });
-        else if (message.method === "tools/list")
+        else if (message.method === "tools/list") {
+          run.toolsListed = true;
           reply({
             tools: [...names].map(([name, tool]) => ({
               ...tool,
@@ -293,7 +298,7 @@ export class NativeZcodeSessionBridge {
               annotations: { readOnlyHint: true },
             })),
           });
-        else if (message.method === "tools/call") {
+        } else if (message.method === "tools/call") {
           const tool = names.get(String(message.params?.name));
           if (!tool || !run) {
             response.writeHead(400).end();
@@ -338,6 +343,7 @@ export class NativeZcodeSessionBridge {
       history: input.messages,
       toolsHash: digest(input.tools),
       pending: [],
+      toolsListed: false,
       busy: true,
       workspace: { workspacePath, workspaceIdentity: workspacePath },
       expires: setTimeout(() => {

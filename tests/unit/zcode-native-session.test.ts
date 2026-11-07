@@ -38,6 +38,11 @@ test("native session returns caller tool, binds continuation, and consumes exter
         }
         if (method === "sendPrompt") {
           toolRequest = (async () => {
+            await fetch(relayUrl, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" }),
+            });
             const response = await fetch(relayUrl, {
               method: "POST",
               headers,
@@ -123,6 +128,49 @@ test("native session returns caller tool, binds continuation, and consumes exter
     assert.equal(closeCount, 1);
     assert.deepEqual(await readdir(root), [], "completed request workspace is removed");
     await assert.rejects(bridge.execute({ ...base, messages }), /expired/);
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native session rejects a successful answer when caller tools never connected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-session-missing-tools-"));
+  const bridge = new NativeZcodeSessionBridge({
+    workspaceRoot: root,
+    pollMs: 1,
+    timeoutMs: 1000,
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel, method) {
+        if (method === "saveProject") return { id: "project" };
+        if (method === "createSession") return { session: { sessionId: "session" } };
+        if (method === "readSession")
+          return {
+            session: { status: "idle" },
+            messages: [
+              {
+                info: { finish: "stop", semantics: { kind: "assistant_response" } },
+                parts: [{ type: "text", text: "No tool available" }],
+              },
+            ],
+          };
+        return {};
+      },
+    }),
+  });
+  try {
+    await assert.rejects(
+      bridge.execute({
+        scope: "cold-host",
+        selection: { providerId: "account:zai-start-plan", modelId: "GLM-5.3-Flash" },
+        messages: [{ role: "user", content: "Call echo" }],
+        tools: [{ name: "echo", inputSchema: { type: "object" } }],
+      }),
+      { status: 503, message: "ZCode caller tools did not connect" }
+    );
+    assert.deepEqual(await readdir(root), []);
   } finally {
     await bridge.close();
     await rm(root, { recursive: true, force: true });
