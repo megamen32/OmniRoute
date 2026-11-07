@@ -68,7 +68,10 @@ test("native session returns caller tool, binds continuation, and consumes exter
                 messages: [
                   {
                     info: { finish: "stop", semantics: { kind: "assistant_response" } },
-                    parts: [{ type: "text", text: toolResult }],
+                    parts: [
+                      { type: "reasoning", text: "Checked caller result" },
+                      { type: "text", text: toolResult },
+                    ],
                   },
                 ],
               }
@@ -132,6 +135,7 @@ test("native session returns caller tool, binds continuation, and consumes exter
     assert.equal(toolResult, "", "invalid continuation must not consume the suspended tool");
     const final = await bridge.execute({ ...base, messages });
     assert.equal(final.text, "unpredictable-client-value");
+    assert.equal(final.reasoning, "Checked caller result");
     await toolRequest;
     assert.equal(closeCount, 1);
     assert.equal(releasedWorkspaces, 1, "completed request releases its native engine");

@@ -25,6 +25,8 @@ import { NativeZcodeHostClient } from "./zcode/nativeHostClient.ts";
 import { NativeZcodeSessionBridge, NativeSessionError } from "./zcode/nativeSession.ts";
 import { nativeZcodeHosts } from "./zcode/nativeHostManager.ts";
 
+import { normalizeZcodeResponseText } from "./zcode/responseText.ts";
+
 const nativeBridges = new Map<string, NativeZcodeSessionBridge>();
 
 const ZCODE_URL = "zcode://app-server/stdio";
@@ -323,6 +325,10 @@ function defaultCommand(): ZcodeCommand {
 }
 
 function completion(model: string, result: JsonRecord): JsonRecord {
+  const normalized = normalizeZcodeResponseText(
+    typeof result.text === "string" ? result.text : "",
+    typeof result.reasoning === "string" ? result.reasoning : ""
+  );
   const toolCalls = (Array.isArray(result.toolCalls) ? result.toolCalls : []).map((value) => {
     const call = asRecord(value);
     if (typeof call.id !== "string" || typeof call.name !== "string")
@@ -351,7 +357,8 @@ function completion(model: string, result: JsonRecord): JsonRecord {
         index: 0,
         message: {
           role: "assistant",
-          content: typeof result.text === "string" ? result.text : "",
+          content: normalized.content,
+          ...(normalized.reasoning ? { reasoning_content: normalized.reasoning } : {}),
           ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
         },
         finish_reason: finishReason,
@@ -385,6 +392,7 @@ function modelResponse(model: string, result: JsonRecord, stream: boolean): Resp
           delta: {
             role: "assistant",
             content: message.content,
+            ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
             ...(toolCalls ? { tool_calls: toolCalls } : {}),
           },
           finish_reason: null,

@@ -224,10 +224,15 @@ export class NativeZcodeSessionBridge {
             .filter((part) => part.type === "text")
             .map((part) => String(part.text ?? ""))
             .join("");
+          const reasoning = list(response.parts)
+            .filter((part) => part.type === "reasoning")
+            .map((part) => String(part.text ?? ""))
+            .join("\n\n");
           const tokens = record(record(response.info).tokens);
           await this.dispose(run);
           return {
             text,
+            reasoning,
             finishReason: "stop",
             usage: {
               inputTokens: tokens.input ?? 0,
