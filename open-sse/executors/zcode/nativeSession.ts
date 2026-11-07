@@ -376,6 +376,7 @@ export class NativeZcodeSessionBridge {
                   {
                     name: "omniroute",
                     type: "http",
+                    protocolVersion: "legacy",
                     scope: "user",
                     url: `http://127.0.0.1:${address.port}/mcp`,
                     headers: [{ name: "Authorization", value: `Bearer ${token}` }],

@@ -30,9 +30,11 @@ test("native session returns caller tool, binds continuation, and consumes exter
           const server = (
             params.mcpServers as Array<{
               url: string;
+              protocolVersion: string;
               headers: Array<{ name: string; value: string }>;
             }>
           )[0];
+          assert.equal(server.protocolVersion, "legacy");
           relayUrl = server.url;
           headers = Object.fromEntries(server.headers.map((h) => [h.name, h.value]));
           return { session: { sessionId: "owned-session" } };
