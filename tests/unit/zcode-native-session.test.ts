@@ -12,6 +12,7 @@ test("native session returns caller tool, binds continuation, and consumes exter
   let headers: Record<string, string> = {};
   let toolRequest: Promise<void> | undefined;
   let closeCount = 0;
+  let releasedWorkspaces = 0;
   const bridge = new NativeZcodeSessionBridge({
     workspaceRoot: root,
     pollMs: 2,
@@ -71,6 +72,11 @@ test("native session returns caller tool, binds continuation, and consumes exter
               }
             : { session: { status: "running" }, messages: [] };
         if (method === "closeSession") return true;
+        if (method === "disposeWorkspace") {
+          assert.equal(params.releasePreparation, true);
+          releasedWorkspaces++;
+          return true;
+        }
         throw new Error(`Unexpected method ${method}`);
       },
     }),
@@ -126,6 +132,7 @@ test("native session returns caller tool, binds continuation, and consumes exter
     assert.equal(final.text, "unpredictable-client-value");
     await toolRequest;
     assert.equal(closeCount, 1);
+    assert.equal(releasedWorkspaces, 1, "completed request releases its native engine");
     assert.deepEqual(await readdir(root), [], "completed request workspace is removed");
     await assert.rejects(bridge.execute({ ...base, messages }), /expired/);
   } finally {

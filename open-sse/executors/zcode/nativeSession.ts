@@ -426,7 +426,15 @@ export class NativeZcodeSessionBridge {
         ]);
     } finally {
       try {
-        await run.client.close();
+        // Closing a deferred session does not stop its workspace engine. Native
+        // releasePreparation also preserves other sessions in a shared engine.
+        try {
+          await run.client.call("zcode-agent", "disposeWorkspace", [
+            { ...run.workspace, releasePreparation: true },
+          ]);
+        } finally {
+          await run.client.close();
+        }
       } finally {
         await rm(run.workspace.workspacePath, { recursive: true, force: true });
       }
