@@ -196,6 +196,103 @@ export function nativeProof(
   }
   throw new Error("Native request proof unavailable");
 }
+
+/** Sign a BigModel Individual request with an OAuth project token. */
+export async function fetchSignedZcodeProject(
+  token: string,
+  body: unknown,
+  session: string,
+  request: typeof fetch = fetch,
+  signal?: AbortSignal,
+  family: "bigmodel" | "zai" = "bigmodel"
+): Promise<Response> {
+  const parts = token.split(".");
+  let id: string;
+  try {
+    if (parts.length !== 3 || !parts[2] || !session) throw new Error();
+    const header = JSON.parse(Buffer.from(parts[0], "base64url").toString());
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    if (
+      header.alg !== "HS256" ||
+      header.typ !== "JWT" ||
+      header.sign_type !== "SIGN" ||
+      payload.token_use !== "project_access" ||
+      typeof payload.api_key !== "string" ||
+      !payload.api_key.trim()
+    )
+      throw new Error();
+    id = payload.api_key;
+  } catch {
+    throw new Error("Invalid ZCode project credential");
+  }
+  signal?.throwIfAborted();
+  const ts = String(Date.now()),
+    nonce = randomBytes(16).toString("hex");
+  const handshakeKey = derive(token, "getSignKey_hmac");
+  const sig = createHmac("sha256", handshakeKey)
+    .update(["get_sign_key", id, ts, nonce].join("\n"))
+    .digest("base64");
+  handshakeKey.fill(0);
+  const origin = family === "zai" ? "https://api.z.ai" : "https://open.bigmodel.cn";
+  const handshake = await request(`${origin}/api/paas/c1f3a7e2/v2/client`, {
+    method: "POST",
+    redirect: "error",
+    signal,
+    headers: { Authorization: token, "Content-Type": "application/json" },
+    body: JSON.stringify({ accessToken: token, nonce, sig, ts }),
+  });
+  if (!handshake.ok) throw new Error("ZCode project signing handshake refused");
+  const value = handshakeSchema.parse(await handshake.json());
+  const cipher = Buffer.from(value.data.privateCipher, "base64");
+  const secret = derive(token, "ed25519_priv");
+  let plain: Buffer | undefined;
+  let privateKey: KeyObject;
+  try {
+    if (cipher.length <= 28) throw new Error("Invalid ZCode signing response");
+    const decipher = createDecipheriv("aes-256-gcm", secret, cipher.subarray(0, 12));
+    decipher.setAAD(Buffer.from(id));
+    decipher.setAuthTag(cipher.subarray(-16));
+    plain = Buffer.concat([decipher.update(cipher.subarray(12, -16)), decipher.final()]);
+    const der = Buffer.from(plain.toString("utf8"), "base64");
+    try {
+      privateKey = createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+    } finally {
+      der.fill(0);
+    }
+  } finally {
+    secret.fill(0);
+    plain?.fill(0);
+  }
+  signal?.throwIfAborted();
+  const version = "3.17.2",
+    requestTs = String(Date.now());
+  const requestNonce = randomBytes(16).toString("hex");
+  const signature = sign(
+    null,
+    Buffer.from([id, requestTs, version, session, requestNonce].join("\n")),
+    privateKey
+  ).toString("base64");
+  return request(`${origin}/api/anthropic/v1/messages`, {
+    method: "POST",
+    redirect: "error",
+    signal,
+    headers: {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      accept:
+        (body as { stream?: boolean }).stream === true ? "text/event-stream" : "application/json",
+      "x-api-key": token,
+      "x-session-id": session,
+      "x-client-ts": requestTs,
+      "x-client-version": version,
+      "x-client-sig": signature,
+      "x-client-nonce": requestNonce,
+      "x-app-id": "zcode",
+      "x-client-pow": nativeProof(id, session, requestTs, signal),
+    },
+    body: JSON.stringify(body),
+  });
+}
 export async function fetchNativeZcode(
   apiKey: string,
   body: unknown,

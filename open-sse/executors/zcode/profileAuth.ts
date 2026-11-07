@@ -1,11 +1,32 @@
-import { constants, type Stats } from "node:fs";
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const ACCOUNT_INDIVIDUAL_PROVIDER_ID = "account:zai-individual-coding-plan";
-const BUILTIN_INDIVIDUAL_PROVIDER_ID = "builtin:zai-coding-plan";
-const INDIVIDUAL_CONFIG_PROVIDER_ID = "builtin:zai-coding-plan";
+export const ZCODE_START_PLAN_PROVIDER_ID = "account:zai-start-plan";
+export const ZCODE_START_PLAN_BUILTIN_ID = "builtin:zai-start-plan";
+export const ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID = "account:zai-individual-coding-plan";
+export const ZCODE_INDIVIDUAL_PLAN_BUILTIN_ID = "builtin:zai-coding-plan";
+
+export type ZcodePlanName = "start" | "individual";
+export type ZcodePlanProviderId =
+  | typeof ZCODE_START_PLAN_PROVIDER_ID
+  | typeof ZCODE_START_PLAN_BUILTIN_ID
+  | typeof ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID
+  | typeof ZCODE_INDIVIDUAL_PLAN_BUILTIN_ID;
+
+export function resolveZcodeGatewayProviderOrder(configuredProviderId?: string | null): string[] {
+  if (configuredProviderId) return [configuredProviderId];
+  return [ZCODE_START_PLAN_PROVIDER_ID, ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID];
+}
+
+export interface ZcodeGatewayProfile {
+  plan: ZcodePlanName;
+  providerId: ZcodePlanProviderId;
+  apiKey: string;
+  messagesUrl: string;
+  authScheme: "bearer" | "x-api-key";
+}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -13,76 +34,133 @@ function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
+function resolveProfile(providerId: string): {
+  plan: ZcodePlanName;
+  configProviderId: string;
+  messagesPath: string;
+  expectedOrigin: string;
+  expectedBasePaths: string[];
+  authScheme: "bearer" | "x-api-key";
+} {
+  if (providerId === ZCODE_START_PLAN_PROVIDER_ID || providerId === ZCODE_START_PLAN_BUILTIN_ID) {
+    return {
+      plan: "start",
+      configProviderId: ZCODE_START_PLAN_BUILTIN_ID,
+      messagesPath: "/api/v1/ultra-zai/anthropic/v1/messages",
+      expectedOrigin: "https://zcode.z.ai",
+      // Existing local ZCode installations may retain the legacy configured
+      // alias; requests always use the canonical Ultra-ZAI endpoint above.
+      expectedBasePaths: ["/api/v1/ultra-zai/anthropic", "/api/v1/zcode-plan/anthropic"],
+      authScheme: "bearer",
+    };
+  }
+  if (
+    providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID ||
+    providerId === ZCODE_INDIVIDUAL_PLAN_BUILTIN_ID
+  ) {
+    return {
+      plan: "individual",
+      configProviderId: ZCODE_INDIVIDUAL_PLAN_BUILTIN_ID,
+      messagesPath: "/api/anthropic/v1/messages",
+      expectedOrigin: "https://api.z.ai",
+      // ZCode's official local config uses /api/anthropic; the HTTP endpoint
+      // still includes the Anthropic API's /v1/messages suffix. Accept the
+      // already-versioned path too for older valid profile configs.
+      expectedBasePaths: ["/api/anthropic", "/api/anthropic/v1"],
+      authScheme: "x-api-key",
+    };
+  }
+  throw new Error("Unsupported ZCode Coding Plan profile");
+}
+
 /**
- * Read only the exact Individual Coding Plan credential needed by the opt-in
- * direct SSE transport. ZCode keeps that plan's API key in the
- * `builtin:zai-coding-plan` config entry, so both the account profile and the
- * builtin profile (the same IDs the app-server transport prefers and falls back
- * to) resolve to it; any other profile, such as the Start Plan, is refused. The
- * provider origin is constrained before the credential can reach the native client.
+ * Read one explicitly identified ZCode subscription credential. Start and
+ * Individual use separate config entries, origins and authorization schemes;
+ * this helper never copies credentials between plans.
  */
-export async function readZcodeIndividualCodingPlanApiKey(
+export async function readZcodePlanGatewayProfile(
   providerId: string,
   configPath = join(homedir(), ".zcode", "v2", "config.json")
-): Promise<string> {
-  if (
-    providerId !== ACCOUNT_INDIVIDUAL_PROVIDER_ID &&
-    providerId !== BUILTIN_INDIVIDUAL_PROVIDER_ID
-  ) {
-    throw new Error("Native ZCode streaming supports only the explicitly selected Individual Plan");
-  }
-
+): Promise<ZcodeGatewayProfile> {
+  const profileSpec = resolveProfile(providerId);
   const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
   const handle = await open(configPath, constants.O_RDONLY | noFollow);
   try {
-    assertPrivateRegularFile(await handle.stat());
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error("ZCode profile config is not a regular file");
+    if (process.platform !== "win32") {
+      const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+      if (uid !== undefined && info.uid !== uid)
+        throw new Error("ZCode profile config is not owned by the service user");
+      if ((info.mode & 0o077) !== 0)
+        throw new Error("ZCode profile config permissions are too broad");
+    }
+
     const parsed = asRecord(JSON.parse(await handle.readFile("utf8")));
-    const options = individualProfileOptions(parsed);
-    assertIndividualApiOrigin(options.baseURL);
-    return signedApiKey(options.apiKey);
+    const providers = asRecord(parsed.provider);
+    const profile = asRecord(providers[profileSpec.configProviderId]);
+    if (profile.enabled !== true || profile.kind !== "anthropic")
+      throw new Error(`${profileSpec.plan} ZCode Coding Plan profile is not enabled`);
+
+    const options = asRecord(profile.options);
+    let baseUrl: URL;
+    try {
+      baseUrl = new URL(typeof options.baseURL === "string" ? options.baseURL : "");
+    } catch {
+      throw new Error(`${profileSpec.plan} ZCode Coding Plan profile has an invalid API origin`);
+    }
+    if (
+      baseUrl.origin !== profileSpec.expectedOrigin ||
+      !profileSpec.expectedBasePaths.includes(baseUrl.pathname.replace(/\/+$/, "")) ||
+      baseUrl.username ||
+      baseUrl.password ||
+      baseUrl.search ||
+      baseUrl.hash
+    ) {
+      throw new Error(
+        `${profileSpec.plan} ZCode Coding Plan profile has an unsupported API origin`
+      );
+    }
+
+    const apiKey = options.apiKey;
+    if (
+      profileSpec.plan === "individual" &&
+      (typeof apiKey !== "string" ||
+        apiKey.length > 512 ||
+        !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(apiKey))
+    ) {
+      throw new Error("Individual ZCode Coding Plan profile has no valid signed credential");
+    }
+    if (typeof apiKey !== "string" || apiKey.length > 2048 || !apiKey || /\s/.test(apiKey))
+      throw new Error(`${profileSpec.plan} ZCode Coding Plan profile has no valid credential`);
+    if (profileSpec.plan === "start" && apiKey.split(".").length < 3) {
+      throw new Error("Start ZCode Coding Plan profile has an invalid signed credential format");
+    }
+
+    const endpoint = new URL(profileSpec.messagesPath, baseUrl.origin);
+    return {
+      plan: profileSpec.plan,
+      providerId: providerId as ZcodePlanProviderId,
+      apiKey,
+      messagesUrl: endpoint.toString(),
+      authScheme: profileSpec.authScheme,
+    };
   } finally {
     await handle.close();
   }
 }
 
-/** A regular file owned by the service user and closed to group/other. */
-function assertPrivateRegularFile(info: Stats): void {
-  if (!info.isFile()) throw new Error("ZCode profile config is not a regular file");
-  if (process.platform === "win32") return;
-  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  if (uid !== undefined && info.uid !== uid)
-    throw new Error("ZCode profile config is not owned by the service user");
-  if ((info.mode & 0o077) !== 0) throw new Error("ZCode profile config permissions are too broad");
-}
-
-function individualProfileOptions(config: JsonRecord): JsonRecord {
-  const profile = asRecord(asRecord(config.provider)[INDIVIDUAL_CONFIG_PROVIDER_ID]);
-  if (profile.enabled !== true || profile.kind !== "anthropic")
-    throw new Error("Individual Coding Plan profile is not enabled in ZCode config");
-  return asRecord(profile.options);
-}
-
-/** Only https://api.z.ai, with no credentials, port, query or fragment. */
-function assertIndividualApiOrigin(baseURL: unknown): void {
-  const baseUrl = new URL(typeof baseURL === "string" ? baseURL : "");
-  const pinned =
-    baseUrl.protocol === "https:" &&
-    baseUrl.hostname === "api.z.ai" &&
-    !baseUrl.username &&
-    !baseUrl.password &&
-    !baseUrl.port &&
-    !baseUrl.search &&
-    !baseUrl.hash;
-  if (!pinned) throw new Error("Individual Coding Plan profile has an unsupported API origin");
-}
-
-function signedApiKey(apiKey: unknown): string {
+/** Compatibility wrapper for the Individual-only native gateway call sites. */
+export async function readZcodeIndividualCodingPlanApiKey(
+  providerId: string,
+  configPath = join(homedir(), ".zcode", "v2", "config.json")
+): Promise<string> {
   if (
-    typeof apiKey !== "string" ||
-    apiKey.length > 512 ||
-    !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(apiKey)
+    providerId !== ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID &&
+    providerId !== ZCODE_INDIVIDUAL_PLAN_BUILTIN_ID
   ) {
-    throw new Error("Individual Coding Plan profile has no valid signed credential");
+    throw new Error("Native ZCode streaming supports only the explicitly selected Individual Plan");
   }
-  return apiKey;
+  const profile = await readZcodePlanGatewayProfile(providerId, configPath);
+  return profile.apiKey;
 }

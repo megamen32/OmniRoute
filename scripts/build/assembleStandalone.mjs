@@ -1256,6 +1256,28 @@ export function assembleStandalone({
     // treats these as two distinct targets; #9913 only covered the top-level one, which left
     // the nested location's hollow dirs unrepaired (#7346).
     for (const bundleNodeModules of BUNDLE_NODE_MODULES_DIRS(resolvedOutDir, relDistDir)) {
+      // A non-empty but incomplete zod directory also shadows the complete
+      // package and makes MCP's zod/v3 or zod/v4 imports fail at startup.
+      const sourceZod = path.join(projectRoot, "node_modules", "zod");
+      const bundledZod = path.join(bundleNodeModules, "zod");
+      if (
+        fsSync.existsSync(path.join(bundledZod, "package.json")) &&
+        fsSync.existsSync(path.join(sourceZod, "package.json"))
+      ) {
+        const sourceVersion = JSON.parse(
+          fsSync.readFileSync(path.join(sourceZod, "package.json"), "utf8")
+        ).version;
+        const bundledVersion = JSON.parse(
+          fsSync.readFileSync(path.join(bundledZod, "package.json"), "utf8")
+        ).version;
+        if (
+          sourceVersion === bundledVersion &&
+          (!fsSync.existsSync(path.join(bundledZod, "v3", "index.js")) ||
+            !fsSync.existsSync(path.join(bundledZod, "v4", "index.js")))
+        ) {
+          fsSync.cpSync(sourceZod, bundledZod, { recursive: true, force: true });
+        }
+      }
       const emptyPkgRepair = repairEmptyExternalPackageDirs(projectRoot, bundleNodeModules);
       if (emptyPkgRepair.repaired > 0) {
         console.log(

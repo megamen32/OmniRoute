@@ -19,20 +19,43 @@ export const ZCODE_MODELS = GLM_SHARED_MODELS.filter(
   supportsVision: Boolean(model.supportsVision),
 }));
 
-/**
- * Local ZCode app-server backend. Authentication remains in the user's local
- * ZCode profile (`builtin:zai-coding-plan`); OmniRoute does not receive or
- * persist the Z.ai credential.
- */
+/** Explicit Start profile: separate provider identity for routing and quota monitoring. */
+const startBase = {
+  id: "zcode-start",
+  alias: "zc-start",
+  format: "openai" as const,
+  executor: "zcode-start",
+  baseUrl: "zcode://app-server/stdio",
+  authType: "oauth" as const,
+  authHeader: "none",
+};
+
+export const zcodeStartProvider: RegistryEntry = {
+  ...startBase,
+  models: ZCODE_MODELS.map((model) => ({
+    ...model,
+    name: `${model.name || model.id} (Z-code Start)`,
+  })),
+};
+
+/** Saved OAuth accounts use Start by default; explicit aliases select each tariff. */
 export const zcodeProvider: RegistryEntry = {
+  ...startBase,
   id: "zcode",
   alias: "zc",
-  format: "openai",
   executor: "zcode",
-  baseUrl: "zcode://app-server/stdio",
   authType: "none",
-  authHeader: "none",
-  // ZCode's app-server transport does not consume reasoning_effort; keep thinking
-  // capability metadata without advertising aliases or tiers that it would ignore.
   models: ZCODE_MODELS,
+};
+
+/** Explicit Individual profile: separate provider identity for routing and quota monitoring. */
+export const zcodeIndividualProvider: RegistryEntry = {
+  ...startBase,
+  id: "zcode-individual",
+  alias: "zc-individual",
+  executor: "zcode-individual",
+  models: ZCODE_MODELS.map((model) => ({
+    ...model,
+    name: `${model.name || model.id} (Z-code Individual)`,
+  })),
 };

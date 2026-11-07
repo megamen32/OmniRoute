@@ -2,7 +2,7 @@
 
 import { Button } from "@/shared/components";
 
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 /**
@@ -37,8 +37,18 @@ export default function ConnectionIdChip({ connectionId }: { connectionId?: stri
 }
 
 /** One-line hint under the Connections header explaining per-request account pinning. */
-export function ConnectionPinTip() {
+export function ConnectionPinTip({ providerId }: { providerId?: string }) {
   const t = useTranslations("providers");
+  const locale = useLocale();
+  if (providerId === "zcode") {
+    return (
+      <p className="-mt-2 mb-3 text-xs text-text-muted">
+        {locale === "ru"
+          ? `Для закрепления передайте ID подключения в заголовке ${CONNECTION_PIN_HEADER}. Если выбранный аккаунт недоступен, запрос завершится ошибкой без переключения на другой аккаунт.`
+          : `To pin a request, send the connection ID in the ${CONNECTION_PIN_HEADER} header. If the selected account is unavailable, the request fails without switching to another account.`}
+      </p>
+    );
+  }
   return (
     <p className="-mt-2 mb-3 text-xs text-text-muted">
       {t("connectionPinTip", { header: CONNECTION_PIN_HEADER })}

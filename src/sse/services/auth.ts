@@ -1,3 +1,4 @@
+import { isZcodeTariffQuota429 } from "@omniroute/open-sse/handlers/chatCore/keyHealth.ts";
 import type { CredentialSelectionOptions } from "./credentialSelectionOptions";
 import { claimCodexRecoveryCanary } from "./codexRecoveryCanary";
 export type { CredentialSelectionOptions } from "./credentialSelectionOptions";
@@ -59,6 +60,7 @@ import {
   getQuotaWindowStatus,
   hydrateCodexQuotaCacheForRequest,
   isQuotaExhaustedForRequest,
+  isQuotaScopeApplicable,
   getClaudeQuotaPreflightResetAt,
   resolveClaudeQuotaCooldownMs as resolveClaudeCooldown,
 } from "@/domain/quotaCache";
@@ -365,6 +367,7 @@ function collectCachedQuotaHeadroomPercentages(
   connection: ProviderConnectionView,
   requestedModel: string | null
 ): number[] {
+  if (!isQuotaScopeApplicable(connection.id, provider, connection.authType)) return [];
   const quotaEntry = getQuotaCache(connection.id) as QuotaCacheView | null;
   const rawQuotas = quotaEntry?.quotas || {};
   const codexWindowFilter =
@@ -384,6 +387,7 @@ function getConnectionQuotaHeadroomPercent(
   connection: ProviderConnectionView,
   requestedModel: string | null = null
 ): number | null {
+  if (!isQuotaScopeApplicable(connection.id, provider, connection.authType)) return null;
   const policy = resolveQuotaLimitPolicy(provider, connection.providerSpecificData);
   const policyPercentages = collectPolicyQuotaHeadroomPercentages(
     provider,
@@ -417,7 +421,8 @@ function getP2CConnectionScore(
       connection.id,
       provider,
       requestedModel,
-      connection.providerSpecificData
+      connection.providerSpecificData,
+      connection.authType
     );
   }
 
@@ -820,6 +825,7 @@ async function materializeConnection(
     apiKey: connection.apiKey,
     accessToken: connection.accessToken,
     refreshToken: connection.refreshToken,
+    idToken: connection.provider === "zcode" ? connection.idToken : undefined,
     expiresAt: connection.tokenExpiresAt || connection.expiresAt || null,
     projectId: connection.projectId,
     defaultModel: connection.defaultModel || null,
@@ -886,7 +892,24 @@ export async function getProviderCredentials(
       NOAUTH_PROVIDERS as Record<string, { noAuth?: boolean } | undefined>,
       WEB_COOKIE_PROVIDERS as Record<string, { noAuth?: boolean } | undefined>,
     ];
-    if (providerMaps.some((map) => map[resolvedId]?.noAuth)) {
+    const pinnedZcodeAccount =
+      ["zcode", "zcode-start", "zcode-individual"].includes(resolvedId) &&
+      typeof options.forcedConnectionId === "string" &&
+      options.forcedConnectionId.trim().length > 0 &&
+      options.forcedConnectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID;
+    const hasZcodeAccounts =
+      ["zcode", "zcode-start", "zcode-individual"].includes(resolvedId) &&
+      options.forcedConnectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID &&
+      (await getCachedRawProviderConnections({ provider: "zcode", isActive: true })).some(
+        (connection) =>
+          !allowedConnections?.length ||
+          allowedConnections.includes(toProviderConnection(connection).id)
+      );
+    if (
+      providerMaps.some((map) => map[resolvedId]?.noAuth) &&
+      !pinnedZcodeAccount &&
+      !hasZcodeAccounts
+    ) {
       if (await isNoAuthProviderBlockedBySettings(resolvedId)) return null;
       // #3061: there is only one synthetic "noauth" connection for a no-auth
       // provider. If the caller already tried and excluded it (account-fallback
@@ -959,7 +982,11 @@ export async function getProviderCredentials(
     const sessionAffinityTtlMs = resolveSessionAffinityTtlMs(provider, options, settings);
 
     // Fix #922: Check for aliases (nvidia/nvidia_nim) to ensure credentials are found
-    const providersToSearch = await getProviderSearchPool(provider);
+    const providersToSearch =
+      ["zcode-start", "zcode-individual"].includes(resolvedId) &&
+      (pinnedZcodeAccount || hasZcodeAccounts)
+        ? ["zcode"]
+        : await getProviderSearchPool(provider);
     const connectionResults = await Promise.all(
       providersToSearch.map((p) => getCachedRawProviderConnections({ provider: p, isActive: true }))
     );
@@ -1043,8 +1070,21 @@ export async function getProviderCredentials(
         }) ?? forcedConnectionId;
     }
 
-    // Forced ids absent from the pool fail; excluded/cooling/quota-blocked ids allow fallback.
-    if (isForcedConnectionMissingFromPool(forcedConnectionId, excludedConnectionIds, connections)) {
+    // A forced connection (combo step `connectionId` / `x-omniroute-connection`) is an
+    // operator instruction, not a suggestion. resolveForcedConnectionForCredentialPool()
+    // legitimately returns null for several *intentional* pin-release cases (forced ID
+    // already in excludedConnectionIds after a failed attempt, cooldown, quota exhaustion,
+    // quota-policy block) — those must keep degrading to normal sibling fallback, unchanged.
+    // The bug is narrower: the forced connection was requested, was NOT intentionally
+    // excluded, and simply is not present in the current active/allowed pool at all (e.g.
+    // an operator deactivated it). Detect exactly that case *before* calling the resolver,
+    // so it never gets folded in with the intentional-release cases above.
+    if (pinnedZcodeAccount) {
+      // An explicit Z-code profile must never become a different account.
+      connections = connections.filter((conn) => conn.id === forcedConnectionId);
+    } else if (
+      isForcedConnectionMissingFromPool(forcedConnectionId, excludedConnectionIds, connections)
+    ) {
       // Route through the existing "target has no eligible credentials" recoverable path
       // (the connections.length === 0 branch just below) instead of falling through to the
       // full active pool. That path already returns null/CONNECTION_INELIGIBLE, which the
@@ -1064,7 +1104,8 @@ export async function getProviderCredentials(
             connectionId,
             provider,
             requestedModel,
-            conn?.providerSpecificData
+            conn?.providerSpecificData,
+            conn?.authType
           );
         },
         isQuotaPolicyBlocked: (connection) =>
@@ -1164,7 +1205,23 @@ export async function getProviderCredentials(
         const terminalConnections = allConnections.filter(isTerminalConnectionStatus);
         if (terminalConnections.length === allConnections.length) {
           invalidateManagedLease(options, "AUTHORIZATION_CHANGED");
-          const syntheticFallback = await maybeSyntheticNoAuthFallback(
+          const syntheticFallback = pinnedZcodeAccount
+            ? null
+            : await maybeSyntheticNoAuthFallback(
+                resolvedId,
+                excludedConnectionIds,
+                allowedConnections,
+                false,
+                requestedModel,
+                options.connectionRestrictionSources
+              );
+          if (syntheticFallback) return syntheticFallback;
+          return buildAllExpiredCredentials(terminalConnections);
+        }
+      }
+      const syntheticFallback = pinnedZcodeAccount
+        ? null
+        : await maybeSyntheticNoAuthFallback(
             resolvedId,
             excludedConnectionIds,
             allowedConnections,
@@ -1172,18 +1229,6 @@ export async function getProviderCredentials(
             requestedModel,
             options.connectionRestrictionSources
           );
-          if (syntheticFallback) return syntheticFallback;
-          return buildAllExpiredCredentials(terminalConnections);
-        }
-      }
-      const syntheticFallback = await maybeSyntheticNoAuthFallback(
-        resolvedId,
-        excludedConnectionIds,
-        allowedConnections,
-        false,
-        requestedModel,
-        options.connectionRestrictionSources
-      );
       if (syntheticFallback) return syntheticFallback;
       const jinaEnvCredentials = buildJinaEnvCredentials(resolvedId, {
         forcedConnectionId,
@@ -1307,20 +1352,29 @@ export async function getProviderCredentials(
     // When all otherwise eligible Codex accounts are model-locked, admit one
     // existing request as a bounded canary after a newer positive quota poll.
     // This preserves ACL, terminal, provider and scoped-window cooldowns.
-    if (provider === "codex" && requestedModel && availableConnections.length === 0
-      && !allowSuppressedConnections && explicitProbeKind !== "probe") {
-      const candidate = connections.find((connection) =>
-        connectionFilterStatus.get(connection.id) === "modelLocked"
-        && claimCodexRecoveryCanary(
-          connection,
-          requestedModel,
-          getModelLockoutInfo(provider, connection.id, requestedModel),
-        )
+    if (
+      provider === "codex" &&
+      requestedModel &&
+      availableConnections.length === 0 &&
+      !allowSuppressedConnections &&
+      explicitProbeKind !== "probe"
+    ) {
+      const candidate = connections.find(
+        (connection) =>
+          connectionFilterStatus.get(connection.id) === "modelLocked" &&
+          claimCodexRecoveryCanary(
+            connection,
+            requestedModel,
+            getModelLockoutInfo(provider, connection.id, requestedModel)
+          )
       );
       if (candidate) {
         availableConnections = [candidate];
         connectionFilterStatus.set(candidate.id, "quotaRecoveryCanary");
-        log.info("AUTH", `codex | isolated quota-recovery canary for ${candidate.id.slice(0, 8)} model=${requestedModel}`);
+        log.info(
+          "AUTH",
+          `codex | isolated quota-recovery canary for ${candidate.id.slice(0, 8)} model=${requestedModel}`
+        );
       }
     }
 
@@ -1467,14 +1521,16 @@ export async function getProviderCredentials(
           connectionsCount: connections.length,
         };
       }
-      const syntheticFallback = await maybeSyntheticNoAuthFallback(
-        resolvedId,
-        excludedConnectionIds,
-        allowedConnections,
-        false,
-        requestedModel,
-        options.connectionRestrictionSources
-      );
+      const syntheticFallback = pinnedZcodeAccount
+        ? null
+        : await maybeSyntheticNoAuthFallback(
+            resolvedId,
+            excludedConnectionIds,
+            allowedConnections,
+            false,
+            requestedModel,
+            options.connectionRestrictionSources
+          );
       if (syntheticFallback) return syntheticFallback;
 
       // #7611: isActive terminal rows never hit the inactive allExpired branch.
@@ -1610,7 +1666,8 @@ export async function getProviderCredentials(
         c.id,
         provider,
         requestedModel,
-        c.providerSpecificData
+        c.providerSpecificData,
+        c.authType
       );
       const existing = quotaResults.get(c.id);
       if (existing) existing.exhausted = exhausted;
@@ -2430,7 +2487,14 @@ export async function markAccountUnavailable(
     const connections = (Array.isArray(connectionsRaw) ? connectionsRaw : [])
       .map(toProviderConnection)
       .filter((connection) => connection.id.length > 0);
-    const conn = connections.find((connection) => connection.id === connectionId);
+    const tariffProvider =
+      provider &&
+      ["zcode", "zcode-start", "zcode-individual"].includes(resolveProviderId(provider));
+    const conn =
+      connections.find((connection) => connection.id === connectionId) ??
+      (tariffProvider
+        ? toProviderConnection(await getProviderConnectionById(connectionId))
+        : undefined);
     const backoffLevel = conn?.backoffLevel || 0;
 
     // T06/T10/T36: terminal statuses should not be overwritten by transient cooldown state.
@@ -2728,6 +2792,33 @@ export async function markAccountUnavailable(
         fallbackResult.reason
       );
       return { shouldFallback: true, cooldownMs: connectionCooldownMs };
+    }
+    // OAuth tariffs share one stored connection, but their quota windows do not.
+    if (
+      provider &&
+      model?.trim() &&
+      isZcodeTariffQuota429(provider, conn?.authType, status, errorText) &&
+      (fallbackResult.reason === RateLimitReason.QUOTA_EXHAUSTED ||
+        fallbackResult.reason === RateLimitReason.RATE_LIMIT_EXCEEDED) &&
+      !fallbackResult.permanent &&
+      !fallbackResult.creditsExhausted &&
+      !disableCooling
+    ) {
+      const modelCooldownMs =
+        fallbackResult.cooldownMs > 0 ? fallbackResult.cooldownMs : COOLDOWN_MS.rateLimit;
+      const tariffId = resolveProviderId(provider);
+      const lockProviders =
+        tariffId === "zcode" || tariffId === "zcode-start" ? ["zcode", "zcode-start"] : [provider];
+      for (const lockProvider of lockProviders) {
+        lockExactModel(lockProvider, connectionId, model, fallbackResult.reason, modelCooldownMs);
+      }
+      await updateProviderConnection(connectionId, {
+        lastErrorType: fallbackResult.reason,
+        lastError: `Tariff-scoped rate limit on ${provider}:${model}`,
+        lastErrorAt: new Date().toISOString(),
+        errorCode: status,
+      });
+      return { shouldFallback: true, cooldownMs: modelCooldownMs };
     }
 
     // A provider that retires ONE model answers 410 ("Model X has been

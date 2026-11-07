@@ -59,6 +59,7 @@ import {
   getQuotaSnapshotFetchedAt,
   getQuotaWeightedRemainingPercent,
   isQuotaExhaustedForRequest,
+  isQuotaScopeApplicable,
 } from "../../../src/domain/quotaCache.ts";
 
 /**
@@ -245,7 +246,8 @@ export async function expandTargetsByQuotaAwareConnections(
           connectionId,
           provider,
           target.modelStr || null,
-          connection?.providerSpecificData
+          connection?.providerSpecificData,
+          typeof connection?.authType === "string" ? connection.authType : undefined
         )
       );
       if (
@@ -899,10 +901,20 @@ export async function orderTargetsByQuotaWeighted(
   const now = Date.now();
   const withSnapshot = scoredTargets.map((entry) => {
     const connectionId = entry.target.connectionId ?? "";
-    const marked = connectionId
+    const connection = connectionById.get(connectionId);
+    const provider = getResetAwareProvider(entry.target);
+    const scoped =
+      connectionId &&
+      (!provider ||
+        isQuotaScopeApplicable(
+          connectionId,
+          provider,
+          typeof connection?.authType === "string" ? connection.authType : undefined
+        ));
+    const marked = scoped
       ? getQuotaWeightedRemainingPercent(connectionId, entry.target.modelStr)
       : null;
-    const fetchedAt = connectionId ? getQuotaSnapshotFetchedAt(connectionId) : null;
+    const fetchedAt = scoped ? getQuotaSnapshotFetchedAt(connectionId) : null;
     return {
       ...entry,
       remainingPercent: marked === 0 ? 0 : entry.remainingPercent,
