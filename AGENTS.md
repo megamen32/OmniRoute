@@ -6,6 +6,16 @@
 > and point back here. When a rule needs to change, change it HERE — never re-fork it into an
 > assistant-specific file.
 
+## Build placement for this deployment
+
+All OmniRoute builds, including production, release, Docker, and other build variants,
+MUST run on **server-44**, not server-100, to preserve RAM on server-100. Run the
+build workload on server-44 itself; a shared remote builder that may select another
+host does not satisfy this rule. Use the canonical ServerAdministration checkout on
+server-100 over SSH for infrastructure instructions; server-44 must not have a
+permanent ServerAdministration checkout. Transfer the required OmniRoute source or
+build context to server-44 as needed, preserving other work and secrets.
+
 ## Quick Start
 
 ```bash
