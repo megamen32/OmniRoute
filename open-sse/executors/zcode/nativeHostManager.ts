@@ -237,6 +237,11 @@ export class NativeZcodeHostManager {
     );
     const env: NodeJS.ProcessEnv = {
       ...inheritedEnv,
+      // Native MCP discovery also reads the OS home, outside ZCODE_* paths.
+      // Keep the operator's global MCP servers out of caller-owned sessions.
+      HOME: state.directory,
+      USERPROFILE: state.directory,
+      XDG_CONFIG_HOME: join(state.directory, ".config"),
       ZCODE_DATA_BASE_DIR: state.directory,
       ZCODE_DESKTOP_HOME_DIR: state.directory,
       ZCODE_STORAGE_DIR: join(state.directory, ".zcode"),

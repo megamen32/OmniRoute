@@ -111,6 +111,8 @@ test("managed child excludes caller exec arguments, reuses identity, and closes 
     if (process.env.ZCODE_DATA_BASE_DIR !== process.env.ZCODE_DESKTOP_HOME_DIR) process.exit(3);
     if (!process.env.ZCODE_CREDENTIAL_SECRET) process.exit(4);
     if (process.env.ZCODE_SERVICE_AUTHORITY_MODE || process.env.ZCODE_EGRESS_PROXY) process.exit(5);
+    if (require('node:os').homedir() !== process.env.ZCODE_DATA_BASE_DIR) process.exit(6);
+    if (process.env.XDG_CONFIG_HOME !== require('node:path').join(process.env.ZCODE_DATA_BASE_DIR, '.config')) process.exit(7);
     process.send({type:'ready',port:12345,version:'fixture'});
     setInterval(()=>{},1000);
   `
