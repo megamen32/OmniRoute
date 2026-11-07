@@ -1649,7 +1649,12 @@ async function seedConn10460(provider: string): Promise<string> {
   return (conn as Record<string, unknown>).id as string;
 }
 
-test.after(() => {
+test.after(async () => {
+  const { drainPendingStaleLkgpClears } =
+    await import("../../open-sse/services/combo/staleLkgpClear.ts");
+  await drainPendingStaleLkgpClears();
+  const { drainPendingWebhookEvents } = await import("../../src/lib/webhookDispatcher.ts");
+  await drainPendingWebhookEvents();
   core.resetDbInstance();
   fs.rmSync(TEST_DATA_DIR_10460, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
@@ -2009,6 +2014,15 @@ test("#10460 acceptance: unambiguous model-unsupported 400 makes exactly ONE ups
   assert.equal(triedGithubConnections.length, 1, "only the first account should have been tried");
   assert.equal(result.status, 200, "the combo must advance to the next target and succeed");
 
+  // The successful target records its LKGP pin in the background. Confirm that
+  // write before teardown removes the isolated database.
+  const { getLKGP } = await import("../../src/lib/db/settings/lkgp.ts");
+  const deadline = Date.now() + 5000;
+  while ((await getLKGP("test-combo-10460", "test-combo-10460"))?.provider !== "openai") {
+    assert.ok(Date.now() < deadline, "successful target must persist its LKGP pin");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+
   // The two untouched accounts must remain completely unaffected — proves the
   // guard did not just avoid an upstream call but also never cooled them down,
   // so they stay immediately eligible for the next unrelated request.
@@ -2080,4 +2094,57 @@ test("checkFallbackError: TPD without clock or header is NOT host-midnight lock"
   const result = checkFallbackError(429, MOONSHOT_TPD, 0, null, MOONSHOT_COMPAT);
   assert.notEqual(result.dailyQuotaExhausted, true);
   assert.ok(result.cooldownMs < 2 * 60 * 60 * 1000);
+});
+
+test("#10460 pending LKGP cleanup can be drained before the test database is removed", async () => {
+  const { clearStaleLKGP, drainPendingStaleLkgpClears } =
+    await import("../../open-sse/services/combo/staleLkgpClear.ts");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const clear = clearStaleLKGP("drain-test", "target", null, null, "COMBO", async () => gate);
+  let drained = false;
+  const drain = drainPendingStaleLkgpClears().then(() => {
+    drained = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(drained, false, "drain waits for the in-flight clear");
+  release();
+  await Promise.all([clear, drain]);
+  assert.equal(drained, true);
+});
+
+test("#10460 drain waits for sibling cleanup even when one clear fails", async () => {
+  const { clearStaleLKGP, drainPendingStaleLkgpClears } =
+    await import("../../open-sse/services/combo/staleLkgpClear.ts");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let warnings = 0;
+  const clear = clearStaleLKGP(
+    "failure-drain",
+    "target",
+    null,
+    {
+      warn: () => {
+        warnings++;
+      },
+    },
+    "COMBO",
+    async (_combo, key) => {
+      if (key === "target") throw new Error("expected fixture failure");
+      await gate;
+    }
+  );
+  let drained = false;
+  const drain = drainPendingStaleLkgpClears().then(() => {
+    drained = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(drained, false);
+  release();
+  await Promise.all([clear, drain]);
+  assert.equal(warnings, 1);
 });

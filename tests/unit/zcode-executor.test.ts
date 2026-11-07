@@ -62,6 +62,54 @@ test("ZCode waits for the signed-in provider to finish native registry hydration
   assert.equal(views, 2);
 });
 
+test("ZCode uses the explicitly pinned provider when the registry RPC fails", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  let selected: unknown;
+  const executor = new ZcodeExecutor({
+    providerId: "account:bigmodel-start-plan",
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel, method, args) {
+        if (method === "initialize") return { available: true };
+        if (method === "getView") throw new Error("registry offline");
+        selected = (args[0] as { selection: unknown }).selection;
+        return { text: "ready", finishReason: "stop" };
+      },
+    }),
+  });
+  const result = await executor.execute({
+    model: "glm-5.3-flash",
+    body: requestBody(),
+    stream: false,
+    credentials: {},
+  });
+  assert.equal(("response" in result ? result.response : result).status, 200);
+  assert.deepEqual(selected, {
+    providerId: "account:bigmodel-start-plan",
+    modelId: "glm-5.3-flash",
+  });
+});
+
+test("ZCode never substitutes the local account for a selected OAuth connection", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  let started = false;
+  const executor = new ZcodeExecutor({
+    clientFactory: () => {
+      started = true;
+      throw new Error("must not use local account");
+    },
+  });
+  const result = await executor.execute({
+    model: "glm-5.3-flash",
+    body: requestBody(),
+    stream: false,
+    credentials: { accessToken: "synthetic-oauth", connectionId: "account-1" },
+  });
+  assert.equal(("response" in result ? result.response : result).status, 401);
+  assert.equal(started, false);
+});
+
 /** Live-shaped registry view: optionSpecs carry the native maxOutputTokens bound. */
 function boundedSelectionView() {
   return {

@@ -165,6 +165,33 @@ test("trace pruning does not follow directory symlinks outside the standalone ro
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
+test("repairs a partially traced nested zod package needed by MCP externals", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "assemble-zod-"));
+  const distDir = path.join(root, ".build/next"),
+    standalone = path.join(distDir, "standalone"),
+    outDir = path.join(root, "dist");
+  const source = path.join(root, "node_modules/zod"),
+    nested = path.join(standalone, ".build/next/node_modules/zod");
+  fs.mkdirSync(path.join(source, "v4"), { recursive: true });
+  fs.writeFileSync(
+    path.join(source, "package.json"),
+    JSON.stringify({ name: "zod", version: "1.0.0" })
+  );
+  fs.writeFileSync(path.join(source, "v4/index.js"), "export const ok=true;");
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(
+    path.join(nested, "package.json"),
+    JSON.stringify({ name: "zod", version: "1.0.0" })
+  );
+  fs.writeFileSync(path.join(standalone, "server.js"), "// fixture");
+  assembleStandalone({ distDir, outDir, projectRoot: root, copyNatives: true });
+  assert.equal(
+    fs.readFileSync(path.join(outDir, ".build/next/node_modules/zod/v4/index.js"), "utf8"),
+    "export const ok=true;"
+  );
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("patchTurbopackChunks restores canonical external package names in a custom distDir", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "assemble-hash-strip-"));
   const chunkDir = path.join(tmp, ".build", "next", "server", "chunks");
