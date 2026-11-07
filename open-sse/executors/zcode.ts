@@ -551,7 +551,14 @@ export class ZcodeExecutor extends BaseExecutor {
       const client = clientFactory();
       try {
         const body = asRecord(input.body);
-        const messages = (Array.isArray(body.messages) ? body.messages : []).map(asRecord);
+        // Reuse validated text parts while retaining the caller's tool-call identity fields.
+        const preparedMessages = request.messages as JsonRecord[];
+        const messages = (Array.isArray(body.messages) ? body.messages : []).map(
+          (value, index) => ({
+            ...asRecord(value),
+            content: preparedMessages[index].content,
+          })
+        );
         if (
           messages.some((message) => typeof message.content !== "string" && message.content != null)
         )
