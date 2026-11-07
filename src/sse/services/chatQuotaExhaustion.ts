@@ -24,9 +24,16 @@ export async function maybeMarkChatAccountExhaustedFrom429(input: {
   // one tariff must not mark the connection exhausted for the other. Start
   // quota state is read from the provider's own billing/balance instead.
   if (
-    ["zcode", "zc", "zc-start", "zc-individual", "zcode-start", "zcode-individual"].includes(
-      input.provider
-    ) &&
+    [
+      "zcode",
+      "zc",
+      "zc-start",
+      "zc-individual",
+      "zcode-start",
+      "zcode-individual",
+      "zcode-cn-start",
+      "zcode-cn-individual",
+    ].includes(input.provider) &&
     (await getProviderConnectionById(input.connectionId))?.authType === "oauth"
   ) {
     return;

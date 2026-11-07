@@ -75,9 +75,16 @@ export function isZcodeTariffQuota429(
   if (
     authType !== "oauth" ||
     status !== 429 ||
-    !["zcode", "zc", "zcode-start", "zc-start", "zcode-individual", "zc-individual"].includes(
-      provider ?? ""
-    )
+    ![
+      "zcode",
+      "zc",
+      "zcode-start",
+      "zc-start",
+      "zcode-individual",
+      "zc-individual",
+      "zcode-cn-start",
+      "zcode-cn-individual",
+    ].includes(provider ?? "")
   )
     return false;
   return !/\b(?:bann?ed|suspend(?:ed)?|unauthori[sz]ed|forbidden|invalid[ _-]+(?:token|credential|api[ _-]?key)|expired[ _-]+(?:token|credential)|authentication|provider[ _-]+(?:error|unavailable|overloaded)|server[ _-]+(?:error|overloaded))\b/i.test(

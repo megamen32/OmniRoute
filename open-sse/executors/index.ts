@@ -111,6 +111,22 @@ const lazyExecutors: Record<string, () => Promise<BaseExecutor>> = {
           providerId: "account:zai-individual-coding-plan",
         })
     ),
+  "zcode-cn-start": () =>
+    import("./zcode.ts").then(
+      (m) =>
+        new m.ZcodeExecutor({
+          provider: "zcode-cn-start",
+          providerId: "account:bigmodel-start-plan",
+        })
+    ),
+  "zcode-cn-individual": () =>
+    import("./zcode.ts").then(
+      (m) =>
+        new m.ZcodeExecutor({
+          provider: "zcode-cn-individual",
+          providerId: "account:bigmodel-individual-coding-plan",
+        })
+    ),
   "minimax-code": () => import("./minimax-code.ts").then((m) => new m.MinimaxCodeExecutor()),
   mmcode: () => import("./minimax-code.ts").then((m) => new m.MinimaxCodeExecutor()), // Alias
   zc: () => import("./zcode.ts").then((m) => new m.ZcodeExecutor()), // Alias

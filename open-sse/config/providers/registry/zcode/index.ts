@@ -59,3 +59,17 @@ export const zcodeIndividualProvider: RegistryEntry = {
     name: `${model.name || model.id} (Z-code Individual)`,
   })),
 };
+
+/** Region aliases select the Chinese account pool without changing combo configuration. */
+export const zcodeCnStartProvider: RegistryEntry = {
+  ...zcodeStartProvider,
+  id: "zcode-cn-start",
+  alias: "zc-cn-start",
+  executor: "zcode-cn-start",
+};
+export const zcodeCnIndividualProvider: RegistryEntry = {
+  ...zcodeIndividualProvider,
+  id: "zcode-cn-individual",
+  alias: "zc-cn-individual",
+  executor: "zcode-cn-individual",
+};

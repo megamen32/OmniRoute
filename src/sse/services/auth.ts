@@ -892,19 +892,23 @@ export async function getProviderCredentials(
       NOAUTH_PROVIDERS as Record<string, { noAuth?: boolean } | undefined>,
       WEB_COOKIE_PROVIDERS as Record<string, { noAuth?: boolean } | undefined>,
     ];
+    const isZcodeRoute = [
+      "zcode",
+      "zcode-start",
+      "zcode-individual",
+      "zcode-cn-start",
+      "zcode-cn-individual",
+    ].includes(resolvedId);
+    const zcodeFamily = resolvedId.startsWith("zcode-cn-") ? "bigmodel" : "zai";
     const pinnedZcodeAccount =
-      ["zcode", "zcode-start", "zcode-individual"].includes(resolvedId) &&
+      isZcodeRoute &&
       typeof options.forcedConnectionId === "string" &&
       options.forcedConnectionId.trim().length > 0 &&
       options.forcedConnectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID;
     const hasZcodeAccounts =
-      ["zcode", "zcode-start", "zcode-individual"].includes(resolvedId) &&
+      isZcodeRoute &&
       options.forcedConnectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID &&
-      (await getCachedRawProviderConnections({ provider: "zcode", isActive: true })).some(
-        (connection) =>
-          !allowedConnections?.length ||
-          allowedConnections.includes(toProviderConnection(connection).id)
-      );
+      (await getCachedRawProviderConnections({ provider: "zcode" })).length > 0;
     if (
       providerMaps.some((map) => map[resolvedId]?.noAuth) &&
       !pinnedZcodeAccount &&
@@ -983,8 +987,7 @@ export async function getProviderCredentials(
 
     // Fix #922: Check for aliases (nvidia/nvidia_nim) to ensure credentials are found
     const providersToSearch =
-      ["zcode-start", "zcode-individual"].includes(resolvedId) &&
-      (pinnedZcodeAccount || hasZcodeAccounts)
+      isZcodeRoute && (pinnedZcodeAccount || hasZcodeAccounts)
         ? ["zcode"]
         : await getProviderSearchPool(provider);
     const connectionResults = await Promise.all(
@@ -995,6 +998,12 @@ export async function getProviderCredentials(
     let connections = (Array.isArray(connectionsRaw) ? connectionsRaw : [])
       .map(createLazyConnectionView)
       .filter((conn) => conn.id.length > 0);
+    // Explicit pins remain authoritative; unpinned OAuth aliases select their own region.
+    if (isZcodeRoute && !pinnedZcodeAccount) {
+      connections = connections.filter(
+        (conn) => conn.authType !== "oauth" || conn.providerSpecificData?.family === zcodeFamily
+      );
+    }
     if (isAlibabaModelStudioProvider(provider)) {
       for (const conn of connections) {
         rehydrateAlibabaFreeDrainedModelLocks(
@@ -1147,6 +1156,11 @@ export async function getProviderCredentials(
       let allConnections = (allConnectionsResults.filter(Array.isArray).flat() as unknown[])
         .map(toProviderConnection)
         .filter((conn) => conn.id.length > 0);
+      if (isZcodeRoute && !pinnedZcodeAccount) {
+        allConnections = allConnections.filter(
+          (conn) => conn.authType !== "oauth" || conn.providerSpecificData?.family === zcodeFamily
+        );
+      }
       // #13832: remember how many connections the provider really has BEFORE the
       // key-policy filter, so an empty pool can say which gate emptied it. Without
       // this the caller only ever saw "No active credentials for provider: X",
@@ -1205,30 +1219,32 @@ export async function getProviderCredentials(
         const terminalConnections = allConnections.filter(isTerminalConnectionStatus);
         if (terminalConnections.length === allConnections.length) {
           invalidateManagedLease(options, "AUTHORIZATION_CHANGED");
-          const syntheticFallback = pinnedZcodeAccount
-            ? null
-            : await maybeSyntheticNoAuthFallback(
-                resolvedId,
-                excludedConnectionIds,
-                allowedConnections,
-                false,
-                requestedModel,
-                options.connectionRestrictionSources
-              );
+          const syntheticFallback =
+            pinnedZcodeAccount || hasZcodeAccounts
+              ? null
+              : await maybeSyntheticNoAuthFallback(
+                  resolvedId,
+                  excludedConnectionIds,
+                  allowedConnections,
+                  false,
+                  requestedModel,
+                  options.connectionRestrictionSources
+                );
           if (syntheticFallback) return syntheticFallback;
           return buildAllExpiredCredentials(terminalConnections);
         }
       }
-      const syntheticFallback = pinnedZcodeAccount
-        ? null
-        : await maybeSyntheticNoAuthFallback(
-            resolvedId,
-            excludedConnectionIds,
-            allowedConnections,
-            false,
-            requestedModel,
-            options.connectionRestrictionSources
-          );
+      const syntheticFallback =
+        pinnedZcodeAccount || hasZcodeAccounts
+          ? null
+          : await maybeSyntheticNoAuthFallback(
+              resolvedId,
+              excludedConnectionIds,
+              allowedConnections,
+              false,
+              requestedModel,
+              options.connectionRestrictionSources
+            );
       if (syntheticFallback) return syntheticFallback;
       const jinaEnvCredentials = buildJinaEnvCredentials(resolvedId, {
         forcedConnectionId,
@@ -1521,16 +1537,17 @@ export async function getProviderCredentials(
           connectionsCount: connections.length,
         };
       }
-      const syntheticFallback = pinnedZcodeAccount
-        ? null
-        : await maybeSyntheticNoAuthFallback(
-            resolvedId,
-            excludedConnectionIds,
-            allowedConnections,
-            false,
-            requestedModel,
-            options.connectionRestrictionSources
-          );
+      const syntheticFallback =
+        pinnedZcodeAccount || hasZcodeAccounts
+          ? null
+          : await maybeSyntheticNoAuthFallback(
+              resolvedId,
+              excludedConnectionIds,
+              allowedConnections,
+              false,
+              requestedModel,
+              options.connectionRestrictionSources
+            );
       if (syntheticFallback) return syntheticFallback;
 
       // #7611: isActive terminal rows never hit the inactive allExpired branch.
@@ -2489,7 +2506,13 @@ export async function markAccountUnavailable(
       .filter((connection) => connection.id.length > 0);
     const tariffProvider =
       provider &&
-      ["zcode", "zcode-start", "zcode-individual"].includes(resolveProviderId(provider));
+      [
+        "zcode",
+        "zcode-start",
+        "zcode-individual",
+        "zcode-cn-start",
+        "zcode-cn-individual",
+      ].includes(resolveProviderId(provider));
     const conn =
       connections.find((connection) => connection.id === connectionId) ??
       (tariffProvider
@@ -2807,8 +2830,9 @@ export async function markAccountUnavailable(
       const modelCooldownMs =
         fallbackResult.cooldownMs > 0 ? fallbackResult.cooldownMs : COOLDOWN_MS.rateLimit;
       const tariffId = resolveProviderId(provider);
-      const lockProviders =
-        tariffId === "zcode" || tariffId === "zcode-start" ? ["zcode", "zcode-start"] : [provider];
+      const lockProviders = ["zcode", "zcode-start", "zcode-cn-start"].includes(tariffId)
+        ? ["zcode", "zcode-start", "zcode-cn-start"]
+        : ["zcode-individual", "zcode-cn-individual"];
       for (const lockProvider of lockProviders) {
         lockExactModel(lockProvider, connectionId, model, fallbackResult.reason, modelCooldownMs);
       }

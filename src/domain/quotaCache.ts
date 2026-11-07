@@ -708,19 +708,21 @@ export function isQuotaScopeApplicable(
 ): boolean {
   if (authType !== "oauth") return true;
   const target = resolveProviderId(provider);
-  const targetPlan =
-    target === "zcode" || target === "zcode-start"
-      ? "start"
-      : target === "zcode-individual"
-        ? "individual"
-        : null;
+  const targetPlan = ["zcode", "zcode-start", "zcode-cn-start"].includes(target)
+    ? "start"
+    : ["zcode-individual", "zcode-cn-individual"].includes(target)
+      ? "individual"
+      : null;
   if (!targetPlan) return true;
   const entry = getState().cache.get(connectionId) || hydrateQuotaCacheFromSnapshots(connectionId);
   if (!entry) return true;
   // The bare connection provider `zcode` does not identify the plan observed.
   const source = resolveProviderId(entry.provider);
-  const sourcePlan =
-    source === "zcode-start" ? "start" : source === "zcode-individual" ? "individual" : null;
+  const sourcePlan = ["zcode-start", "zcode-cn-start"].includes(source)
+    ? "start"
+    : ["zcode-individual", "zcode-cn-individual"].includes(source)
+      ? "individual"
+      : null;
   return sourcePlan === targetPlan;
 }
 
@@ -945,7 +947,13 @@ function hydrateQuotaCacheFromSnapshots(connectionId: string): QuotaCacheEntry |
   if (
     snapshotScopes.size > 1 &&
     [...snapshotScopes].some((scope) =>
-      ["zcode", "zcode-start", "zcode-individual"].includes(scope)
+      [
+        "zcode",
+        "zcode-start",
+        "zcode-individual",
+        "zcode-cn-start",
+        "zcode-cn-individual",
+      ].includes(scope)
     )
   )
     provider = "zcode";

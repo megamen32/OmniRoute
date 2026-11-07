@@ -67,14 +67,15 @@ test("route saves separate encrypted connections for both regions", async () => 
     ids.push(result.connection.id);
   }
   assert.notEqual(ids[0], ids[1]);
-  for (const provider of ["zcode-start", "zcode-individual"]) {
-    const selected = await auth.getProviderCredentials(provider, null, [ids[1]]);
-    assert.equal(
-      selected?.connectionId,
-      ids[1],
-      "tariff aliases select saved allowed accounts without a forced pin"
-    );
-    assert.equal(selected?.idToken, "jwt-bigmodel");
+  for (const [provider, index] of [
+    ["zcode-start", 0],
+    ["zcode-individual", 0],
+    ["zcode-cn-start", 1],
+    ["zcode-cn-individual", 1],
+  ] as const) {
+    const selected = await auth.getProviderCredentials(provider, null, [ids[index]]);
+    assert.equal(selected?.connectionId, ids[index], "alias selects its allowed regional account");
+    assert.equal(selected?.idToken, index === 0 ? "jwt-zai" : "jwt-bigmodel");
   }
   const rows = await db.getProviderConnections({ provider: "zcode" });
   assert.equal(rows.length, 2);

@@ -120,8 +120,9 @@ export function resolveZcodeSelection(
 ): ZcodeTurnSelection {
   const found = findNativeModelEntry(view, model, providerId);
   if (!found) {
-    throw new Error(
-      `ZCode Coding Plan model "${model}" is not enabled in the native provider registry.`
+    throw new NativeSessionError(
+      `ZCode Coding Plan model "${model}" is not supported or not enabled in the native provider registry.`,
+      400
     );
   }
   const optionSpecs = asRecord(asRecord(found.record.config).optionSpecs);
@@ -549,10 +550,9 @@ export class ZcodeExecutor extends BaseExecutor {
           return errorResponse(400, "Native ZCode sessions currently require text messages");
         await client.start();
         const view = await client.call("model-selection", "getView", []);
-        const providerId =
-          this.options.provider === "zcode-individual"
-            ? "account:zai-individual-coding-plan"
-            : "account:zai-start-plan";
+        const providerId = this.options.provider?.endsWith("individual")
+          ? "account:zai-individual-coding-plan"
+          : "account:zai-start-plan";
         const family = input.credentials.providerSpecificData?.family;
         const selection = resolveZcodeSelection(
           view,
@@ -592,7 +592,7 @@ export class ZcodeExecutor extends BaseExecutor {
       }
     }
     if (input.credentials.accessToken && input.credentials.connectionId !== "noauth") {
-      if (this.options.provider === "zcode-individual") {
+      if (this.options.provider?.endsWith("individual")) {
         const family = input.credentials.providerSpecificData?.family;
         if ((family !== "bigmodel" && family !== "zai") || !input.credentials.connectionId)
           return errorResponse(

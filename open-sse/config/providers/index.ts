@@ -161,6 +161,8 @@ import { regoloProvider } from "./registry/regolo/index.ts";
 import { devin_desktopProvider } from "./registry/devin-desktop/index.ts";
 import {
   zcodeProvider,
+  zcodeCnStartProvider,
+  zcodeCnIndividualProvider,
   zcodeIndividualProvider,
   zcodeStartProvider,
 } from "./registry/zcode/index.ts";
@@ -459,6 +461,8 @@ export const REGISTRY: Record<string, RegistryEntry> = {
   "devin-desktop": devin_desktopProvider,
   "zcode-start": zcodeStartProvider,
   zcode: zcodeProvider,
+  "zcode-cn-start": zcodeCnStartProvider,
+  "zcode-cn-individual": zcodeCnIndividualProvider,
   "zcode-individual": zcodeIndividualProvider,
   "minimax-code": minimaxCodeProvider,
   "zed-hosted": zed_hostedProvider,
