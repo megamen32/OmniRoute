@@ -9,6 +9,25 @@ type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : {};
 const list = (value: unknown): RecordValue[] => (Array.isArray(value) ? value.map(record) : []);
+const assistantUsage = (snapshot: unknown): RecordValue => {
+  const messages = list(record(snapshot).messages);
+  const response = messages
+    .filter(
+      (message) => record(record(record(message).info).semantics).kind === "assistant_response"
+    )
+    .at(-1);
+  const info = record(record(response).info);
+  const tokens = record(info.tokens);
+  const cache = record(tokens.cache);
+  return {
+    inputTokens: tokens.input ?? 0,
+    outputTokens: tokens.output ?? 0,
+    totalTokens: tokens.total ?? Number(tokens.input ?? 0) + Number(tokens.output ?? 0),
+    reasoningTokens: tokens.reasoning ?? 0,
+    cacheReadTokens: cache.read ?? 0,
+    cacheWriteTokens: cache.write ?? 0,
+  };
+};
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -47,6 +66,35 @@ export class NativeSessionError extends Error {
     super(message);
   }
 }
+// An expired/changed native session can be reconstructed only from actual
+// assistant calls paired with caller results. Never invent a missing result.
+function validateCompletedNativeResults(messages: RecordValue[], required: string[]): void {
+  const calls = new Map<string, RecordValue>();
+  const results = new Set<string>();
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const call of list(message.tool_calls)) {
+        const id = String(call.id || "");
+        if (!id.startsWith("call_zcn_")) continue;
+        if (calls.has(id)) throw new NativeSessionError("Duplicate native tool call", 400);
+        calls.set(id, call);
+      }
+    }
+    if (message.role === "tool") {
+      const id = String(message.tool_call_id || "");
+      if (!id.startsWith("call_zcn_")) continue;
+      if (!calls.has(id) || results.has(id))
+        throw new NativeSessionError(
+          "Native tool result requires one preceding caller tool call",
+          400
+        );
+      results.add(id);
+    }
+  }
+  if (required.some((id) => !results.has(id)) || [...calls.keys()].some((id) => !results.has(id)))
+    throw new NativeSessionError("All pending ZCode tool results are required exactly once", 400);
+}
+
 type Tool = { name: string; description?: string; inputSchema: RecordValue };
 type PendingTool = {
   id: string;
@@ -82,6 +130,7 @@ export interface NativeSessionOptions {
 export class NativeZcodeSessionBridge {
   private continuations = new Map<string, Run>();
   private runs = new Set<Run>();
+  private recovering = new Set<string>();
   constructor(private options: NativeSessionOptions) {}
   async close(): Promise<void> {
     await Promise.allSettled([...this.runs].map((run) => this.dispose(run)));
@@ -96,61 +145,94 @@ export class NativeZcodeSessionBridge {
   }): Promise<RecordValue> {
     const results = input.messages.filter((m) => m.role === "tool");
     const ids = results.map((m) => String(m.tool_call_id || ""));
+    if (ids.some((id) => this.recovering.has(id)))
+      throw new NativeSessionError("ZCode tool continuation is being recovered", 409);
     const matches = ids.map((id) => this.continuations.get(id)).filter((v): v is Run => !!v);
     let run = matches[0];
     if (run) {
       if (matches.some((other) => other !== run) || run.scope !== input.scope || run.busy)
         throw new NativeSessionError("ZCode tool continuation does not match this request", 409);
-      if (
-        run.toolsHash !== digest(input.tools) ||
-        historyDigest(input.messages.slice(0, run.history.length)) !== historyDigest(run.history)
-      )
-        throw new NativeSessionError("ZCode tool continuation history changed", 409);
       const outstanding = run.pending.filter((tool) => tool.delivered);
-      if (outstanding.some((tool) => !ids.includes(tool.id)))
-        throw new NativeSessionError("All pending ZCode tool results are required", 400);
-      const suffix = input.messages.slice(run.history.length);
-      if (
-        suffix.length !== outstanding.length ||
-        suffix.some(
-          (message) =>
-            message.role !== "tool" || !outstanding.some((tool) => tool.id === message.tool_call_id)
-        ) ||
-        new Set(suffix.map((message) => message.tool_call_id)).size !== suffix.length
-      )
+      if (outstanding.some((tool) => ids.filter((id) => id === tool.id).length !== 1))
         throw new NativeSessionError(
-          "Send only the pending tool results; send new messages after this turn finishes",
+          "All pending ZCode tool results are required exactly once",
           400
         );
-      run.busy = true;
-      for (const tool of outstanding) {
-        const result = results.find((m) => m.tool_call_id === tool.id)!;
-        this.continuations.delete(tool.id);
-        tool.response.writeHead(200, { "content-type": "application/json" });
-        tool.response.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: tool.rpcId,
-            result: {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    typeof result.content === "string"
-                      ? result.content
-                      : JSON.stringify(result.content),
-                },
-              ],
-            },
-          })
+      const suffix = input.messages.slice(run.history.length);
+      const unchanged =
+        run.toolsHash === digest(input.tools) &&
+        historyDigest(input.messages.slice(0, run.history.length)) === historyDigest(run.history) &&
+        suffix.length === outstanding.length &&
+        suffix.every(
+          (message) =>
+            message.role === "tool" && outstanding.some((tool) => tool.id === message.tool_call_id)
         );
+      if (!unchanged) {
+        validateCompletedNativeResults(
+          input.messages,
+          outstanding.map((tool) => tool.id)
+        );
+        for (const tool of outstanding) {
+          const call = input.messages
+            .flatMap((message) => list(message.tool_calls))
+            .find((call) => call.id === tool.id);
+          const fn = record(record(call).function);
+          let argumentsValue: unknown;
+          try {
+            argumentsValue = JSON.parse(String(fn.arguments));
+          } catch {
+            throw new NativeSessionError("Invalid native tool call arguments", 400);
+          }
+          if (fn.name !== tool.name || digest(argumentsValue) !== digest(tool.input))
+            throw new NativeSessionError("Native tool call identity changed", 400);
+        }
       }
-      run.pending = run.pending.filter((tool) => !outstanding.includes(tool));
-      run.history = input.messages;
+      run.busy = true;
+      if (!unchanged) {
+        // Compression, newly discovered tools and new caller context invalidate the
+        // suspended native prompt. Recreate it from the caller's complete current
+        // transcript; completed tool results remain history, never relay executions.
+        for (const tool of outstanding) this.recovering.add(tool.id);
+        try {
+          await this.dispose(run);
+          run = await this.start(input);
+        } finally {
+          for (const tool of outstanding) this.recovering.delete(tool.id);
+        }
+      } else {
+        for (const tool of outstanding) {
+          const result = results.find((m) => m.tool_call_id === tool.id)!;
+          this.continuations.delete(tool.id);
+          tool.response.writeHead(200, { "content-type": "application/json" });
+          tool.response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: tool.rpcId,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      typeof result.content === "string"
+                        ? result.content
+                        : JSON.stringify(result.content),
+                  },
+                ],
+              },
+            })
+          );
+        }
+        run.pending = run.pending.filter((tool) => !outstanding.includes(tool));
+        run.history = input.messages;
+      }
     } else {
-      const last = input.messages.at(-1);
-      if (last?.role === "tool" && ids.some((id) => id.startsWith("call_zcn_")))
-        throw new NativeSessionError("ZCode tool continuation expired; start a new request", 409);
+      const nativeResults = results.filter((message) =>
+        String(message.tool_call_id || "").startsWith("call_zcn_")
+      );
+      validateCompletedNativeResults(
+        input.messages,
+        nativeResults.map((message) => String(message.tool_call_id))
+      );
       run = await this.start(input);
     }
     try {
@@ -170,6 +252,31 @@ export class NativeZcodeSessionBridge {
             name: tool.name,
             input: tool.input,
           }));
+          let snapshot = await run.client.call("zcode-agent", "readSession", [
+            {
+              ...run.workspace,
+              sessionId: run.sessionId,
+              messageLimit: 20,
+            },
+          ]);
+          // The MCP request can arrive before the preceding assistant message's
+          // usage/finish event has reached the native session projection.
+          for (let retry = 0; retry < 20; retry++) {
+            const latest = list(record(snapshot).messages)
+              .filter(
+                (message) => record(record(message.info).semantics).kind === "assistant_response"
+              )
+              .at(-1);
+            if (
+              record(record(latest).info).finish ||
+              Number(assistantUsage(snapshot).totalTokens) > 0
+            )
+              break;
+            await new Promise((resolve) => setTimeout(resolve, this.options.pollMs ?? 100));
+            snapshot = await run.client.call("zcode-agent", "readSession", [
+              { ...run.workspace, sessionId: run.sessionId, messageLimit: 20 },
+            ]);
+          }
           run.history = [
             ...input.messages,
             {
@@ -187,7 +294,12 @@ export class NativeZcodeSessionBridge {
           ];
           run.busy = false;
           run.expires.refresh();
-          return { text: "", finishReason: "tool-calls", toolCalls: calls };
+          return {
+            text: "",
+            finishReason: "tool-calls",
+            toolCalls: calls,
+            usage: assistantUsage(snapshot),
+          };
         }
         const snapshot = record(
           await run.client.call("zcode-agent", "readSession", [
@@ -237,6 +349,10 @@ export class NativeZcodeSessionBridge {
             usage: {
               inputTokens: tokens.input ?? 0,
               outputTokens: tokens.output ?? 0,
+              totalTokens: tokens.total ?? Number(tokens.input ?? 0) + Number(tokens.output ?? 0),
+              reasoningTokens: tokens.reasoning ?? 0,
+              cacheReadTokens: record(tokens.cache).read ?? 0,
+              cacheWriteTokens: record(tokens.cache).write ?? 0,
             },
           };
         }

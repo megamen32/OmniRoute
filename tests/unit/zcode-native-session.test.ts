@@ -4,6 +4,29 @@ import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeZcodeSessionBridge } from "../../open-sse/executors/zcode/nativeSession.ts";
+import { sanitizeProviderUsageForRequest } from "../../open-sse/utils/usageTracking.ts";
+import { FORMATS } from "../../open-sse/translator/formats.ts";
+
+test("ZCode's exact token usage is not replaced by an estimate from executor metadata", () => {
+  const usage = { prompt_tokens: 20520, completion_tokens: 446, total_tokens: 20966 };
+  const request = {
+    model: "glm-5.3",
+    messages: [{ role: "user", content: "x".repeat(9000) }],
+  };
+  const metadata = { model: "glm-5.3", buffered: true, plan: "account:zai-start-plan" };
+
+  assert.equal(
+    sanitizeProviderUsageForRequest(usage, request, FORMATS.OPENAI),
+    usage,
+    "the complete request makes the native reported token count plausible"
+  );
+  const incorrectlyEstimated = sanitizeProviderUsageForRequest(
+    { ...usage },
+    metadata,
+    FORMATS.OPENAI
+  );
+  assert.notEqual(incorrectlyEstimated.prompt_tokens, usage.prompt_tokens);
+});
 
 test("native session returns caller tool, binds continuation, and consumes external result once", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-session-test-"));
@@ -13,6 +36,7 @@ test("native session returns caller tool, binds continuation, and consumes exter
   let toolRequest: Promise<void> | undefined;
   let closeCount = 0;
   let releasedWorkspaces = 0;
+  let pendingUsageReads = 0;
   const bridge = new NativeZcodeSessionBridge({
     workspaceRoot: root,
     pollMs: 2,
@@ -61,13 +85,25 @@ test("native session returns caller tool, binds continuation, and consumes exter
           })();
           return { accepted: true };
         }
-        if (method === "readSession")
+        if (method === "readSession") {
+          if (!toolResult && pendingUsageReads++ === 0)
+            return { session: { status: "running" }, messages: [] };
           return toolResult
             ? {
                 session: { status: "idle" },
                 messages: [
                   {
-                    info: { finish: "stop", semantics: { kind: "assistant_response" } },
+                    info: {
+                      finish: "stop",
+                      semantics: { kind: "assistant_response" },
+                      tokens: {
+                        total: 1012,
+                        input: 1000,
+                        output: 12,
+                        reasoning: 3,
+                        cache: { read: 900, write: 5 },
+                      },
+                    },
                     parts: [
                       { type: "reasoning", text: "Checked caller result" },
                       { type: "text", text: toolResult },
@@ -75,7 +111,26 @@ test("native session returns caller tool, binds continuation, and consumes exter
                   },
                 ],
               }
-            : { session: { status: "running" }, messages: [] };
+            : {
+                session: { status: "running" },
+                messages: [
+                  {
+                    info: {
+                      finish: "tool-calls",
+                      semantics: { kind: "assistant_response" },
+                      tokens: {
+                        total: 1012,
+                        input: 1000,
+                        output: 12,
+                        reasoning: 3,
+                        cache: { read: 900, write: 5 },
+                      },
+                    },
+                    parts: [],
+                  },
+                ],
+              };
+        }
         if (method === "closeSession") return true;
         if (method === "disposeWorkspace") {
           assert.equal(params.releasePreparation, true);
@@ -95,6 +150,14 @@ test("native session returns caller tool, binds continuation, and consumes exter
   try {
     const result = await bridge.execute(base);
     assert.equal(result.finishReason, "tool-calls");
+    assert.deepEqual(result.usage, {
+      inputTokens: 1000,
+      outputTokens: 12,
+      totalTokens: 1012,
+      reasoningTokens: 3,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 5,
+    });
     assert.equal(toolResult, "", "native tool must remain suspended until caller returns a result");
     const call = (result.toolCalls as Array<{ id: string; name: string; input: unknown }>)[0];
     assert.equal(call.name, "echo");
@@ -118,29 +181,22 @@ test("native session returns caller tool, binds continuation, and consumes exter
       bridge.execute({ ...base, scope: "account-b:start:caller-a", messages }),
       /does not match/
     );
-    await assert.rejects(
-      bridge.execute({
-        ...base,
-        messages: [{ role: "user", content: "changed" }, ...messages.slice(1)],
-      }),
-      /history changed/
-    );
-    await assert.rejects(
-      bridge.execute({
-        ...base,
-        messages: [...messages, { role: "user", content: "new instruction" }],
-      }),
-      /only the pending tool results/
-    );
     assert.equal(toolResult, "", "invalid continuation must not consume the suspended tool");
     const final = await bridge.execute({ ...base, messages });
     assert.equal(final.text, "unpredictable-client-value");
+    assert.deepEqual(final.usage, {
+      inputTokens: 1000,
+      outputTokens: 12,
+      totalTokens: 1012,
+      reasoningTokens: 3,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 5,
+    });
     assert.equal(final.reasoning, "Checked caller result");
     await toolRequest;
     assert.equal(closeCount, 1);
     assert.equal(releasedWorkspaces, 1, "completed request releases its native engine");
     assert.deepEqual(await readdir(root), [], "completed request workspace is removed");
-    await assert.rejects(bridge.execute({ ...base, messages }), /expired/);
   } finally {
     await bridge.close();
     await rm(root, { recursive: true, force: true });
