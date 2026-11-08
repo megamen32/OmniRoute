@@ -254,3 +254,44 @@ test("native session rejects a successful answer when caller tools never connect
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("native Start quota1005 is a tariff429 rather than a provider outage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-quota-test-"));
+  const bridge = new NativeZcodeSessionBridge({
+    workspaceRoot: root,
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel, method) {
+        if (method === "saveProject") return { id: "quota-project" };
+        if (method === "createSession") return { session: { sessionId: "quota-session" } };
+        if (method === "readSession")
+          return {
+            session: { status: "error" },
+            projection: {
+              lastError: {
+                code: "1005",
+                message: "exceed quota limit",
+                attribution: { providerErrorCode: "1005" },
+              },
+            },
+          };
+        return {};
+      },
+    }),
+  });
+  try {
+    await assert.rejects(
+      bridge.execute({
+        scope: "quota-account:start",
+        selection: { providerId: "account:zai-start-plan", modelId: "GLM-5.3-Flash" },
+        messages: [{ role: "user", content: "Probe" }],
+        tools: [],
+      }),
+      { status: 429, message: "ZCode tariff quota or rate limit reached" }
+    );
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

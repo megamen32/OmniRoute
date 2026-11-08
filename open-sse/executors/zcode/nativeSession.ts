@@ -344,7 +344,7 @@ export class NativeZcodeSessionBridge {
           const error = record(record(snapshot.projection).lastError);
           const detail = `${error.code || ""} ${error.message || ""}`;
           if (
-            /\b1310\b|Weekly\/Monthly Limit Exhausted|quota[_ ]exhausted|rate[_ ]limit/i.test(
+            /\b(?:1005|1310)\b|Weekly\/Monthly Limit Exhausted|quota[_ ](?:exhausted|limit)|rate[_ ]limit/i.test(
               detail
             )
           )
