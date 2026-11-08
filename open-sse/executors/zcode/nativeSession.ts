@@ -149,6 +149,7 @@ export class NativeZcodeSessionBridge {
       throw new NativeSessionError("ZCode tool continuation is being recovered", 409);
     const matches = ids.map((id) => this.continuations.get(id)).filter((v): v is Run => !!v);
     let run = matches[0];
+    const recoveryIds: string[] = [];
     if (run) {
       if (matches.some((other) => other !== run) || run.scope !== input.scope || run.busy)
         throw new NativeSessionError("ZCode tool continuation does not match this request", 409);
@@ -192,12 +193,16 @@ export class NativeZcodeSessionBridge {
         // Compression, newly discovered tools and new caller context invalidate the
         // suspended native prompt. Recreate it from the caller's complete current
         // transcript; completed tool results remain history, never relay executions.
-        for (const tool of outstanding) this.recovering.add(tool.id);
+        for (const tool of outstanding) {
+          this.recovering.add(tool.id);
+          recoveryIds.push(tool.id);
+        }
         try {
           await this.dispose(run);
           run = await this.start(input);
-        } finally {
-          for (const tool of outstanding) this.recovering.delete(tool.id);
+        } catch (error) {
+          for (const id of recoveryIds) this.recovering.delete(id);
+          throw error;
         }
       } else {
         for (const tool of outstanding) {
@@ -362,6 +367,8 @@ export class NativeZcodeSessionBridge {
     } catch (error) {
       await this.dispose(run);
       throw error;
+    } finally {
+      for (const id of recoveryIds) this.recovering.delete(id);
     }
   }
 

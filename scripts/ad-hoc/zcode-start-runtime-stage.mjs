@@ -35,7 +35,7 @@ for (const name of ["14726.js", "77299.js", "41147.js", "37000.js"]) {
       "prompt_tokens_details:{cached_tokens:Number(e.cacheReadTokens||0)}",
       "prompt_tokens_details:{cached_tokens:Number(e.cacheReadTokens||0),cache_creation_tokens:Number(e.cacheWriteTokens||0)}"
     );
-    replace("transformedBody:{model:c.model,buffered:!0,plan:m.providerId}", "transformedBody:k");
+    replace("transformedBody:{model:c.model,buffered:!0,plan:m.providerId}", "transformedBody:d");
   }
   const dest = path.join(stage, name);
   fs.writeFileSync(dest, after);
