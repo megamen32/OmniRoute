@@ -144,13 +144,22 @@ export async function deliverWebhook(
  * production callers; reserve `dispatchEvent` for places that genuinely want
  * to await delivery (CLI/admin tooling, tests).
  */
+const pendingWebhookEvents = new Set<Promise<void>>();
+
+/** Wait for already scheduled webhook events before closing a test database. */
+export async function drainPendingWebhookEvents(): Promise<void> {
+  while (pendingWebhookEvents.size > 0) await Promise.allSettled([...pendingWebhookEvents]);
+}
+
 export function notifyWebhookEvent(event: WebhookEvent, data: Record<string, any>): void {
   // Intentionally not awaited. Promise.allSettled inside dispatchEvent already
   // absorbs per-delivery errors; this outer catch handles the import/loader
   // path so a misconfigured webhook table cannot break a request.
-  dispatchEvent(event, data).catch(() => {
+  const task = dispatchEvent(event, data).catch(() => {
     /* webhook delivery is best-effort */
   });
+  pendingWebhookEvents.add(task);
+  void task.then(() => pendingWebhookEvents.delete(task));
 }
 
 /**

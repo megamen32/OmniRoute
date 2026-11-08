@@ -10,7 +10,11 @@ import {
   randomUUID,
   verify,
 } from "node:crypto";
-import { executeZcodeGateway, nativeZcodeBody } from "../../open-sse/executors/zcode/gateway.ts";
+import {
+  executeZcodeGateway,
+  executeZcodeGatewayWithPlanFallback,
+  nativeZcodeBody,
+} from "../../open-sse/executors/zcode/gateway.ts";
 import { buildZcodeModelRequest } from "../../open-sse/executors/zcode.ts";
 import type { ExecuteInput } from "../../open-sse/executors/base.ts";
 
@@ -19,6 +23,41 @@ const TARGET = "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages";
 const body = { messages: [{ role: "user", content: "hello" }], max_tokens: 2048 };
 const input: ExecuteInput = { model: "glm-5.3-flash", body, stream: true, credentials: {} };
 const native = buildZcodeModelRequest(body);
+
+test("local Start profile uses its own bearer endpoint and never the Individual signer", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: unknown, options: RequestInit = {}) => {
+    calls++;
+    assert.equal(url, TARGET);
+    const headers = new Headers(options.headers);
+    assert.equal(headers.get("authorization"), "Bearer start.synthetic.jwt");
+    assert.equal(headers.get("x-api-key"), "start.synthetic.jwt");
+    assert.equal(options.redirect, "error");
+    return Response.json({
+      id: "msg_start",
+      type: "message",
+      role: "assistant",
+      model: "GLM-5.3-Flash",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+  });
+  const result = await executeZcodeGatewayWithPlanFallback(
+    { ...input, stream: false },
+    native,
+    ["account:zai-start-plan"],
+    async () => ({
+      plan: "start",
+      providerId: "account:zai-start-plan",
+      apiKey: "start.synthetic.jwt",
+      messagesUrl: TARGET,
+      authScheme: "bearer",
+    })
+  );
+  assert.equal((result instanceof Response ? result : result.response).status, 200);
+  assert.equal(calls, 1);
+});
 const encoder = new TextEncoder();
 const event = (type: string, data: Record<string, unknown>) =>
   "event: " + type + "\ndata: " + JSON.stringify({ type, ...data }) + "\n\n";
@@ -148,10 +187,11 @@ function backend(t: TestContext, key: string, respond: () => Response) {
 }
 
 test("native request maps model, budget and reasoning effort", () => {
-  assert.deepEqual(nativeZcodeBody(input, native), {
+  const { metadata, ...mapped } = nativeZcodeBody(input, native);
+  assert.ok(metadata && typeof metadata === "object");
+  assert.deepEqual(mapped, {
     model: "GLM-5.3-Flash",
     max_tokens: 2048,
-    metadata: {},
     messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
     thinking: { type: "enabled" },
     output_config: { effort: "low" },
@@ -325,6 +365,81 @@ test("tool output and usage translate; upstream refusal is returned without repl
     assert.equal(refusal.headers.get("retry-after"), "30");
   }
   assert.deepEqual(counts, { config: 1, handshake: 1, inference: 4 });
+});
+
+test("a Start JWT goes only to the ZCode Start endpoint with account metadata", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: unknown, options: RequestInit = {}) => {
+    calls++;
+    assert.equal(String(url), "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages");
+    assert.equal(new Headers(options.headers).get("authorization"), "Bearer fixture-start-jwt");
+    const sent = JSON.parse(String(options.body));
+    assert.match(JSON.parse(sent.metadata.user_id).device_id, /^[0-9a-f-]{36}$/);
+    assert.notEqual(JSON.parse(sent.metadata.user_id).device_id, "b");
+    assert.equal(JSON.parse(sent.metadata.user_id).session_id, "");
+    assert.equal(new Headers(options.headers).has("x-session-id"), false);
+    return Response.json({
+      id: "msg",
+      type: "message",
+      role: "assistant",
+      model: "GLM-5.3-Flash",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+  });
+  const selected = {
+    ...input,
+    stream: false,
+    credentials: {
+      accessToken: "oauth",
+      connectionId: "b",
+      providerSpecificData: { family: "bigmodel", userId: "account-b" },
+    },
+  };
+  const result = await executeZcodeGateway(selected, native, {
+    apiKey: "fixture-start-jwt",
+    startPlan: true,
+  });
+  assert.ok(!(result instanceof Response));
+  assert.equal(result.response.status, 200);
+  assert.equal(calls, 1);
+});
+
+test("Start OAuth preserves the configured gateway proxy dispatcher", async (t) => {
+  const previous = process.env.ZCODE_EGRESS_PROXY;
+  process.env.ZCODE_EGRESS_PROXY = "http://127.0.0.1:12345";
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZCODE_EGRESS_PROXY;
+    else process.env.ZCODE_EGRESS_PROXY = previous;
+  });
+  let called = false;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit = {}) => {
+    called = true;
+    assert.ok((options as RequestInit & { dispatcher?: unknown }).dispatcher);
+    assert.equal(new Headers(options.headers).get("x-api-key"), "fixture-jwt");
+    return Response.json({
+      id: "msg",
+      type: "message",
+      role: "assistant",
+      model: "GLM-5.3-Flash",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+  });
+  const selected = {
+    ...input,
+    stream: false,
+    credentials: { accessToken: "oauth", connectionId: "account" },
+  };
+  const result = await executeZcodeGateway(selected, native, {
+    apiKey: "fixture-jwt",
+    startPlan: true,
+  });
+  assert.ok(!(result instanceof Response));
+  assert.equal(result.response.status, 200);
+  assert.equal(called, true);
 });
 
 test("missing scoped credential and pre-aborted request do not dispatch", async (t) => {

@@ -115,6 +115,12 @@ describe("ConnectionPinTip", () => {
     expect(text).toContain("x-omniroute-connection");
     expect(text).not.toContain("x-connection-id");
   });
+
+  it("states that a pinned Z-code account never switches to another account", () => {
+    const text = render(<ConnectionPinTip providerId="zcode" />).textContent || "";
+    expect(text).toContain("x-omniroute-connection");
+    expect(text).toMatch(/without switching to another account/);
+  });
 });
 
 describe("chat pin header (regression guard)", () => {

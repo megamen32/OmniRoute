@@ -34,17 +34,29 @@ async function clearPins(
     // No target in scope: previous unconditional behaviour.
     pending.push(clear(comboName, comboKey));
   } else {
-    const { getLKGP } = await import("@/lib/db/settings");
-    const pin = await getLKGP(comboName, comboKey);
-    // Same provider, and — when both sides carry one — the same connection.
-    // A sibling connection failing does not make the pinned one stale.
-    const namesFailedTarget =
-      pin?.provider === failed.provider &&
-      (!pin?.connectionId || !failed.connectionId || pin.connectionId === failed.connectionId);
-    if (namesFailedTarget) pending.push(clear(comboName, comboKey));
+    pending.push(
+      (async () => {
+        const { getLKGP } = await import("@/lib/db/settings");
+        const pin = await getLKGP(comboName, comboKey);
+        // A sibling connection failing does not make the pinned one stale.
+        const namesFailedTarget =
+          pin?.provider === failed.provider &&
+          (!pin?.connectionId || !failed.connectionId || pin.connectionId === failed.connectionId);
+        if (namesFailedTarget) await clear(comboName, comboKey);
+      })()
+    );
   }
 
-  await Promise.all(pending);
+  const results = await Promise.allSettled(pending);
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+}
+
+const pendingClears = new Set<Promise<void>>();
+
+/** Wait for non-blocking writes before closing a test database. */
+export async function drainPendingStaleLkgpClears(): Promise<void> {
+  while (pendingClears.size > 0) await Promise.allSettled([...pendingClears]);
 }
 
 export function clearStaleLKGP(
@@ -67,7 +79,7 @@ export function clearStaleLKGP(
    */
   failed?: FailedTarget
 ): Promise<void> {
-  return clearPins(comboName, executionKey, comboId, clearLKGP, failed ?? null).catch(
+  const task = clearPins(comboName, executionKey, comboId, clearLKGP, failed ?? null).catch(
     (err: unknown) => {
       log?.warn?.(tag, "Failed to clear Last Known Good Provider. This is non-fatal.", {
         combo: comboName,
@@ -77,4 +89,10 @@ export function clearStaleLKGP(
       });
     }
   );
+  pendingClears.add(task);
+  void task.then(
+    () => pendingClears.delete(task),
+    () => pendingClears.delete(task)
+  );
+  return task;
 }
