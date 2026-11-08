@@ -180,6 +180,8 @@ describe("auto/<family> materialization (#6453)", () => {
       "glm",
       "zai",
       "zcode",
+      "zcode-cn-individual",
+      "zcode-cn-start",
       "zcode-individual",
       "zcode-start",
     ]);
