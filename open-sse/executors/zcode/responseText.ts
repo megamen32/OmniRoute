@@ -13,12 +13,24 @@ export function normalizeZcodeResponseText(text: string, reasoning = "") {
     }
     const open = content.match(/^\s*<think>\s*/);
     if (!open) break;
-    const close = content.indexOf("</think>", open[0].length);
-    const end = close < 0 ? content.length : close;
-    // Repeated opens occur in native output; they are delimiters, not prose.
-    const thought = content.slice(open[0].length, end).replaceAll("<think>", "").trim();
-    if (thought) thoughts.push(thought);
-    content = close < 0 ? "" : content.slice(close + "</think>".length).trimStart();
+    const tags = /<\/?think>/g;
+    tags.lastIndex = open[0].length;
+    let depth = 1;
+    let cursor = open[0].length;
+    let thought = "";
+    let closeEnd = -1;
+    for (let tag = tags.exec(content); tag; tag = tags.exec(content)) {
+      thought += content.slice(cursor, tag.index);
+      cursor = tags.lastIndex;
+      depth += tag[0] === "<think>" ? 1 : -1;
+      if (depth === 0) {
+        closeEnd = cursor;
+        break;
+      }
+    }
+    if (closeEnd < 0) thought += content.slice(cursor);
+    if (thought.trim()) thoughts.push(thought.trim());
+    content = closeEnd < 0 ? "" : content.slice(closeEnd).trimStart();
   }
   return { content, reasoning: thoughts.join("\n\n") };
 }

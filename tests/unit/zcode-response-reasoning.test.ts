@@ -111,3 +111,11 @@ test("ZCode preserves literal markup in code and prose", async () => {
     assert.equal(message.reasoning_content, undefined);
   }
 });
+
+test("ZCode consumes the matching outer close of nested reasoning", async () => {
+  const message = (
+    await (await responseFor({ text: "<think>A<think>B</think>C</think>Ответ" }, false)).json()
+  ).choices[0].message;
+  assert.equal(message.content, "Ответ");
+  assert.equal(message.reasoning_content, "ABC");
+});
