@@ -83,11 +83,6 @@ for (const [name, id] of [["14726.js", 11581]] as const) {
       c.call = async (ch, m, args) => {
         try {
           const result = await call(ch, m, args);
-          if (m === "readSession") {
-            const snapshot = result as { messages?: Array<{ info?: unknown }> };
-            if (snapshot.messages?.length)
-              console.log("SNAPSHOT_META", JSON.stringify(snapshot.messages.map((m) => m.info)));
-          }
           return result;
         } catch (e) {
           console.error("FAILED_RPC", m);
