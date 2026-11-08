@@ -85,6 +85,15 @@ test("native session returns caller tool, binds continuation, and consumes exter
           })();
           return { accepted: true };
         }
+        if (method === "getTaskTokenUsage")
+          return {
+            inputTokens: 1000,
+            outputTokens: 12,
+            totalTokens: 1012,
+            reasoningTokens: 3,
+            cacheReadTokens: 900,
+            cacheCreationTokens: 5,
+          };
         if (method === "readSession") {
           if (!toolResult && pendingUsageReads++ === 0)
             return { session: { status: "running" }, messages: [] };

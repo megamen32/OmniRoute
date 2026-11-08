@@ -113,6 +113,7 @@ type Run = {
   toolsHash: string;
   pending: PendingTool[];
   toolsListed: boolean;
+  reportedUsage: Record<string, number>;
   relay: Server;
   busy: boolean;
   expires: ReturnType<typeof setTimeout>;
@@ -257,31 +258,51 @@ export class NativeZcodeSessionBridge {
             name: tool.name,
             input: tool.input,
           }));
-          let snapshot = await run.client.call("zcode-agent", "readSession", [
+          const snapshot = await run.client.call("zcode-agent", "readSession", [
             {
               ...run.workspace,
               sessionId: run.sessionId,
               messageLimit: 20,
             },
           ]);
-          // The MCP request can arrive before the preceding assistant message's
-          // usage/finish event has reached the native session projection.
-          for (let retry = 0; retry < 20; retry++) {
-            const latest = list(record(snapshot).messages)
-              .filter(
-                (message) => record(record(message.info).semantics).kind === "assistant_response"
-              )
-              .at(-1);
-            if (
-              record(record(latest).info).finish ||
-              Number(assistantUsage(snapshot).totalTokens) > 0
-            )
-              break;
-            await new Promise((resolve) => setTimeout(resolve, this.options.pollMs ?? 100));
-            snapshot = await run.client.call("zcode-agent", "readSession", [
-              { ...run.workspace, sessionId: run.sessionId, messageLimit: 20 },
-            ]);
+          let usage = assistantUsage(snapshot);
+          if (!Number(usage.totalTokens)) {
+            // Message projections lag the suspended MCP call; the official
+            // session usage endpoint already has the completed model request.
+            const aggregate = record(
+              await run.client.call("zcode-agent", "getTaskTokenUsage", [
+                { ...run.workspace, sessionId: run.sessionId },
+              ])
+            );
+            usage = {
+              inputTokens: Math.max(
+                0,
+                Number(aggregate.inputTokens ?? 0) - run.reportedUsage.inputTokens
+              ),
+              outputTokens: Math.max(
+                0,
+                Number(aggregate.outputTokens ?? 0) - run.reportedUsage.outputTokens
+              ),
+              totalTokens: Math.max(
+                0,
+                Number(aggregate.totalTokens ?? 0) - run.reportedUsage.totalTokens
+              ),
+              reasoningTokens: Math.max(
+                0,
+                Number(aggregate.reasoningTokens ?? 0) - run.reportedUsage.reasoningTokens
+              ),
+              cacheReadTokens: Math.max(
+                0,
+                Number(aggregate.cacheReadTokens ?? 0) - run.reportedUsage.cacheReadTokens
+              ),
+              cacheWriteTokens: Math.max(
+                0,
+                Number(aggregate.cacheCreationTokens ?? 0) - run.reportedUsage.cacheWriteTokens
+              ),
+            };
           }
+          for (const key of Object.keys(run.reportedUsage))
+            run.reportedUsage[key] += Number(usage[key] ?? 0);
           run.history = [
             ...input.messages,
             {
@@ -303,7 +324,7 @@ export class NativeZcodeSessionBridge {
             text: "",
             finishReason: "tool-calls",
             toolCalls: calls,
-            usage: assistantUsage(snapshot),
+            usage,
           };
         }
         const snapshot = record(
@@ -472,6 +493,14 @@ export class NativeZcodeSessionBridge {
       toolsHash: digest(input.tools),
       pending: [],
       toolsListed: false,
+      reportedUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        reasoningTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
       busy: true,
       workspace: { workspacePath, workspaceIdentity: workspacePath },
       expires: setTimeout(() => {

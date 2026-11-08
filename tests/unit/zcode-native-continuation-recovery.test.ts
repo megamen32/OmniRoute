@@ -129,6 +129,7 @@ async function harness(options: { firstCallsTool?: boolean; closeFails?: boolean
             }
             return { accepted: true };
           }
+          if (method === "getTaskTokenUsage") return { totalTokens: 0 };
           if (method === "readSession") {
             if (index === 0 && options.firstCallsTool !== false && !state.toolReply) {
               return { session: { status: "running" }, messages: [] };

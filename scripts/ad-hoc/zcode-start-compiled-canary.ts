@@ -128,6 +128,22 @@ for (const [name, id] of [["14726.js", 11581]] as const) {
     };
     const first = await bridge.execute(initial);
     assert.equal(first.finishReason, "tool-calls");
+    const run = [
+      ...(
+        bridge as unknown as {
+          runs: Set<{ client: NativeZcodeHostClient; workspace: object; sessionId: string }>;
+        }
+      ).runs,
+    ][0];
+    console.log(
+      "TASK_USAGE",
+      JSON.stringify(
+        await run.client.call("zcode-agent", "getTaskTokenUsage", [
+          { ...run.workspace, sessionId: run.sessionId },
+        ])
+      )
+    );
+
     const call = (first.toolCalls as Array<{ id: string; name: string; input: unknown }>)[0];
     assert.equal(call.name, "caller_probe");
     const value = "CANARY_" + randomUUID();
