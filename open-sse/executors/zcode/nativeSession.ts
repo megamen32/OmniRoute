@@ -266,7 +266,7 @@ export class NativeZcodeSessionBridge {
             },
           ]);
           let usage = assistantUsage(snapshot);
-          if (!Number(usage.totalTokens)) {
+          try {
             // Message projections lag the suspended MCP call; the official
             // session usage endpoint already has the completed model request.
             const aggregate = record(
@@ -300,6 +300,9 @@ export class NativeZcodeSessionBridge {
                 Number(aggregate.cacheCreationTokens ?? 0) - run.reportedUsage.cacheWriteTokens
               ),
             };
+          } catch {
+            // Usage projection is optional; never destroy a ready caller tool
+            // merely because native statistics have not arrived yet.
           }
           for (const key of Object.keys(run.reportedUsage))
             run.reportedUsage[key] += Number(usage[key] ?? 0);

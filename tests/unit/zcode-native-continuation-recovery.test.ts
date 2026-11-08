@@ -47,7 +47,9 @@ function callerCall(result: Record<string, unknown>): CallerCall {
   return calls[0];
 }
 
-async function harness(options: { firstCallsTool?: boolean; closeFails?: boolean } = {}) {
+async function harness(
+  options: { firstCallsTool?: boolean; closeFails?: boolean; usageFails?: boolean } = {}
+) {
   const root = await mkdtemp(join(tmpdir(), "native-continuation-metadata-"));
   const events: string[] = [];
   const clients: Array<{
@@ -129,7 +131,10 @@ async function harness(options: { firstCallsTool?: boolean; closeFails?: boolean
             }
             return { accepted: true };
           }
-          if (method === "getTaskTokenUsage") return { totalTokens: 0 };
+          if (method === "getTaskTokenUsage") {
+            if (options.usageFails) throw new Error("usage unavailable");
+            return { totalTokens: 0 };
+          }
           if (method === "readSession") {
             if (index === 0 && options.firstCallsTool !== false && !state.toolReply) {
               return { session: { status: "running" }, messages: [] };
@@ -288,6 +293,21 @@ test("changed pending tool identity is rejected before recovery, and overlapping
     );
     assert.equal((await recovery).text, "once");
     assert.equal(h.clients.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("unavailable usage statistics preserve the ready caller tool and its continuation", async () => {
+  const h = await harness({ usageFails: true });
+  try {
+    const call = callerCall(await h.bridge.execute(base));
+    const final = await h.bridge.execute({
+      ...base,
+      messages: returned(call, "actual-tool-result"),
+    });
+    assert.equal(final.text, "actual-tool-result");
+    assert.equal(h.clients.length, 1);
   } finally {
     await h.close();
   }
