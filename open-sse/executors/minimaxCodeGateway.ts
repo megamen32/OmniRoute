@@ -13,9 +13,11 @@
  * same way the CLI itself does it, and the rotated token is written back.
  */
 
-import { readFile, writeFile, rename, chmod } from "node:fs/promises";
+import { readFile, writeFile, rename, chmod, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { resolvePublicCred } from "../utils/publicCreds.ts";
 
 const GATEWAY_URL = "https://agent.minimax.io/mavis/api/v1/llm/v1/messages";
 const ACCOUNT_BASES: Record<string, string> = {
@@ -341,6 +343,103 @@ export async function readAuthProfile(path: string): Promise<MinimaxAuthProfile 
     generation: Number(record.generation ?? 0) || 0,
     path,
   };
+}
+
+export interface PersistCredentialOptions {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAtMs?: number;
+  clientId?: string;
+  scopes?: string[];
+  audience?: string;
+  path?: string;
+}
+
+const profileWrites = new Map<string, Promise<unknown>>();
+
+/** Save a dashboard login in the first record, which is what this gateway reads. */
+export async function persistProfileCredential(
+  options: PersistCredentialOptions
+): Promise<MinimaxAuthProfile & { replacedAccount: boolean }> {
+  const path = options.path || resolveAuthFile();
+  const previous = profileWrites.get(path) ?? Promise.resolve();
+  const task = previous
+    .catch(() => undefined)
+    .then(async () => {
+      let doc: JsonRecord;
+      try {
+        doc = asRecord(JSON.parse(await readFile(path, "utf8")));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        doc = { records: {} };
+      }
+      if (doc.records != null && (typeof doc.records !== "object" || Array.isArray(doc.records))) {
+        throw new Error(`Invalid MiniMax Code records in ${path}`);
+      }
+      const records = asRecord(doc.records);
+      const key = Object.keys(records)[0] || "com.minimax.mcode.oauth.prod.en\u0000local";
+      const record = asRecord(records[key]);
+      const replacedAccount = Boolean(asString(record.accessToken));
+      if (replacedAccount) {
+        let backupKey = `${key}\u0000previous`;
+        while (Object.hasOwn(records, backupKey)) backupKey += "\u0000previous";
+        records[backupKey] = { ...record };
+      }
+      let stateGeneration = 0;
+      try {
+        const state = asRecord(
+          JSON.parse(await readFile(join(dirname(path), "auth-state.json"), "utf8"))
+        );
+        stateGeneration = Number(state.generation) || 0;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      const generation =
+        Math.max(
+          0,
+          stateGeneration,
+          ...Object.values(records).map((value) => Number(asRecord(value).generation) || 0)
+        ) + 1;
+      const profile = {
+        accessToken: options.accessToken,
+        refreshToken: options.refreshToken,
+        clientId: options.clientId || asString(record.clientId) || resolvePublicCred("minimax_id"),
+        scopes:
+          options.scopes ??
+          (Array.isArray(record.scopes) ? record.scopes.map(asString) : ["agent.default"]),
+        audience: options.audience || asString(record.audience) || "agent-backend",
+        expiresAtMs: options.expiresAtMs ?? Date.now() + 3600 * 1000,
+        generation,
+        path,
+        replacedAccount,
+      };
+      const updated: JsonRecord = {
+        ...record,
+        accessToken: profile.accessToken,
+        clientId: profile.clientId,
+        scopes: profile.scopes,
+        audience: profile.audience,
+        expiresAtMs: profile.expiresAtMs,
+        generation,
+      };
+      if (profile.refreshToken) updated.refreshToken = profile.refreshToken;
+      else delete updated.refreshToken;
+      records[key] = updated;
+      doc.records = records;
+      await mkdir(dirname(path), { recursive: true });
+      const tmp = `${path}.${randomUUID()}.tmp`;
+      await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
+      await rename(tmp, path);
+      await chmod(path, 0o600);
+      await writeAuthState(path, profile);
+      return profile;
+    });
+  profileWrites.set(path, task);
+  try {
+    return await task;
+  } finally {
+    if (profileWrites.get(path) === task) profileWrites.delete(path);
+  }
 }
 
 /**
