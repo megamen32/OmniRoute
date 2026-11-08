@@ -32,6 +32,32 @@ const historyDigest = (messages: RecordValue[]) =>
       tool_calls: message.tool_calls,
     }))
   );
+// Codex may append a catalog announcement after returning caller tool results.
+// It is new developer context, so preserve it by rebasing, never by dropping it.
+const isDeferredToolMetadata = (message: RecordValue): boolean => {
+  if (
+    message.role !== "developer" ||
+    typeof message.content !== "string" ||
+    Object.keys(message).some((key) => key !== "role" && key !== "content")
+  )
+    return false;
+  const lines = message.content.split("\n");
+  return (
+    lines.length >= 4 &&
+    lines[0] === "<tools>" &&
+    lines[1] === "Added deferred tool namespaces:" &&
+    lines.at(-1) === "</tools>" &&
+    lines
+      .slice(2, -1)
+      .every((line) => /^- mcp__[A-Za-z0-9_]+: [^\s<>](?:[^\r\n<>]*[^\s<>])?$/.test(line))
+  );
+};
+const deferredMetadataStart = (messages: RecordValue[]): number => {
+  let end = messages.length;
+  while (end > 0 && isDeferredToolMetadata(messages[end - 1])) end--;
+  return end;
+};
+
 const rpcSchema = z.object({
   jsonrpc: z.literal("2.0"),
   id: z.union([z.string(), z.number()]).optional(),
@@ -110,47 +136,68 @@ export class NativeZcodeSessionBridge {
       if (outstanding.some((tool) => !ids.includes(tool.id)))
         throw new NativeSessionError("All pending ZCode tool results are required", 400);
       const suffix = input.messages.slice(run.history.length);
+      const metadataStart = deferredMetadataStart(suffix);
+      const toolResults = suffix.slice(0, metadataStart);
       if (
-        suffix.length !== outstanding.length ||
-        suffix.some(
+        toolResults.length !== outstanding.length ||
+        toolResults.some(
           (message) =>
             message.role !== "tool" || !outstanding.some((tool) => tool.id === message.tool_call_id)
         ) ||
-        new Set(suffix.map((message) => message.tool_call_id)).size !== suffix.length
+        new Set(toolResults.map((message) => message.tool_call_id)).size !== toolResults.length
       )
         throw new NativeSessionError(
           "Send only the pending tool results; send new messages after this turn finishes",
           400
         );
       run.busy = true;
-      for (const tool of outstanding) {
-        const result = results.find((m) => m.tool_call_id === tool.id)!;
-        this.continuations.delete(tool.id);
-        tool.response.writeHead(200, { "content-type": "application/json" });
-        tool.response.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: tool.rpcId,
-            result: {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    typeof result.content === "string"
-                      ? result.content
-                      : JSON.stringify(result.content),
-                },
-              ],
-            },
-          })
-        );
+      if (metadataStart < suffix.length) {
+        // The native API cannot append developer context to a suspended turn.
+        // Cancel the old request before starting with the complete caller history;
+        // the caller's completed command is neither repeated nor given a fake result.
+        const previousSessionId = run.sessionId;
+        await this.dispose(run);
+        run = await this.start(input);
+        console.info("[ZCODE] Rebased continuation for deferred tool metadata", {
+          previousSessionId,
+          sessionId: run.sessionId,
+          toolResultCount: outstanding.length,
+        });
+      } else {
+        for (const tool of outstanding) {
+          const result = results.find((m) => m.tool_call_id === tool.id)!;
+          this.continuations.delete(tool.id);
+          tool.response.writeHead(200, { "content-type": "application/json" });
+          tool.response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: tool.rpcId,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      typeof result.content === "string"
+                        ? result.content
+                        : JSON.stringify(result.content),
+                  },
+                ],
+              },
+            })
+          );
+        }
+        run.pending = run.pending.filter((tool) => !outstanding.includes(tool));
+        run.history = input.messages;
       }
-      run.pending = run.pending.filter((tool) => !outstanding.includes(tool));
-      run.history = input.messages;
     } else {
-      const last = input.messages.at(-1);
-      if (last?.role === "tool" && ids.some((id) => id.startsWith("call_zcn_")))
-        throw new NativeSessionError("ZCode tool continuation expired; start a new request", 409);
+      // Only the current trailing result batch is a continuation. Completed
+      // native results in earlier history must not taint a new caller turn.
+      for (let i = deferredMetadataStart(input.messages) - 1; i >= 0; i--) {
+        const message = input.messages[i];
+        if (message.role !== "tool") break;
+        if (String(message.tool_call_id || "").startsWith("call_zcn_"))
+          throw new NativeSessionError("ZCode tool continuation expired; start a new request", 409);
+      }
       run = await this.start(input);
     }
     try {
