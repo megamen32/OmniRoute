@@ -129,6 +129,35 @@ Auto-scoring selects best provider/model per request
 | `src/sse/handlers/chat.ts`                                | Integration: auto prefix short-circuit    |
 | `src/shared/constants/providers.ts`                       | `SYSTEM_PROVIDERS.auto` system entry      |
 
+
+### Strict request-context routing (free-first priority combos)
+
+Set `config.strictRequestContextRouting: true` on a `priority` combo to preserve the
+declared free-first order **only while the current request fits** the selected model.
+This is intentionally different from `context-optimized`, which sorts the largest
+context first even for tiny requests, and from `contextRequirements.minContextWindow`,
+which imposes a fixed minimum on every request.
+
+Each candidate must have a confirmed per-provider context window (synced catalog
+or manually verified `model_context_overrides`). Unknown-window candidates and
+known-too-small candidates are excluded from both primary dispatch and the
+`#6238` last-resort compatibility fallback. If none fit, routing returns HTTP 400
+(`context_length_exceeded`) without an upstream request. Normal combos retain the
+original advisory fallback behavior.
+
+The gate estimates input from messages, Responses input, tools and schemas and
+reserves output tokens (8,192 if the client omits a limit). A 5% buffer is added to
+the estimated input because the estimator is approximate; these are **estimates**,
+not guarantees from the upstream provider. With `outputLimitAdvisory: true`, the
+reserved output budget respects the model's enforced output cap. Keep the combo
+`context_length` at the largest **confirmed** available window, while recording
+real limits for each individual model. For example a 200K free model and 1M paid
+models may advertise 512K as a combo while preserving free-first routing.
+
+Regression suite: `tests/unit/combo-strict-free-context-routing.test.ts`; run it
+alongside `combo-context-window-filter.test.ts` and
+`combo-priority-compat-fallback.test.ts` to guard both strict and legacy modes.
+
 ## Combo Names That Match a Real Model Id
 
 A combo whose `name` is identical to a bare model id (e.g. a combo named
