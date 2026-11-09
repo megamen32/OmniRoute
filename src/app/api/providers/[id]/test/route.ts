@@ -49,6 +49,18 @@ export { classifyFailure, projectProviderRuntimeForPublicResponse } from "./publ
 // Match the API-key path's 30s timeout so a hung OAuth upstream cannot block the test queue.
 const OAUTH_TEST_TIMEOUT_MS = 30_000;
 
+export const NATIVE_ZCODE_PROVIDER_IDS = new Set([
+  "zcode",
+  "zcode-start",
+  "zcode-individual",
+  "zcode-cn-start",
+  "zcode-cn-individual",
+]);
+
+export function isNativeZcodeProvider(provider: unknown): boolean {
+  return typeof provider === "string" && NATIVE_ZCODE_PROVIDER_IDS.has(provider);
+}
+
 import { CLI_RUNTIME_PROVIDER_MAP } from "./cliRuntimeProviderMap";
 import { isOperatorDisabled } from "@/lib/providers/operatorDisable";
 import { getRequestPeerLocality } from "@/shared/utils/apiAuth";
@@ -366,6 +378,16 @@ export async function testOAuthConnection(
   connection: any,
   timeoutMs: number = OAUTH_TEST_TIMEOUT_MS
 ) {
+  if (isNativeZcodeProvider(connection?.provider)) {
+    const error = "Provider test not supported";
+    return {
+      valid: false,
+      skipped: true,
+      error,
+      refreshed: false,
+      diagnosis: classifyFailure({ error, unsupported: true, provider: connection.provider }),
+    };
+  }
   const config = OAUTH_TEST_CONFIG[connection.provider];
 
   if (!config) {
