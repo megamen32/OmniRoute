@@ -31,6 +31,7 @@ import {
 } from "../accountFallback.ts";
 import { isModelNotFound404 } from "../accountFallback/perModelFailureScope.ts";
 import { isRequestScoped400 } from "../accountFallback/requestScoped400.ts";
+import { isRequestShapeError } from "../../../src/sse/services/requestShape.ts";
 import { isResourceNotFoundResponse } from "../errorClassifier.ts";
 import { isOpencodeFreeTierRefusal } from "../../executors/opencodeGeoBlock.ts";
 import { isChatGptWebBridgeFailure } from "../../utils/chatgptWebBridgeFailure.ts";
@@ -500,6 +501,7 @@ export function shouldSkipConnDisable(
     }
   }
   const isReqScoped400 =
+    isRequestShapeError(result.status, errorText, provider) ||
     isRequestScoped400(result.status, errorText) ||
     isProviderModelUnsupported400(result.status, errorText) ||
     isParamValidation400(errorText) ||
