@@ -368,7 +368,10 @@ function completion(model: string, result: JsonRecord): JsonRecord {
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
       total_tokens: Number(nativeUsage.totalTokens ?? promptTokens + completionTokens),
-      prompt_tokens_details: { cached_tokens: Number(nativeUsage.cacheReadTokens || 0) },
+      prompt_tokens_details: {
+        cached_tokens: Number(nativeUsage.cacheReadTokens || 0),
+        cache_creation_tokens: Number(nativeUsage.cacheWriteTokens || 0),
+      },
       completion_tokens_details: { reasoning_tokens: Number(nativeUsage.reasoningTokens || 0) },
     },
   };
@@ -594,7 +597,10 @@ export class ZcodeExecutor extends BaseExecutor {
           response: modelResponse(resolution.model, result, Boolean(input.stream)),
           url: "zcode://native-host/session",
           headers: {},
-          transformedBody: { model: resolution.model, buffered: true, plan: selection.providerId },
+          // Keep the real request as the usage plausibility body. A metadata-only
+          // object makes native ZCode's exact token count look impossible and causes
+          // the shared sanitizer to replace it with a tiny estimate.
+          transformedBody: body,
           transport: "local-zcode-session",
         };
       } catch (error) {
