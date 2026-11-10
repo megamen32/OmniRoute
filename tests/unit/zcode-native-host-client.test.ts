@@ -163,6 +163,54 @@ test("structured RPC errors never expose server message or credentials", async (
   }
 });
 
+test("only an exact wrapped native inference quota error recovers provider code 1310", async () => {
+  const quota =
+    "[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-14 05:51:40]";
+  const message = quota + "[fixture-provider-receipt]";
+  const wrapped = { code: -32603, message, data: { name: "AiSdkModelAdapterError" } };
+  const cases = [
+    { payload: wrapped, expected: 1310 },
+    { payload: wrapped, method: "getView" },
+    { payload: { ...wrapped, message: "Too many requests", data: { statusCode: 429 } } },
+    { payload: { ...wrapped, message: "User quoted " + message } },
+    { payload: { ...wrapped, message: message + "\n" } },
+    { payload: { ...wrapped, message: quota + "[FIXTURE_TOKEN]" } },
+    { payload: { ...wrapped, data: { statusCode: 403 } } },
+    { payload: { ...wrapped, data: { name: "NetworkError" } } },
+    { payload: { ...wrapped, data: { code: "ETIMEDOUT" } }, expected: "ETIMEDOUT" },
+    { payload: wrapped, kind: 203 },
+  ];
+  let index = 0;
+  const f = await fixture((socket) => {
+    socket.send(frame([200]));
+    socket.on("message", (raw) => {
+      const header = decodeZcodeValue(Buffer.from(raw as Buffer).subarray(13)).value as number[];
+      const { kind = 202, payload } = cases[index++];
+      socket.send(frame([kind, header[1]], payload));
+    });
+  });
+  const client = new NativeZcodeHostClient({ serverRoot: f.root, startupTimeoutMs: 1000 });
+  try {
+    for (const { method = "generateWorkspaceText", expected } of cases) {
+      await assert.rejects(
+        client.call(method === "getView" ? "model-selection" : "zcode-agent", method, []),
+        (error: Error & { code?: unknown; providerCode?: unknown }) => {
+          assert.equal(error.code, -32603);
+          assert.equal(error.providerCode, expected);
+          assert.doesNotMatch(
+            JSON.stringify(error) + error.message,
+            /Limit Exhausted|fixture-provider-receipt|FIXTURE_TOKEN/
+          );
+          return true;
+        }
+      );
+    }
+  } finally {
+    await client.close();
+    await f.cleanup();
+  }
+});
+
 test("disconnect rejects every in-flight call and cannot restart a closed client", async () => {
   let peer: WebSocket | undefined;
   const f = await fixture((socket) => {

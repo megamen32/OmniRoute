@@ -6,6 +6,8 @@ import { decodeZcodeValue, encodeZcodeRpcCall, type ZcodeCallOptions } from "../
 const HEADER_BYTES = 13;
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_METADATA_BYTES = 64 * 1024;
+const WRAPPED_QUOTA_MESSAGE =
+  /^\[1310\]\[Weekly\/Monthly Limit Exhausted(?:\. Your limit will reset at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})?\](?:\[[A-Za-z0-9_-]{1,96}\])?$/i;
 const RPC_CONTEXTS = new Set([
   "project.saveProject",
   "model-selection.getView",
@@ -36,6 +38,41 @@ function safeCode(value: unknown): string | number | undefined {
   if (typeof value === "string" && /^(?:[A-Z][A-Z0-9_]{1,31}|[0-9]{1,10})$/.test(value))
     return value;
   return undefined;
+}
+
+function isWrappedQuotaError(
+  value: Record<string, unknown>,
+  data: Record<string, unknown>,
+  secrets: string[]
+): boolean {
+  const message = value.message;
+  if (
+    value.code !== -32603 ||
+    data.code != null ||
+    typeof message !== "string" ||
+    message.length > 256 ||
+    WRAPPED_QUOTA_MESSAGE.exec(message)?.[0] !== message ||
+    secrets.some((secret) => secret && message.includes(secret))
+  ) {
+    return false;
+  }
+  return ![value, data, value.cause, value.response, data.error, data.cause, data.response].some(
+    (detail) => {
+      if (!detail || typeof detail !== "object") return false;
+      const fields = detail as Record<string, unknown>;
+      return (
+        (detail !== value &&
+          fields.code != null &&
+          fields.code !== 1310 &&
+          fields.code !== "1310") ||
+        (typeof fields.name === "string" &&
+          /auth|forbidden|network|timeout|abort|cancel/i.test(fields.name)) ||
+        [fields.status, fields.statusCode, fields.httpStatus].some(
+          (status) => Number(status) >= 400 && Number(status) <= 599 && Number(status) !== 429
+        )
+      );
+    }
+  );
 }
 
 export class NativeZcodeHostClient {
@@ -202,8 +239,16 @@ export class NativeZcodeHostClient {
             ? undefined
             : code;
         };
-        const code = sanitizeCode(value.code),
-          providerCode = sanitizeCode(data.code);
+        const code = sanitizeCode(value.code);
+        // The native host wraps this provider failure as -32603 without data.code.
+        // Project only the fixed quota code; the upstream message and receipt stay private.
+        const providerCode =
+          sanitizeCode(data.code) ??
+          (kind === 202 &&
+          pending.rpc === "zcode-agent.generateWorkspaceText" &&
+          isWrappedQuotaError(value, data, this.secretValues)
+            ? 1310
+            : undefined);
         if (
           [value.message, data.message].some(
             (message) =>
