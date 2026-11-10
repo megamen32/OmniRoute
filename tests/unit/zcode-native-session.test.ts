@@ -295,3 +295,53 @@ test("native Start quota1005 is a tariff429 rather than a provider outage", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const statusCode of [429, 503]) {
+  test(`native Start only classifies code 3008 as a rate limit with HTTP 429 attribution (${statusCode})`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-start-concurrency-"));
+    const bridge = new NativeZcodeSessionBridge({
+      workspaceRoot: root,
+      clientFactory: () => ({
+        async start() {},
+        async close() {},
+        async call(_channel, method) {
+          if (method === "saveProject") return { id: "start-project" };
+          if (method === "createSession") return { session: { sessionId: "start-session" } };
+          if (method === "readSession")
+            return {
+              session: { status: "error" },
+              projection: {
+                lastError: {
+                  type: "unknown_error",
+                  code: "UNKNOWN_ERROR",
+                  message: "Turn execution failed",
+                  attribution: {
+                    source: "provider",
+                    statusCode,
+                    providerErrorCode: "3008",
+                  },
+                },
+              },
+            };
+          return {};
+        },
+      }),
+    });
+    try {
+      await assert.rejects(
+        bridge.execute({
+          scope: "concurrency-account:start",
+          selection: { providerId: "account:zai-start-plan", modelId: "GLM-5.3-Flash" },
+          messages: [{ role: "user", content: "Probe" }],
+          tools: [],
+        }),
+        statusCode === 429
+          ? { status: 429, message: "ZCode concurrent request limit reached" }
+          : { status: 502, message: "ZCode native session failed" }
+      );
+    } finally {
+      await bridge.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}

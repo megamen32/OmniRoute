@@ -491,6 +491,15 @@ export class NativeZcodeSessionBridge {
         const session = record(snapshot.session);
         if (session.status === "error") {
           const error = record(record(snapshot.projection).lastError);
+          const attribution = record(error.attribution);
+          // The native host wraps provider concurrency errors as UNKNOWN_ERROR.
+          // Use its structured attribution so a short rate limit is not a 502 or a tariff reset.
+          if (
+            attribution.source === "provider" &&
+            attribution.statusCode === 429 &&
+            attribution.providerErrorCode === "3008"
+          )
+            throw new NativeSessionError("ZCode concurrent request limit reached", 429);
           const detail = `${error.code || ""} ${error.message || ""}`;
           if (
             /\b(?:1005|1310)\b|Weekly\/Monthly Limit Exhausted|quota[_ ](?:exhausted|limit)|rate[_ ]limit/i.test(
