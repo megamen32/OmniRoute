@@ -7,11 +7,14 @@ import Database from "better-sqlite3";
 import { getCliToken } from "../../bin/cli/utils/cliToken.mjs";
 import { decrypt } from "../../src/lib/db/encryption.ts";
 
-const base = "http://127.0.0.1:20128";
+const base = process.env.OMNIROUTE_REPAIR_BASE || "http://127.0.0.1:20128";
+assert(["http://127.0.0.1:20128", "http://127.0.0.1:20130"].includes(base));
 const comboId = "7a4a012a-ee6a-4553-8d78-18279dc79885";
 const mode = process.argv[2];
 const leg = process.argv[3] || "cn-individual";
 assert(["configure", "probe", "tools", "combo"].includes(mode));
+const manualHealthProbe = process.env.OMNIROUTE_REPAIR_LIVE_HEALTH === "1";
+assert(!manualHealthProbe || (leg === "cn-individual" && mode === "probe"));
 const dir = new URL("../../_tasks/research/2026-11-10-final-routing/", import.meta.url);
 await mkdir(dir, { recursive: true, mode: 0o700 });
 const save = (name, value) =>
@@ -33,6 +36,7 @@ async function management(path, method = "GET", body) {
 }
 
 if (mode === "configure") {
+  assert.equal(base, "http://127.0.0.1:20128");
   const before = await management("/api/combos/" + comboId);
   await save("combo-before.json", before);
   const config = {
@@ -75,7 +79,7 @@ if (mode === "configure") {
     "cn-individual": ["zcode-cn-individual", "7ce2765a-6284-444c-89af-d5b50ae8b7ac"],
   };
   const startedAt = new Date().toISOString();
-  const receipt = { mode, leg, startedAt, requests: [], trace: [] };
+  const receipt = { base, mode, leg, manualHealthProbe, startedAt, requests: [], trace: [] };
   const receiptName = mode + "-" + leg + "-" + startedAt.replace(/[:.]/g, "-") + ".json";
   let temporary;
   let requestedModel;
@@ -121,6 +125,7 @@ if (mode === "configure") {
           authorization: "Bearer " + apiKey,
           "content-type": "application/json",
           "x-correlation-id": intent.correlationId,
+          ...(manualHealthProbe ? { "x-internal-test": "combo-health-check" } : {}),
         },
         body: JSON.stringify({
           model: requestedModel,
