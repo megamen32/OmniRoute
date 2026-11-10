@@ -580,6 +580,43 @@ async function applyContinuityFilters(
     (config as { outputLimitAdvisory?: unknown }).outputLimitAdvisory === true ||
     (settings as { outputLimitAdvisory?: unknown } | null | undefined)?.outputLimitAdvisory ===
       true;
+  if (config.strictRequestContextRouting === true) {
+    // Filter before advisory compatibility can restore hard-rejected targets
+    // or promote larger-context targets ahead of the declared priority.
+    const beforeStrictTargets = orderedTargets;
+    const filtered = filterTargetsByStrictRequestContext(
+      beforeStrictTargets,
+      body,
+      log,
+      outputLimitAdvisory
+    );
+    orderedTargets = filtered.targets;
+    if (orderedTargets.length === 0 && beforeStrictTargets.length > 0) {
+      recordComboFailure(
+        combo.context_cache_protection ? (relayOptions?.sessionId ?? null) : null,
+        combo.name
+      );
+      return {
+        earlyResponse: errorResponseWithComboDiagnostics(
+          400,
+          `No model in combo ${combo.name} has a confirmed context window sufficient for the request (estimated input ${filtered.estimatedInputTokens} tokens). Reduce the input or add a larger-context model.`,
+          {
+            poolSize: beforeStrictTargets.length,
+            attempted: 0,
+            excluded: beforeStrictTargets.map((target) => ({
+              provider: target.provider,
+              model: target.modelStr,
+              reason: "context_window_insufficient_or_unknown",
+            })),
+            attemptOrder: [],
+            terminalReason: "context_length_exceeded",
+            recovery: buildRecoveryHint("no_executable_targets"),
+          },
+          { code: "context_length_exceeded", type: "invalid_request_error" }
+        ),
+      };
+    }
+  }
   const preCompatTargets = orderedTargets;
   orderedTargets = filterTargetsByRequestCompatibility(orderedTargets, body, log, undefined, {
     failOpen: compatFilterFailOpen,
@@ -638,44 +675,12 @@ async function applyContinuityFilters(
       }),
     };
   }
-  if (config.strictRequestContextRouting === true) {
-    // #6238's last-resort advisory fallback must not resurrect too-small targets.
-    const beforeStrictTargets = orderedTargets;
-    const filtered = filterTargetsByStrictRequestContext(
-      beforeStrictTargets,
-      body,
-      log,
-      outputLimitAdvisory
-    );
-    orderedTargets = filtered.targets;
-    if (orderedTargets.length === 0 && beforeStrictTargets.length > 0) {
-      recordComboFailure(
-        combo.context_cache_protection ? (relayOptions?.sessionId ?? null) : null,
-        combo.name
-      );
-      return {
-        earlyResponse: errorResponseWithComboDiagnostics(
-          400,
-          `No model in combo ${combo.name} has a confirmed context window sufficient for the request (estimated input ${filtered.estimatedInputTokens} tokens). Reduce the input or add a larger-context model.`,
-          {
-            poolSize: beforeStrictTargets.length,
-            attempted: 0,
-            excluded: beforeStrictTargets.map((target) => ({
-              provider: target.provider,
-              model: target.modelStr,
-              reason: "context_window_insufficient_or_unknown",
-            })),
-            attemptOrder: [],
-            terminalReason: "context_length_exceeded",
-            recovery: buildRecoveryHint("no_executable_targets"),
-          },
-          { code: "context_length_exceeded", type: "invalid_request_error" }
-        ),
-      };
-    }
-    return { orderedTargets, sticky, compatRejectedTargets: [] };
-  }
-  return { orderedTargets, sticky, compatRejectedTargets };
+  return {
+    orderedTargets,
+    sticky,
+    // Strict mode must not probe compatibility-rejected targets as a fallback.
+    compatRejectedTargets: config.strictRequestContextRouting === true ? [] : compatRejectedTargets,
+  };
 }
 
 /**

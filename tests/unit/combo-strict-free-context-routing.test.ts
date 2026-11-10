@@ -128,6 +128,45 @@ test("small request stays on free before larger alternatives", async () => {
   assert.deepEqual(out.attempted, [FREE]);
 });
 
+test("strict context routing does not restore a larger target without caller tools", async () => {
+  saveModelsDevCapabilities({
+    "opencode-zen": { "glm-5.3-flash-free": spec(200_000, 32_000) },
+    minimax: { "MiniMax-M3.1-Flash": { ...spec(1_000_000, 32_000), tool_call: false } },
+  });
+
+  const out = await route(
+    {
+      ...contextBody(230_000, 8_000),
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "echo",
+            parameters: { type: "object", properties: { value: { type: "string" } } },
+          },
+        },
+      ],
+    },
+    { models: [FREE, MINIMAX] }
+  );
+
+  assert.equal(out.status, 400);
+  assert.deepEqual(out.attempted, []);
+  assert.match(out.body, /capability_mismatch|supports tool calling/i);
+});
+
+test("strict context routing keeps free first when a later target is too small", async () => {
+  saveModelsDevCapabilities({
+    "opencode-zen": { "glm-5.3-flash-free": spec(200_000, 32_000) },
+    minimax: { "MiniMax-M3.1-Flash": spec(64_000, 32_000) },
+  });
+
+  const out = await route(contextBody(70_000, 8_000));
+
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.attempted, [FREE]);
+});
+
 test("large request skips free and uses first available 1M ZCode model", async () => {
   const out = await route(contextBody(230_000, 8_000));
   assert.equal(out.status, 200);
