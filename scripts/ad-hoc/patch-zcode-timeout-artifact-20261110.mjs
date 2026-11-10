@@ -961,7 +961,10 @@ async function stageOverlay(sourceSha, baselineDirectory) {
     overlay,
     chunks: overlay.files.filter((file) => file.path.endsWith(".js")),
     lockfileSha256: sha256(
-      execFileSync("git", ["show", sourceSha + ":package-lock.json"], { cwd: ROOT })
+      execFileSync("git", ["show", sourceSha + ":package-lock.json"], {
+        cwd: ROOT,
+        maxBuffer: 16 * 1024 * 1024,
+      })
     ),
     createdAt: stamp(),
   };
