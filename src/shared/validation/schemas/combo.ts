@@ -289,6 +289,8 @@ export const comboRuntimeConfigSchema = z
       })
       .strict()
       .optional(),
+    // Enforce per-request context fit for priority combos; unknown windows fail closed.
+    strictRequestContextRouting: z.boolean().optional(),
     // Context window requirements for combo target filtering and sorting.
     // minContextWindow: filters out models with context windows below this threshold.
     // maxContextWindow: filters out models with context windows above this threshold.

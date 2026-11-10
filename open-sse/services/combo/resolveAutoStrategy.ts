@@ -48,6 +48,7 @@ import type {
   ResolvedComboTarget,
 } from "./types.ts";
 import { normalizeAutoConnectionScope } from "./autoConnectionScope.ts";
+import { isDeclaredGlmFlashRoute, orderDeclaredGlmFlashTargets } from "./glmFlashRoute.ts";
 
 /**
  * Dependency-injected `buildAutoCandidates` — it lives in `combo.ts` (the host of
@@ -517,9 +518,15 @@ export async function resolveAutoStrategyOrder(
     const preserveRungOrder =
       (combo as { autoConfig?: { preserveRungOrder?: unknown } })?.autoConfig?.preserveRungOrder ===
       true;
+    const preserveGlmFlashOrder = isDeclaredGlmFlashRoute(eligibleTargets);
+    const declaredTargets = preserveGlmFlashOrder
+      ? orderDeclaredGlmFlashTargets(rankedTargets)
+      : rankedTargets;
     const headTargets = preserveRungOrder
       ? restoreIncomingOrder(rankedTargets, eligibleTargets)
-      : [selectedTarget, ...rankedTargets];
+      : preserveGlmFlashOrder
+        ? declaredTargets
+        : [selectedTarget, ...rankedTargets];
     orderedTargets = dedupeTargetsByExecutionKey(
       [...headTargets, ...eligibleTargets].filter(
         (entry): entry is ResolvedComboTarget => entry !== undefined && entry !== null

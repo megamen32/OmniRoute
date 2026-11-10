@@ -240,6 +240,13 @@ const GO_SURFACE_BASE_URL = "https://opencode.ai/zen/go/v1";
  */
 export const FREE_TIER_INFERENCE_BASE_URL = "https://opencode.ai/inference/v1";
 
+/** GLM Flash Free moved to the protocol-specific endpoint in the published catalog. */
+export function freeTierInferenceBaseUrl(model: string): string {
+  return model === "glm-5.3-flash-free"
+    ? "https://opencode.ai/inference/openai/v1"
+    : FREE_TIER_INFERENCE_BASE_URL;
+}
+
 /**
  * The credential the gated free-tier lane serves.
  *

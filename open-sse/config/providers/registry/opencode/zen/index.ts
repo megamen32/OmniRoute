@@ -160,6 +160,15 @@ export const opencode_zenProvider: RegistryEntry = {
       supportsReasoning: true,
       supportedThinkingEfforts: ["high", "max"],
     },
+    {
+      id: "glm-5.3-flash-free",
+      name: "GLM-5.3-Flash Free",
+      contextLength: 200000,
+      maxOutputTokens: 32000,
+      supportsReasoning: true,
+      supportedThinkingEfforts: ["low", "high", "max"],
+      interleavedField: "reasoning_content",
+    },
 
     // ── MiniMax ────────────────────────────────────────────────
     // #3110: MiniMax M3 — frontier coding model with 1M context

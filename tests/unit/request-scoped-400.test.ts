@@ -6,6 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { isRequestScoped400 } from "../../open-sse/services/accountFallback/requestScoped400.ts";
+import { isRequestShapeError } from "../../src/sse/services/requestShape.ts";
+import { shouldSkipConnDisable } from "../../open-sse/services/combo/comboPredicates.ts";
 
 test("only a 400 can be request-scoped", () => {
   for (const status of [200, 401, 403, 404, 422, 429, 500]) {
@@ -52,4 +54,20 @@ test("a throttling text on a 400 still rotates accounts", () => {
 
 test("a 400 with an unrelated text is not request-scoped", () => {
   assert.equal(isRequestScoped400(400, "something went wrong on our side"), false);
+});
+
+test("native ZCode request-shape failures do not cool the account or provider", () => {
+  const messages = [
+    "Native ZCode sessions currently require text messages",
+    'ZCode Coding Plan model "glm-5.3-flash" is not supported or not enabled in the native provider registry.',
+  ];
+
+  for (const message of messages) {
+    assert.equal(isRequestShapeError(400, message, "zcode-cn-individual"), true, message);
+    assert.equal(
+      shouldSkipConnDisable({ status: 400, error: message }, false, false, "zcode-cn-individual"),
+      true,
+      message
+    );
+  }
 });

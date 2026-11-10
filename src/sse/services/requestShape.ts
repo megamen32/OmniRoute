@@ -7,10 +7,17 @@
  */
 
 const REQUEST_SHAPE_ERROR_RE =
-  /failed to deserialize the json body|unknown variant `|missing field `|argument not supported|unknown content type|invalid request content/i;
+  /failed to deserialize the json body|unknown variant `|missing field `|argument not supported|unknown content type|invalid request content|native zcode sessions currently require text messages|zcode coding plan model .* is not supported or not enabled in the native provider registry/i;
 
 /** xAI reports auth/quota as 401/403/429 — its 400/422 are always about the request body. */
 const REQUEST_SHAPE_ALL_4XX_PROVIDERS = new Set(["xai", "xai-oauth", "xao"]);
+const REQUEST_SHAPE_400_PROVIDERS = new Set([
+  "zcode",
+  "zcode-start",
+  "zcode-individual",
+  "zcode-cn-start",
+  "zcode-cn-individual",
+]);
 
 /**
  * - xAI family: every 400/422 is a request-shape error.
@@ -25,6 +32,9 @@ export function isRequestShapeError(
   const code = Number(status);
   if (code !== 400 && code !== 422) return false;
   if (provider && REQUEST_SHAPE_ALL_4XX_PROVIDERS.has(provider)) return true;
+  if (provider && REQUEST_SHAPE_400_PROVIDERS.has(provider)) {
+    return REQUEST_SHAPE_ERROR_RE.test(typeof errorText === "string" ? errorText : "");
+  }
   if (code !== 422) return false;
   return REQUEST_SHAPE_ERROR_RE.test(typeof errorText === "string" ? errorText : "");
 }

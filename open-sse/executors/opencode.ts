@@ -61,8 +61,8 @@ import {
   isOpencodeUserBlocked,
 } from "./opencodeGeoBlock.ts";
 import {
-  FREE_TIER_INFERENCE_BASE_URL,
   attemptFor,
+  freeTierInferenceBaseUrl,
   isGatedFreeTierRequest,
   isPremiumOpencodeModel,
   noteFreeTierOutcome,
@@ -1552,7 +1552,7 @@ export class OpencodeExecutor extends BaseExecutor {
     // the inference contract's constant and never consults the catalog.
     const base =
       Boolean(model) && isGatedFreeTierRequest(this._surface(), this.provider, model)
-        ? FREE_TIER_INFERENCE_BASE_URL
+        ? freeTierInferenceBaseUrl(model)
         : (getPublishedBaseUrl(this.provider) ?? this.config.baseUrl);
     switch (this._requestFormat) {
       case "claude":
