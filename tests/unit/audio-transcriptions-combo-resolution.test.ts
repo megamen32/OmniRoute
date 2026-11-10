@@ -24,6 +24,7 @@ process.env.API_KEY_SECRET = "audio-alias-unit-test-only";
 const core = await import("../../src/lib/db/core.ts");
 const { createCombo } = await import("../../src/lib/db/combos.ts");
 const { createProviderNode } = await import("../../src/lib/db/providers.ts");
+const { updateSettings } = await import("../../src/lib/db/settings.ts");
 const route = await import("../../src/app/api/v1/audio/transcriptions/route.ts");
 
 const originalFetch = globalThis.fetch;
@@ -117,8 +118,6 @@ test("an unknown bare name is still rejected with the format hint", async () => 
   assert.equal(res.status, 400);
   assert.match(body, /Invalid transcription model/);
 });
-
-const { updateSettings } = await import("../../src/lib/db/settings.ts");
 
 for (const [name, settings, requested] of [
   ["exact", { modelAliases: { "client-stt": "alias-audio/whisper-1" } }, "client-stt"],

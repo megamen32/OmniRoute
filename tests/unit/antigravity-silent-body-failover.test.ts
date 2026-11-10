@@ -69,11 +69,16 @@ describe("Part D - Antigravity silent-body watchdog and failover", () => {
     assert.ok(fullText.includes("world"));
   });
 
-  it("execute fails over when first base URL has a silent 200 response and returns intact stream from second base URL", async () => {
+  it("execute fails over when first base URL has a silent 200 response and returns intact stream from second base URL", async (context) => {
     seedAntigravityIdeVersionCache("1.11.5");
     seedAntigravityCliVersionCache("1.11.5");
 
     const executor = new AntigravityExecutor({ streamReadinessTimeoutMs: 50 });
+    // Exercise two hosts independently of the production generation host list.
+    context.mock.method(executor, "getBaseUrls", () => [
+      "https://antigravity-primary.test",
+      "https://antigravity-fallback.test",
+    ]);
     const encoder = new TextEncoder();
 
     let streamGenAttempt = 0;
@@ -155,11 +160,15 @@ describe("Part D - Antigravity silent-body watchdog and failover", () => {
     }
   });
 
-  it("execute does NOT fail over when first base URL is healthy and preserves stream", async () => {
+  it("execute does NOT fail over when first base URL is healthy and preserves stream", async (context) => {
     seedAntigravityIdeVersionCache("1.11.5");
     seedAntigravityCliVersionCache("1.11.5");
 
     const executor = new AntigravityExecutor({ streamReadinessTimeoutMs: 100 });
+    context.mock.method(executor, "getBaseUrls", () => [
+      "https://antigravity-primary.test",
+      "https://antigravity-fallback.test",
+    ]);
     const encoder = new TextEncoder();
 
     let streamGenAttempt = 0;
