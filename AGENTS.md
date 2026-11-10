@@ -8,6 +8,26 @@
 
 ## Build placement for this deployment
 
+### Owner workflow: patch first, build once (10 November 2026)
+
+For an authorized repair, first apply the smallest reversible, source-backed patch
+to the installed runtime and verify the actual consumer. Do not put a full rebuild
+between every fix and its live check. Keep the source change, exact artifact hashes,
+previous files and rollback receipt together; use the existing release lease and
+expected-live-revision guard. Prefer the isolated standby for the first live check.
+Once the repair is proven through the real client, make one final reproducible build
+that includes the tested patches. A live patch is not permission to lose source
+provenance, foreign work, secrets, account isolation or an available rollback.
+
+For server-44 and server-88, build one Docker image on server-44 and transfer or pull
+that exact image on server-88, verified by digest. Do not rebuild the same release on
+each host. Prefer blue-green delivery: start green alongside blue, verify readiness
+and the real consumer, switch traffic, and retain blue for rollback. If the current
+deployment cannot switch this way, record the concrete limitation and use the
+smallest authorized reversible cutover; do not build a new deployment platform as
+a prerequisite for an incident fix. This workflow does not change the production
+host or authorize migration by itself.
+
 All OmniRoute builds, including production, release, Docker, and other build variants,
 MUST run on **server-44**, not server-100, to preserve RAM on server-100. Run the
 build workload on server-44 itself; a shared remote builder that may select another
