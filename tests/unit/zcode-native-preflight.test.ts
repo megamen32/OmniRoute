@@ -1,3 +1,4 @@
+// LHC:COVERS open-sse/executors/zcode.ts
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -18,7 +19,10 @@ const input = {
 };
 const view = {
   providers: [
-    { providerId: "account:zai-start-plan", models: [{ modelId: "GLM-5.3-Flash", config: {} }] },
+    {
+      providerId: "account:zai-individual-coding-plan",
+      models: [{ modelId: "GLM-5.3-Flash", config: {} }],
+    },
   ],
 };
 
@@ -51,7 +55,10 @@ for (const phase of ["ensure", "start", "getView"] as const) {
     t.mock.method(NativeZcodeHostClient.prototype, "close", async () => {
       closed++;
     });
-    const operation = new ZcodeExecutor().execute({ ...input, signal: controller.signal });
+    const operation = new ZcodeExecutor({ provider: "zcode-individual" }).execute({
+      ...input,
+      signal: controller.signal,
+    });
     let guard: ReturnType<typeof setTimeout> | undefined;
     try {
       await reached;
@@ -93,7 +100,10 @@ test("native getView and generation share the same turn deadline", async (t) => 
       return { text: "ready" };
     }
   );
-  const result = await new ZcodeExecutor({ turnTimeoutMs: 500 }).execute(input);
+  const result = await new ZcodeExecutor({
+    provider: "zcode-individual",
+    turnTimeoutMs: 500,
+  }).execute(input);
   assert.equal(("response" in result ? result.response : result).status, 200);
   assert.ok(remaining !== undefined && remaining > 0 && remaining <= 470);
   assert.ok(
@@ -114,7 +124,9 @@ test("native preflight deadline expires while getView is awaiting a reply", asyn
         release = resolve;
       })
   );
-  const operation = new ZcodeExecutor({ turnTimeoutMs: 30 }).execute(input);
+  const operation = new ZcodeExecutor({ provider: "zcode-individual", turnTimeoutMs: 30 }).execute(
+    input
+  );
   let guard: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
@@ -171,7 +183,7 @@ for (const [field, code] of [
         );
       }
     );
-    const result = await new ZcodeExecutor().execute(input);
+    const result = await new ZcodeExecutor({ provider: "zcode-individual" }).execute(input);
     const response = "response" in result ? result.response : result;
     const body = await response.json();
     assert.equal(response.status, 502);

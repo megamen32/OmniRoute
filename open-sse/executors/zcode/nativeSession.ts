@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import type { ZcodeClientLike } from "../zcodeProtocol.ts";
 type Turn = { signal: AbortSignal; deadline: number };
@@ -155,10 +155,42 @@ type PendingTool = {
   response: ServerResponse;
   delivered: boolean;
 };
+type WorkspaceLease = { workspacePath: string; release: () => Promise<void> };
+
+async function leaseWorkspace(root: string, signal: AbortSignal): Promise<WorkspaceLease> {
+  const directory = resolve(root);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  for (let slot = 0; ; slot++) {
+    signal.throwIfAborted();
+    const workspacePath = join(directory, `workspace-${slot}`);
+    const leasePath = join(directory, `.workspace-${slot}.lease`);
+    try {
+      // Atomic across bridge instances and processes. An uncertain cleanup leaves
+      // this lease in place, including after a bridge/process is recreated.
+      await mkdir(leasePath, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    try {
+      await mkdir(workspacePath, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      await rm(leasePath, { recursive: true, force: true });
+      throw error;
+    }
+    return {
+      workspacePath,
+      release: () => rm(leasePath, { recursive: true, force: true }),
+    };
+  }
+}
+
 type Run = {
   client: ZcodeClientLike;
   sessionId: string;
   workspace: { workspacePath: string; workspaceIdentity: string };
+  workspaceLease?: WorkspaceLease;
+  sessionCreationPending?: boolean;
   scope: string;
   history: RecordValue[];
   toolsHash: string;
@@ -173,6 +205,7 @@ type Run = {
 export interface NativeSessionOptions {
   clientFactory: () => ZcodeClientLike;
   workspaceRoot: string;
+  reuseWorkspaces?: boolean;
   timeoutMs?: number;
   continuationTimeoutMs?: number;
   pollMs?: number;
@@ -183,6 +216,7 @@ export class NativeZcodeSessionBridge {
   private continuations = new Map<string, Run>();
   private runs = new Set<Run>();
   private recovering = new Set<string>();
+  private projectIds = new Map<string, string>();
   constructor(private options: NativeSessionOptions) {}
   async close(): Promise<void> {
     await Promise.allSettled([...this.runs].map((run) => this.dispose(run)));
@@ -599,15 +633,23 @@ export class NativeZcodeSessionBridge {
     });
     const address = relay.address();
     if (!address || typeof address === "string") throw new NativeSessionError("MCP relay failed");
-    const workspacePath = join(this.options.workspaceRoot, randomUUID());
+    let workspacePath = "";
+    let workspaceLease: WorkspaceLease | undefined;
     let client: ZcodeClientLike;
     try {
-      await mkdir(workspacePath, { recursive: true, mode: 0o700 });
+      if (this.options.reuseWorkspaces) {
+        workspaceLease = await leaseWorkspace(this.options.workspaceRoot, turn.signal);
+        workspacePath = workspaceLease.workspacePath;
+      } else {
+        workspacePath = join(this.options.workspaceRoot, randomUUID());
+        await mkdir(workspacePath, { recursive: true, mode: 0o700 });
+      }
       client = this.options.clientFactory();
     } catch (error) {
       relay.closeAllConnections();
       relay.close();
-      await rm(workspacePath, { recursive: true, force: true });
+      if (workspaceLease) await workspaceLease.release();
+      else if (workspacePath) await rm(workspacePath, { recursive: true, force: true });
       throw error;
     }
     run = {
@@ -629,6 +671,7 @@ export class NativeZcodeSessionBridge {
       },
       busy: true,
       workspace: { workspacePath, workspaceIdentity: workspacePath },
+      workspaceLease,
     };
     this.runs.add(run);
     try {
@@ -640,20 +683,8 @@ export class NativeZcodeSessionBridge {
           }),
         turn.signal
       );
-      const project = record(
-        await call(
-          client,
-          "project",
-          "saveProject",
-          [
-            {
-              name: "OmniRoute request",
-              roots: [workspacePath],
-            },
-          ],
-          turn
-        )
-      );
+      const project = await this.project(run, turn);
+      run.sessionCreationPending = true;
       const state = record(
         await call(
           client,
@@ -688,6 +719,7 @@ export class NativeZcodeSessionBridge {
       );
       run.sessionId = String(record(state.session).sessionId || "");
       if (!run.sessionId) throw new NativeSessionError("Native session was not created");
+      run.sessionCreationPending = false;
       const content =
         input.messages.length === 1 && typeof input.messages[0].content === "string"
           ? input.messages[0].content
@@ -714,6 +746,40 @@ export class NativeZcodeSessionBridge {
     }
   }
 
+  private async project(run: Run, turn: Turn): Promise<RecordValue> {
+    const workspacePath = run.workspace.workspacePath;
+    let project: RecordValue | undefined;
+    if (run.workspaceLease) {
+      const cachedId = this.projectIds.get(workspacePath);
+      if (cachedId) return { id: cachedId };
+      // Unlike readTree, readProjects omits tasks in the supported native API.
+      const projects = list(await call(run.client, "project", "readProjects", [{}], turn));
+      project = projects.find((entry) =>
+        list(entry.roots).some((root) => root.rootPath === workspacePath)
+      );
+    }
+    project ??= record(
+      await call(
+        run.client,
+        "project",
+        "saveProject",
+        [
+          {
+            name: run.workspaceLease ? `OmniRoute ${basename(workspacePath)}` : "OmniRoute request",
+            roots: [workspacePath],
+          },
+        ],
+        turn
+      )
+    );
+    if (run.workspaceLease) {
+      if (typeof project.id !== "string" || !project.id)
+        throw new NativeSessionError("Native project was not created");
+      this.projectIds.set(workspacePath, project.id);
+    }
+    return project;
+  }
+
   private async dispose(run: Run): Promise<void> {
     if (!this.runs.delete(run)) return;
     clearTimeout(run.expires);
@@ -721,26 +787,32 @@ export class NativeZcodeSessionBridge {
     for (const tool of run.pending) tool.response.destroy();
     run.relay.closeAllConnections();
     run.relay.close();
+    let cleaned = false;
     try {
-      if (run.sessionId)
-        await cleanupCall(run.client, "closeSession", [
-          {
-            ...run.workspace,
-            sessionId: run.sessionId,
-          },
-        ]);
-    } finally {
       try {
-        // Closing a deferred session does not stop its workspace engine. Native
-        // releasePreparation also preserves other sessions in a shared engine.
+        if (run.sessionId) {
+          const closed = await cleanupCall(run.client, "closeSession", [
+            { ...run.workspace, sessionId: run.sessionId },
+          ]);
+          if (run.workspaceLease && closed === false)
+            throw new NativeSessionError("Native session cleanup was not acknowledged");
+        }
+      } finally {
         try {
+          // Closing a deferred session does not stop its workspace engine. Native
+          // releasePreparation also preserves other sessions in a shared engine.
           await cleanupCall(run.client, "disposeWorkspace", [
             { ...run.workspace, releasePreparation: true },
           ]);
         } finally {
           await run.client.close();
         }
-      } finally {
+      }
+      cleaned = !run.sessionCreationPending;
+    } finally {
+      if (run.workspaceLease) {
+        if (cleaned) await run.workspaceLease.release();
+      } else {
         await rm(run.workspace.workspacePath, { recursive: true, force: true });
       }
     }
