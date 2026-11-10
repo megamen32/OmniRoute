@@ -194,9 +194,13 @@ export class NativeZcodeSessionBridge {
     messages: RecordValue[];
     tools: Tool[];
     signal?: AbortSignal | null;
+    deadline?: number;
   }): Promise<RecordValue> {
     const controller = new AbortController();
-    const deadline = Date.now() + (this.options.timeoutMs ?? 120_000);
+    const deadline = Math.min(
+      input.deadline ?? Infinity,
+      Date.now() + (this.options.timeoutMs ?? 120_000)
+    );
     const onAbort = () => controller.abort(new NativeSessionError("ZCode request cancelled", 499));
     const timer = setTimeout(
       () => controller.abort(new NativeSessionError("ZCode native session timed out", 504)),
@@ -204,6 +208,8 @@ export class NativeZcodeSessionBridge {
     );
     input.signal?.addEventListener("abort", onAbort, { once: true });
     if (input.signal?.aborted) onAbort();
+    if (Date.now() >= deadline)
+      controller.abort(new NativeSessionError("ZCode native session timed out", 504));
     try {
       controller.signal.throwIfAborted();
       return await this.executeTurn(input, { signal: controller.signal, deadline });
@@ -626,7 +632,14 @@ export class NativeZcodeSessionBridge {
     };
     this.runs.add(run);
     try {
-      await duringTurn(() => client.start(), turn.signal);
+      await duringTurn(
+        () =>
+          client.start({
+            timeoutMs: Math.max(1, turn.deadline - Date.now()),
+            signal: turn.signal,
+          }),
+        turn.signal
+      );
       const project = record(
         await call(
           client,

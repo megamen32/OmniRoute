@@ -23,7 +23,7 @@ export interface ZcodeAppServerClientOptions {
 export type ZcodeCallOptions = { timeoutMs?: number; signal?: AbortSignal };
 
 export interface ZcodeClientLike {
-  start(): Promise<void>;
+  start(options?: ZcodeCallOptions): Promise<void>;
   call(
     channel: string,
     method: string,
