@@ -661,7 +661,14 @@ export class ZcodeExecutor extends BaseExecutor {
         const message = sanitizeErrorMessage(errorText(error));
         const nativeError = asRecord(error);
         if (modelRequestStarted && nativeError.providerReason === "unusual_activity")
-          return errorResponse(403, "ZCode text-generation route blocked due to unusual activity");
+          return errorResponse(
+            502,
+            "ZCode text-generation request context was rejected by upstream",
+            {
+              type: "upstream_response_failed",
+              code: "upstream_response_failed",
+            }
+          );
         if (
           isZcodeRequestCancelled(error) ||
           isZcodeRequestCancelled({ code: asRecord(error).providerCode })

@@ -322,12 +322,23 @@ export function patchExecutorBranch(text, parse, entry, sidecar) {
   const dependencies = Object.entries(entry.dependencies)
     .map(([name, value]) => name + ":(" + value + ")")
     .join(",");
-  const replacement =
-    '{return await require(__dirname + "/' +
+  const delegated =
+    'return await require(__dirname + "/' +
     sidecar +
     '").runNativeExecutor.call(this,{' +
     dependencies +
-    "},a,b,c);}";
+    "}," +
+    (entry.individualOnly
+      ? '{...a,credentials:{...a.credentials,connectionId:a.credentials.connectionId+":plain-individual"}}'
+      : "a") +
+    ",b,c);";
+  const replacement = entry.individualOnly
+    ? '{if(this.options.provider?.endsWith("individual")){' +
+      delegated +
+      "}" +
+      text.slice(node.start + 1, node.end - 1) +
+      "}"
+    : "{" + delegated + "}";
   const after = text.slice(0, node.start) + replacement + text.slice(node.end);
   parse(after, { ecmaVersion: "latest" });
   return { after, coverage: entry.coverage };
@@ -1283,7 +1294,7 @@ async function waitReady(port) {
   }
   throw new Error("OmniRoute readiness deadline exceeded");
 }
-function discoverAdmin() {
+export function discoverAdmin() {
   const pid = Number(
     run("systemctl", ["--user", "show", "agent-herder.service", "-p", "MainPID", "--value"])
   );
@@ -1407,6 +1418,12 @@ export function installFiles(dist, directory, manifest) {
     compiledOn: manifest.compiledOn,
     appliedAt: stamp(),
     files: manifest.files,
+    ...(manifest.providerScope
+      ? {
+          providerScope: manifest.providerScope,
+          partialSourceApplication: manifest.partialSourceApplication,
+        }
+      : {}),
     previous,
     ...(manifest.overlay
       ? {
@@ -1735,7 +1752,14 @@ async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfi
     const installed = json(join(frozen, "RUNTIME_PATCHES.json"));
     assert.equal(installed.sourceSha, sourceSha, "Standby has a different patch");
     assert.equal(installed.sourceSnapshotSha256, manifest.sourceSnapshotSha256);
-    for (const file of manifest.files)
+    if (manifest.providerScope) {
+      assert.equal(manifest.providerScope, "individual");
+      assert.equal(resetNativeProfile, false, "Scoped Individual patch must preserve Start state");
+      assert.deepEqual(manifest.standbyReferenceFiles, installed.files);
+      assert.equal(manifest.checks.startBranchPreserved, true);
+      assert.equal(manifest.checks.individualProfileIsolated, true);
+    }
+    for (const file of manifest.providerScope ? manifest.standbyReferenceFiles : manifest.files)
       assert.equal(sha256(readFileSync(join(frozen, file.path))), file.after);
     assert(canaryReceipt, "Primary requires the consumer Worker's standby receipt path");
     assert(statSync(canaryReceipt).isFile());

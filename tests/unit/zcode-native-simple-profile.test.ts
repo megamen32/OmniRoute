@@ -257,21 +257,24 @@ test("a completed text survives a late cleanup abort", async (t) => {
   assert.equal(result.json.choices[0].message.content, "ready");
 });
 
-test("provider unusual-activity denial stays route-scoped 403 and is never quota", async (t) => {
+test("provider route rejection is request-scoped and cannot ban a shared account", async (t) => {
   const f = fixture(t, {
     generate: async () => {
       throw Object.assign(new Error("safe blocked route"), { providerReason: "unusual_activity" });
     },
   });
   const result = await f.execute();
-  assert.equal(result.response.status, 403);
-  assert.equal(result.json.error.code, "permission_denied");
-  assert.equal(result.json.error.type, "permission_error");
+  assert.equal(result.response.status, 502);
+  assert.equal(result.json.error.code, "upstream_response_failed");
+  assert.equal(result.json.error.type, "upstream_response_failed");
   assert.equal(
     result.json.error.message,
-    "ZCode text-generation route blocked due to unusual activity"
+    "ZCode text-generation request context was rejected by upstream"
   );
   assert.equal(result.json.notSubmitted, undefined);
+  const { isRequestScopedUpstreamFailure } =
+    await import("../../open-sse/services/combo/comboPredicates.ts");
+  assert.equal(isRequestScopedUpstreamFailure(result.json.error), true);
 });
 
 test("an unconfirmed native RPC business code is not enough to claim exhausted quota", async (t) => {

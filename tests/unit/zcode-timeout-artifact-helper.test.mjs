@@ -203,6 +203,45 @@ test("executor overlay maps existing body helpers while preserving all non-nativ
   assert(after.endsWith(source.slice(node.end)));
   assert.throws(() => helper.extendExecutorBindings(source + " ", parse, base));
 });
+test("Individual-only overlay leaves Start on the original branch and isolates the native account", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "zcode-individual-overlay-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const require = createRequire(import.meta.url),
+    { parse } = require("acorn");
+  const source =
+    'const transport="native-host";async function execute(a,b,c){if(transport==="native-host"){return {route:"legacy",connectionId:a.credentials.connectionId,url:"zcode://native-host/session"};}return "other";}module.exports={execute};';
+  const block = parse(source, { ecmaVersion: "latest" }).body[1].body.body[0].consequent;
+  const entry = {
+    sha256: helper.sha256(source),
+    branchSha256: helper.sha256(source.slice(block.start, block.end)),
+    dependencies: {},
+    coverage: ["ZcodeExecutor.native-host"],
+    individualOnly: true,
+  };
+  const { after } = helper.patchExecutorBranch(source, parse, entry, "fixture.cjs");
+  assert(after.includes(source.slice(block.start + 1, block.end - 1)));
+  writeFileSync(
+    join(directory, "fixture.cjs"),
+    'exports.runNativeExecutor=async function(d,input){return {route:"individual",connectionId:input.credentials.connectionId}};'
+  );
+  writeFileSync(join(directory, "candidate.cjs"), after);
+  const { execute } = require(join(directory, "candidate.cjs"));
+  const input = { credentials: { connectionId: "original", authType: "oauth" } };
+  for (const provider of ["zcode-start", "zcode-cn-start"]) {
+    assert.deepEqual(await execute.call({ options: { provider } }, input), {
+      route: "legacy",
+      connectionId: "original",
+      url: "zcode://native-host/session",
+    });
+  }
+  for (const provider of ["zcode-individual", "zcode-cn-individual"]) {
+    assert.deepEqual(await execute.call({ options: { provider } }, input), {
+      route: "individual",
+      connectionId: "original:plain-individual",
+    });
+  }
+  assert.equal(input.credentials.connectionId, "original");
+});
 test("fresh profile never carries a refreshed grant from DB and does not carry config/tasks/MCP", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.root, account, ".zcode/v2/config.json"), '{"apiKey":"old-config"}');
