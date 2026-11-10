@@ -858,7 +858,22 @@ export async function smokeStartExecutor(runNativeExecutor, ErrorClass, runtime)
       assert(input.deadline > Date.now() && input.deadline <= Date.now() + 500);
       assert(input.signal instanceof AbortSignal);
       if (failure) throw failure;
-      if (hanging) return withAbort(new Promise(() => {}), input.signal);
+      if (hanging) {
+        // Start clears its preflight timer before handing the deadline to Bridge.
+        const deadline = new AbortController();
+        const timer = setTimeout(
+          () => deadline.abort(new ErrorClass("Fixture bridge deadline", 504)),
+          Math.max(1, input.deadline - Date.now())
+        );
+        try {
+          return await withAbort(
+            new Promise(() => {}),
+            AbortSignal.any([input.signal, deadline.signal])
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       return response;
     }
   }
@@ -985,12 +1000,15 @@ const all=Object.assign({},require('node:crypto'),require('node:http'),require('
  console.log(JSON.stringify({webpackFactories:tested,hostClients:clients,sessionBridges:bridges,abortedTurns:true,executorSmoke}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
 `;
-  const result = JSON.parse(
-    run(process.execPath, ["-e", test, output], {
-      env: { ...process.env, NODE_PATH: join(DONOR, "node_modules") },
-      timeout: 30000,
-    })
-  );
+  const verification = run(process.execPath, ["-e", test, output], {
+    env: { ...process.env, NODE_PATH: join(DONOR, "node_modules") },
+    timeout: 30000,
+  });
+  if (manifest.schema === V3 && !verification)
+    throw Object.assign(new Error("V3 webpack verification exited without a receipt"), {
+      code: "V3_VERIFY_NO_RECEIPT",
+    });
+  const result = JSON.parse(verification);
   manifest.checks.webpackFactories = result;
   save(join(output, "patch.json"), manifest);
   console.log(JSON.stringify({ phase: "patch-webpack-verified", ...result }));
@@ -1218,10 +1236,11 @@ async function stageOverlay(sourceSha, baselineDirectory) {
   );
 }
 
-async function stageOverlayV3(sourceSha, baselineDirectory, compileReviewed) {
+async function stageOverlayV3(sourceSha, baselineDirectory, compileReviewed, runId) {
   // No SSH, transpilation or new source access happens for a pending draft.
   fullSha(sourceSha);
   assert.equal(compileReviewed, true, "V3 compile requires --compile-reviewed after owner signal");
+  assert(runId === undefined || /^[a-z0-9-]{1,32}$/.test(runId), "Invalid v3 run ID");
   baselineDirectory = realpathSync(baselineDirectory);
   assert(baselineDirectory.startsWith(AREA + "/overlay-base-v3-"));
   const baseline = json(join(baselineDirectory, "baseline.json"));
@@ -1278,8 +1297,9 @@ async function stageOverlayV3(sourceSha, baselineDirectory, compileReviewed) {
   Object.assign(manifest, publishedSources(manifest, sourceSha));
   for (const role of TARGET_ROLES)
     checkOverlayPreimages(join(role === "primary" ? ROOT : STANDBY, "dist"), manifest, role);
-  const name = "input-v3-" + sourceSnapshotSha256.slice(0, 16);
+  const name = "input-v3-" + sourceSnapshotSha256.slice(0, 16) + (runId ? "-" + runId : "");
   const directory = join(AREA, name);
+  const remoteDirectory = join(REMOTE_ROOT, name);
   assert(!existsSync(directory), "V3 input exists; inspect previous attempt before replay");
   mkdirSync(join(directory, "chunks"), { recursive: true, mode: 0o700 });
   for (const file of sources) {
@@ -1305,16 +1325,32 @@ async function stageOverlayV3(sourceSha, baselineDirectory, compileReviewed) {
       { mode: 0o600, flag: "wx" }
     );
   save(join(directory, "input.json"), manifest);
-  run("ssh", ["-o", "BatchMode=yes", REMOTE, "mkdir -p " + REMOTE_ROOT]);
-  run("scp", ["-q", SELF, REMOTE + ":" + REMOTE_ROOT + "/runner.mjs"]);
+  writeFileSync(join(directory, "runner.mjs"), readFileSync(SELF), { mode: 0o600, flag: "wx" });
+  run("ssh", [
+    "-o",
+    "BatchMode=yes",
+    REMOTE,
+    "mkdir -p " + REMOTE_ROOT + " && test ! -e " + remoteDirectory,
+  ]);
   run("scp", ["-qr", directory, REMOTE + ":" + REMOTE_ROOT + "/"]);
-  run("ssh", ["-o", "BatchMode=yes", REMOTE, "node " + REMOTE_ROOT + "/runner.mjs remote-stage"], {
-    input: JSON.stringify({ directory: join(REMOTE_ROOT, name) }),
-    stdio: ["pipe", "inherit", "inherit"],
-  });
+  run(
+    "ssh",
+    ["-o", "BatchMode=yes", REMOTE, "node " + remoteDirectory + "/runner.mjs remote-stage"],
+    {
+      input: JSON.stringify({ directory: remoteDirectory }),
+      stdio: ["pipe", "inherit", "inherit"],
+    }
+  );
   run("scp", ["-qr", REMOTE + ":" + join(REMOTE_ROOT, name, "output"), directory + "/"]);
-  const artifact = join(directory, "output");
-  const result = checkArtifact(artifact, sourceSha).manifest;
+  return finalizeOverlayV3(join(directory, "output"), sourceSha);
+}
+
+// Resume only local verification of an existing server-44 output. No compile or apply.
+export function finalizeOverlayV3(directory, sourceSha) {
+  const { directory: artifact, manifest: result } = checkArtifact(directory, sourceSha);
+  assert.equal(result.schema, V3);
+  for (const role of TARGET_ROLES)
+    checkOverlayPreimages(join(role === "primary" ? ROOT : STANDBY, "dist"), result, role);
   const receipt = join(RECEIPTS, "deploy-prepare-v3-staged-" + stamp() + ".json");
   save(receipt, {
     ...result,
@@ -1746,14 +1782,17 @@ export function checkOverlayArtifactV3(directory, manifest) {
   }
   assert.equal(manifest.files.length, 8);
   assert.equal(new Set(manifest.files.map((f) => f.path)).size, 8);
+  const allowedReplacements = new Set([
+    overlay.sidecarPath,
+    ...overlay.executorMap.map((f) => f.path),
+  ]);
   for (const role of TARGET_ROLES) {
     const files = overlayTargetFilesV3(manifest, role);
-    assert.deepEqual(
-      files
-        .filter((f) => f.before !== f.after)
-        .map((f) => f.path)
-        .sort(),
-      [overlay.sidecarPath, ...overlay.executorMap.map((f) => f.path)].sort(),
+    const changed = files.filter((f) => f.before !== f.after).map((f) => f.path);
+    assert(changed.includes(overlay.sidecarPath), "V3 must replace the reviewed sidecar");
+    // A target may already contain either byte-identical executor delegation.
+    assert(
+      changed.every((path) => allowedReplacements.has(path)),
       "V3 replacements exceed sidecar and native executor branches"
     );
   }
@@ -2562,6 +2601,7 @@ async function main() {
     "--reset-native-profile",
     "--review",
     "--compile-reviewed",
+    "--run-id",
   ]);
   const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -2635,7 +2675,8 @@ async function main() {
     return stageOverlayV3(
       flags["--source-sha"],
       flags["--baseline"],
-      Boolean(flags["--compile-reviewed"])
+      Boolean(flags["--compile-reviewed"]),
+      flags["--run-id"]
     );
   if (mode === "overlay-base") {
     if (!flags["--locked"]) {

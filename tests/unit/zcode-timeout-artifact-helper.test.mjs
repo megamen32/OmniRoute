@@ -160,6 +160,19 @@ function captureV3Fixture(t) {
   const raw = JSON.stringify(frozen);
   writeFileSync(join(frozenDirectory, "baseline.json"), raw);
   f.review.codegen = { baselineSha256: helper.sha256(raw) };
+  // The generic standby already delegates to the same sidecar from both chunks.
+  const standbyPath = join(f.targets.standby, "RUNTIME_PATCHES.json");
+  const standby = JSON.parse(readFileSync(standbyPath, "utf8"));
+  for (const entry of executorCandidates) {
+    const source = readFileSync(join(frozenDirectory, "rollback", entry.path), "utf8");
+    const mapped = helper.extendExecutorBindings(source, parse, entry);
+    const { after } = helper.patchExecutorBranch(source, parse, mapped, "fixture.cjs");
+    writeFileSync(join(f.targets.standby, entry.path), after);
+    standby.files.find((f) => f.path === entry.path).after = helper.sha256(after);
+  }
+  const standbyRaw = JSON.stringify(standby);
+  writeFileSync(standbyPath, standbyRaw);
+  f.review.targets.standby.manifestSha256 = helper.sha256(standbyRaw);
   const options = { directory, review: f.review, frozenDirectory, targets: f.targets };
   return { ...f, frozenDirectory, captured: directory, options };
 }
@@ -317,6 +330,13 @@ test("v3 artifact verifies real rollback, frozen branch bytes and per-target out
     },
   };
   helper.checkOverlayArtifact(f.captured, manifest);
+  assert.deepEqual(
+    helper
+      .overlayTargetFilesV3(manifest, "standby")
+      .filter((file) => file.before !== file.after)
+      .map((file) => file.path),
+    [f.sidecar]
+  );
   const candidate = files.find((f) => f.path.endsWith("37000.js"));
   const saved = candidate.beforeByTarget.primary;
   candidate.beforeByTarget.primary = candidate.codegenBefore;
@@ -917,6 +937,7 @@ test("direct executor smoke rejects agent session bridge and project/MCP RPC", a
   );
 });
 async function startExecutorFixture(deps, input, request, resolution) {
+  const deadline = Date.now() + this.turnTimeoutMs();
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new deps.NativeSessionError("timeout", 504)),
@@ -959,17 +980,16 @@ async function startExecutorFixture(deps, input, request, resolution) {
       deps.nativeBridges.set(serverRoot, bridge);
     }
     const caller = deps.createHash("sha256").update("[]").digest("hex");
-    const result = await deps.withAbort(
-      bridge.execute({
-        scope: `${input.credentials.connectionId}:${selection.providerId}:${selection.modelId}:${caller}`,
-        selection,
-        messages: input.body.messages,
-        tools: request.tools,
-        signal: controller.signal,
-        deadline: Date.now() + this.turnTimeoutMs(),
-      }),
-      controller.signal
-    );
+    clearTimeout(timer);
+    input.signal.removeEventListener("abort", onAbort);
+    const result = await bridge.execute({
+      scope: `${input.credentials.connectionId}:${selection.providerId}:${selection.modelId}:${caller}`,
+      selection,
+      messages: input.body.messages,
+      tools: request.tools,
+      signal: input.signal,
+      deadline,
+    });
     return {
       url: "zcode://native-host/session",
       response: deps.modelResponse(resolution.model, result),
