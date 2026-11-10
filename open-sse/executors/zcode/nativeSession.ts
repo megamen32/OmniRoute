@@ -4,6 +4,57 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { ZcodeClientLike } from "../zcodeProtocol.ts";
+type Turn = { signal: AbortSignal; deadline: number };
+
+// Bound awaited RPCs as well as the intervals between polls. Older injected
+// clients may ignore the signal, so the bridge also observes it locally.
+async function duringTurn<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let onAbort: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation(), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort!);
+  }
+}
+
+function call(
+  client: ZcodeClientLike,
+  channel: string,
+  method: string,
+  args: unknown[],
+  turn: Turn
+): Promise<unknown> {
+  return duringTurn(
+    () =>
+      client.call(channel, method, args, {
+        timeoutMs: Math.max(1, turn.deadline - Date.now()),
+        signal: turn.signal,
+      }),
+    turn.signal
+  );
+}
+
+async function cleanupCall(client: ZcodeClientLike, method: string, args: unknown[]) {
+  const controller = new AbortController();
+  const deadline = Date.now() + 5000;
+  const timer = setTimeout(
+    () => controller.abort(new Error("ZCode native cleanup timed out")),
+    5000
+  );
+  try {
+    return await call(client, "zcode-agent", method, args, {
+      signal: controller.signal,
+      deadline,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue =>
@@ -116,7 +167,7 @@ type Run = {
   reportedUsage: Record<string, number>;
   relay: Server;
   busy: boolean;
-  expires: ReturnType<typeof setTimeout>;
+  expires?: ReturnType<typeof setTimeout>;
 };
 
 export interface NativeSessionOptions {
@@ -144,6 +195,28 @@ export class NativeZcodeSessionBridge {
     tools: Tool[];
     signal?: AbortSignal | null;
   }): Promise<RecordValue> {
+    const controller = new AbortController();
+    const deadline = Date.now() + (this.options.timeoutMs ?? 120_000);
+    const onAbort = () => controller.abort(new NativeSessionError("ZCode request cancelled", 499));
+    const timer = setTimeout(
+      () => controller.abort(new NativeSessionError("ZCode native session timed out", 504)),
+      Math.max(1, deadline - Date.now())
+    );
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
+    try {
+      controller.signal.throwIfAborted();
+      return await this.executeTurn(input, { signal: controller.signal, deadline });
+    } finally {
+      clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private async executeTurn(
+    input: Parameters<NativeZcodeSessionBridge["execute"]>[0],
+    turn: Turn
+  ): Promise<RecordValue> {
     const results = input.messages.filter((m) => m.role === "tool");
     const ids = results.map((m) => String(m.tool_call_id || ""));
     if (ids.some((id) => this.recovering.has(id)))
@@ -190,6 +263,8 @@ export class NativeZcodeSessionBridge {
         }
       }
       run.busy = true;
+      clearTimeout(run.expires);
+      run.expires = undefined;
       if (!unchanged) {
         // Compression, newly discovered tools and new caller context invalidate the
         // suspended native prompt. Recreate it from the caller's complete current
@@ -200,7 +275,7 @@ export class NativeZcodeSessionBridge {
         }
         try {
           await this.dispose(run);
-          run = await this.start(input);
+          run = await this.start(input, turn);
         } catch (error) {
           for (const id of recoveryIds) this.recovering.delete(id);
           throw error;
@@ -239,15 +314,14 @@ export class NativeZcodeSessionBridge {
         input.messages,
         nativeResults.map((message) => String(message.tool_call_id))
       );
-      run = await this.start(input);
+      run = await this.start(input, turn);
     }
     try {
-      const deadline = Date.now() + (this.options.timeoutMs ?? 120_000);
-      while (Date.now() < deadline) {
-        if (input.signal?.aborted) throw new NativeSessionError("ZCode request cancelled", 499);
+      while (Date.now() < turn.deadline) {
+        turn.signal.throwIfAborted();
         if (run.pending.some((tool) => !tool.delivered)) {
           // Let simultaneous tool requests arrive before returning one caller turn.
-          await new Promise((resolve) => setTimeout(resolve, 40));
+          await duringTurn(() => new Promise((resolve) => setTimeout(resolve, 40)), turn.signal);
           const pending = run.pending.filter((tool) => !tool.delivered);
           for (const tool of pending) {
             tool.delivered = true;
@@ -258,52 +332,78 @@ export class NativeZcodeSessionBridge {
             name: tool.name,
             input: tool.input,
           }));
-          const snapshot = await run.client.call("zcode-agent", "readSession", [
-            {
-              ...run.workspace,
-              sessionId: run.sessionId,
-              messageLimit: 20,
-            },
-          ]);
-          let usage = assistantUsage(snapshot);
+          // The caller tool is already ready. Snapshot and usage are optional
+          // projections with one shared budget, never another whole turn.
+          const statistics = new AbortController();
+          const statisticsTurn: Turn = {
+            signal: AbortSignal.any([turn.signal, statistics.signal]),
+            deadline: Math.min(turn.deadline, Date.now() + 1000),
+          };
+          const statisticsTimer = setTimeout(
+            () => statistics.abort(new Error("ZCode usage snapshot timed out")),
+            Math.max(1, statisticsTurn.deadline - Date.now())
+          );
+          let usage = assistantUsage(undefined);
           try {
-            // Message projections lag the suspended MCP call; the official
-            // session usage endpoint already has the completed model request.
-            const aggregate = record(
-              await run.client.call("zcode-agent", "getTaskTokenUsage", [
-                { ...run.workspace, sessionId: run.sessionId },
-              ])
-            );
-            usage = {
-              inputTokens: Math.max(
-                0,
-                Number(aggregate.inputTokens ?? 0) - run.reportedUsage.inputTokens
-              ),
-              outputTokens: Math.max(
-                0,
-                Number(aggregate.outputTokens ?? 0) - run.reportedUsage.outputTokens
-              ),
-              totalTokens: Math.max(
-                0,
-                Number(aggregate.totalTokens ?? 0) - run.reportedUsage.totalTokens
-              ),
-              reasoningTokens: Math.max(
-                0,
-                Number(aggregate.reasoningTokens ?? 0) - run.reportedUsage.reasoningTokens
-              ),
-              cacheReadTokens: Math.max(
-                0,
-                Number(aggregate.cacheReadTokens ?? 0) - run.reportedUsage.cacheReadTokens
-              ),
-              cacheWriteTokens: Math.max(
-                0,
-                Number(aggregate.cacheCreationTokens ?? 0) - run.reportedUsage.cacheWriteTokens
-              ),
-            };
-          } catch {
-            // Usage projection is optional; never destroy a ready caller tool
-            // merely because native statistics have not arrived yet.
+            try {
+              usage = assistantUsage(
+                await call(
+                  run.client,
+                  "zcode-agent",
+                  "readSession",
+                  [{ ...run.workspace, sessionId: run.sessionId, messageLimit: 20 }],
+                  statisticsTurn
+                )
+              );
+            } catch {
+              // A stalled message projection must not hold the caller tool.
+            }
+            try {
+              // Message projections lag the suspended MCP call; the official
+              // session usage endpoint already has the completed model request.
+              const aggregate = record(
+                await call(
+                  run.client,
+                  "zcode-agent",
+                  "getTaskTokenUsage",
+                  [{ ...run.workspace, sessionId: run.sessionId }],
+                  statisticsTurn
+                )
+              );
+              usage = {
+                inputTokens: Math.max(
+                  0,
+                  Number(aggregate.inputTokens ?? 0) - run.reportedUsage.inputTokens
+                ),
+                outputTokens: Math.max(
+                  0,
+                  Number(aggregate.outputTokens ?? 0) - run.reportedUsage.outputTokens
+                ),
+                totalTokens: Math.max(
+                  0,
+                  Number(aggregate.totalTokens ?? 0) - run.reportedUsage.totalTokens
+                ),
+                reasoningTokens: Math.max(
+                  0,
+                  Number(aggregate.reasoningTokens ?? 0) - run.reportedUsage.reasoningTokens
+                ),
+                cacheReadTokens: Math.max(
+                  0,
+                  Number(aggregate.cacheReadTokens ?? 0) - run.reportedUsage.cacheReadTokens
+                ),
+                cacheWriteTokens: Math.max(
+                  0,
+                  Number(aggregate.cacheCreationTokens ?? 0) - run.reportedUsage.cacheWriteTokens
+                ),
+              };
+            } catch {
+              // Usage projection is optional; never destroy a ready caller tool
+              // merely because native statistics have not arrived yet.
+            }
+          } finally {
+            clearTimeout(statisticsTimer);
           }
+          if (input.signal?.aborted) throw new NativeSessionError("ZCode request cancelled", 499);
           for (const key of Object.keys(run.reportedUsage))
             run.reportedUsage[key] += Number(usage[key] ?? 0);
           run.history = [
@@ -322,7 +422,10 @@ export class NativeZcodeSessionBridge {
             },
           ];
           run.busy = false;
-          run.expires.refresh();
+          run.expires = setTimeout(() => {
+            void this.dispose(run).catch(() => undefined);
+          }, this.options.continuationTimeoutMs ?? 600_000);
+          run.expires.unref();
           return {
             text: "",
             finishReason: "tool-calls",
@@ -331,13 +434,19 @@ export class NativeZcodeSessionBridge {
           };
         }
         const snapshot = record(
-          await run.client.call("zcode-agent", "readSession", [
-            {
-              ...run.workspace,
-              sessionId: run.sessionId,
-              messageLimit: 20,
-            },
-          ])
+          await call(
+            run.client,
+            "zcode-agent",
+            "readSession",
+            [
+              {
+                ...run.workspace,
+                sessionId: run.sessionId,
+                messageLimit: 20,
+              },
+            ],
+            turn
+          )
         );
         const session = record(snapshot.session);
         if (session.status === "error") {
@@ -370,7 +479,9 @@ export class NativeZcodeSessionBridge {
             .map((part) => String(part.text ?? ""))
             .join("\n\n");
           const tokens = record(record(response.info).tokens);
-          await this.dispose(run);
+          // The model has completed; cleanup cannot replace its answer.
+          await this.dispose(run).catch(() => undefined);
+          if (input.signal?.aborted) throw new NativeSessionError("ZCode request cancelled", 499);
           return {
             text,
             reasoning,
@@ -385,18 +496,24 @@ export class NativeZcodeSessionBridge {
             },
           };
         }
-        await new Promise((resolve) => setTimeout(resolve, this.options.pollMs ?? 300));
+        await duringTurn(
+          () => new Promise((resolve) => setTimeout(resolve, this.options.pollMs ?? 300)),
+          turn.signal
+        );
       }
       throw new NativeSessionError("ZCode native session timed out", 504);
     } catch (error) {
-      await this.dispose(run);
+      await this.dispose(run).catch(() => undefined);
       throw error;
     } finally {
       for (const id of recoveryIds) this.recovering.delete(id);
     }
   }
 
-  private async start(input: Parameters<NativeZcodeSessionBridge["execute"]>[0]): Promise<Run> {
+  private async start(
+    input: Parameters<NativeZcodeSessionBridge["execute"]>[0],
+    turn: Turn
+  ): Promise<Run> {
     if (!input.messages.length) throw new NativeSessionError("Messages are required", 400);
     // Keep native names independent of caller punctuation and naming collisions.
     const names = new Map(input.tools.map((tool, index) => [`tool_${index}`, tool]));
@@ -506,47 +623,55 @@ export class NativeZcodeSessionBridge {
       },
       busy: true,
       workspace: { workspacePath, workspaceIdentity: workspacePath },
-      expires: setTimeout(() => {
-        void this.dispose(run).catch(() => undefined);
-      }, this.options.continuationTimeoutMs ?? 600_000),
     };
     this.runs.add(run);
-    run.expires.unref();
     try {
-      await client.start();
+      await duringTurn(() => client.start(), turn.signal);
       const project = record(
-        await client.call("project", "saveProject", [
-          {
-            name: "OmniRoute request",
-            roots: [workspacePath],
-          },
-        ])
+        await call(
+          client,
+          "project",
+          "saveProject",
+          [
+            {
+              name: "OmniRoute request",
+              roots: [workspacePath],
+            },
+          ],
+          turn
+        )
       );
       const state = record(
-        await client.call("zcode-agent", "createSession", [
-          {
-            ...run.workspace,
-            projectId: project.id,
-            model: input.selection,
-            persistence: "deferred",
-            titleGenerationEnabled: false,
-            toolAllowlist: [...names.keys()].map((name) => `mcp__omniroute__${name}`),
-            mcpServers: names.size
-              ? [
-                  {
-                    name: "omniroute",
-                    type: "http",
-                    protocolVersion: "legacy",
-                    scope: "user",
-                    url: `http://127.0.0.1:${address.port}/mcp`,
-                    headers: [{ name: "Authorization", value: `Bearer ${token}` }],
-                    alwaysLoad: true,
-                    timeoutMs: this.options.continuationTimeoutMs ?? 600_000,
-                  },
-                ]
-              : [],
-          },
-        ])
+        await call(
+          client,
+          "zcode-agent",
+          "createSession",
+          [
+            {
+              ...run.workspace,
+              projectId: project.id,
+              model: input.selection,
+              persistence: "deferred",
+              titleGenerationEnabled: false,
+              toolAllowlist: [...names.keys()].map((name) => `mcp__omniroute__${name}`),
+              mcpServers: names.size
+                ? [
+                    {
+                      name: "omniroute",
+                      type: "http",
+                      protocolVersion: "legacy",
+                      scope: "user",
+                      url: `http://127.0.0.1:${address.port}/mcp`,
+                      headers: [{ name: "Authorization", value: `Bearer ${token}` }],
+                      alwaysLoad: true,
+                      timeoutMs: this.options.continuationTimeoutMs ?? 600_000,
+                    },
+                  ]
+                : [],
+            },
+          ],
+          turn
+        )
       );
       run.sessionId = String(record(state.session).sessionId || "");
       if (!run.sessionId) throw new NativeSessionError("Native session was not created");
@@ -554,18 +679,24 @@ export class NativeZcodeSessionBridge {
         input.messages.length === 1 && typeof input.messages[0].content === "string"
           ? input.messages[0].content
           : `Respond to the latest user request in this caller conversation. Preserve its instructions and history. Only use the provided caller tools.\n${JSON.stringify(input.messages)}`;
-      await client.call("zcode-agent", "sendPrompt", [
-        {
-          ...run.workspace,
-          sessionId: run.sessionId,
-          modelSelection: input.selection,
-          inputId: randomUUID(),
-          content,
-        },
-      ]);
+      await call(
+        client,
+        "zcode-agent",
+        "sendPrompt",
+        [
+          {
+            ...run.workspace,
+            sessionId: run.sessionId,
+            modelSelection: input.selection,
+            inputId: randomUUID(),
+            content,
+          },
+        ],
+        turn
+      );
       return run;
     } catch (error) {
-      await this.dispose(run);
+      await this.dispose(run).catch(() => undefined);
       throw error;
     }
   }
@@ -579,7 +710,7 @@ export class NativeZcodeSessionBridge {
     run.relay.close();
     try {
       if (run.sessionId)
-        await run.client.call("zcode-agent", "closeSession", [
+        await cleanupCall(run.client, "closeSession", [
           {
             ...run.workspace,
             sessionId: run.sessionId,
@@ -590,7 +721,7 @@ export class NativeZcodeSessionBridge {
         // Closing a deferred session does not stop its workspace engine. Native
         // releasePreparation also preserves other sessions in a shared engine.
         try {
-          await run.client.call("zcode-agent", "disposeWorkspace", [
+          await cleanupCall(run.client, "disposeWorkspace", [
             { ...run.workspace, releasePreparation: true },
           ]);
         } finally {

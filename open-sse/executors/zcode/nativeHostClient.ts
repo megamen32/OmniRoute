@@ -1,7 +1,7 @@
 import { open as openFile } from "node:fs/promises";
 import { join } from "node:path";
 import WebSocket, { type RawData } from "ws";
-import { decodeZcodeValue, encodeZcodeRpcCall } from "../zcodeProtocol.ts";
+import { decodeZcodeValue, encodeZcodeRpcCall, type ZcodeCallOptions } from "../zcodeProtocol.ts";
 
 const HEADER_BYTES = 13;
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
@@ -10,7 +10,7 @@ const MAX_METADATA_BYTES = 64 * 1024;
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  cleanup: () => void;
 };
 
 type Options = { serverRoot: string; requestTimeoutMs?: number; startupTimeoutMs?: number };
@@ -151,7 +151,7 @@ export class NativeZcodeHostClient {
       const pending = this.pending.get(id);
       if (!pending) continue;
       this.pending.delete(id);
-      clearTimeout(pending.timer);
+      pending.cleanup();
       if (kind === 201) pending.resolve(payload.value);
       else {
         const error = new Error(
@@ -182,32 +182,53 @@ export class NativeZcodeHostClient {
     if (offset) this.buffer = this.buffer.subarray(offset);
   }
 
-  async call(channel: string, method: string, args: unknown[]): Promise<unknown> {
+  async call(
+    channel: string,
+    method: string,
+    args: unknown[],
+    options: ZcodeCallOptions = {}
+  ): Promise<unknown> {
+    if (options.signal?.aborted) throw new Error("ZCode host request canceled");
     await this.start();
+    if (options.signal?.aborted) throw new Error("ZCode host request canceled");
     const socket = this.socket;
     if (!this.ready || !socket || socket.readyState !== WebSocket.OPEN)
       throw new Error("ZCode host is not ready");
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const failRequest = (message: string) => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
         this.pending.delete(id);
-        reject(new Error("ZCode host request timed out"));
-      }, this.options.requestTimeoutMs ?? 90000);
-      this.pending.set(id, { resolve, reject, timer });
+        pending.cleanup();
+        reject(new Error(message));
+      };
+      const onAbort = () => failRequest("ZCode host request canceled");
+      const timer = setTimeout(
+        () => failRequest("ZCode host request timed out"),
+        options.timeoutMs ?? this.options.requestTimeoutMs ?? 90000
+      );
+      this.pending.set(id, {
+        resolve,
+        reject,
+        cleanup: () => {
+          clearTimeout(timer);
+          options.signal?.removeEventListener("abort", onAbort);
+        },
+      });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
       try {
         socket.send(encodeZcodeRpcCall(id, channel, method, args), (error) => {
           if (!error) return;
           const pending = this.pending.get(id);
           if (pending) {
             this.pending.delete(id);
-            clearTimeout(pending.timer);
+            pending.cleanup();
             pending.reject(new Error("ZCode host transport error"));
           }
         });
       } catch {
-        this.pending.delete(id);
-        clearTimeout(timer);
-        reject(new Error("ZCode host transport error"));
+        failRequest("ZCode host transport error");
       }
     });
   }
@@ -226,7 +247,7 @@ export class NativeZcodeHostClient {
     this.readyReject = undefined;
     this.readyResolve = undefined;
     for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
+      pending.cleanup();
       pending.reject(new Error(message));
     }
     this.pending.clear();
