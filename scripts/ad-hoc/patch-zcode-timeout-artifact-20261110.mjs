@@ -31,6 +31,10 @@ const RECEIPTS = join(ROOT, "_tasks/research/2026-11-10-zcode-timeouts");
 const LOCK = "/home/roomhacker/.local/state/omniroute-deploy.lock";
 export const EXPECTED_LIVE = "30bae46b37";
 const OVERLAY_BASE_SOURCE = "5eeb4c0afcdb0fc4da4fa259068d9b0f21417876";
+const OVERLAY_CURRENT_SOURCE = "3fcd33e0b008024e82d9f941d9bd9ad54b7bf1cc";
+const OVERLAY_CURRENT_SNAPSHOT = "70ffac46331b38fb8977e6513ef417fb9b5853dc3862932330838629a8e14496";
+const V3 = "omniroute-zcode-timeout-patch/3";
+const TARGET_ROLES = ["primary", "standby"];
 const EXECUTOR_SOURCE = "open-sse/executors/zcode.ts";
 export const SOURCES = [
   "open-sse/executors/zcode/nativeHostClient.ts",
@@ -424,6 +428,8 @@ async function remoteStage(inputDirectory) {
   assert.equal(hostname(), "server-44", "Compilation is allowed only on server-44");
   assert.equal(dirname(inputDirectory), REMOTE_ROOT);
   const manifest = json(join(inputDirectory, "input.json"));
+  if (manifest.schema === V3)
+    assert.equal(manifest.compileReviewed, true, "Explicit v3 compile review required");
   const require = createRequire(join(DONOR, "package.json"));
   const { transform } = require("esbuild"),
     { parse } = require("acorn");
@@ -538,14 +544,29 @@ async function remoteStage(inputDirectory) {
     manifest.checks.executorBranchOnly = executorPaths;
     assert(manifest.checks.nonExecutorChunksUnchanged);
   }
+  if (manifest.schema === V3) {
+    assert.equal(manifest.compileReviewed, true, "Explicit v3 compile review required");
+    run("cp", ["-a", join(inputDirectory, "codegen"), join(output, "codegen")]);
+    manifest.files = manifest.files.map(({ before, ...file }) => ({
+      ...file,
+      codegenBefore: before,
+      beforeByTarget: Object.fromEntries(
+        TARGET_ROLES.map((role) => [
+          role,
+          manifest.overlay.targets[role].files.find((f) => f.path === file.path).sha256,
+        ])
+      ),
+    }));
+  }
   save(join(output, "patch.json"), manifest);
   remoteVerify(inputDirectory);
   console.log(JSON.stringify({ phase: "patch-compiled", output, chunks: manifest.chunks.length }));
 }
 // The same bounded smoke runs against future compiled overlays on44 and against
 // handwritten fixtures locally. It never imports or compiles an unfrozen source.
-export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime) {
+export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime, route = {}) {
   const { assert, fs, path, os, crypto } = runtime;
+  const providerId = route.providerId || "account:zai-start-plan";
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "zcode-executor-smoke-"));
   const serverRoot = path.join(scratch, "profile", ".zcode", "server");
   const observed = [];
@@ -663,7 +684,7 @@ export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime
       assert.deepEqual(payload.messages, request.messages);
       assert.deepEqual(payload.tools, request.tools);
       assert.deepEqual(payload.selection, {
-        providerId: "account:zai-start-plan",
+        providerId,
         modelId: "GLM-Fixture",
       });
       assert.equal(payload.maxOutputTokens, useFallback ? 100000 : 32768);
@@ -708,7 +729,7 @@ export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime
     errorText: (e) => e.message,
     asRecord: (v) => (v && typeof v === "object" ? v : {}),
     withAbort,
-    resolveZcodeSelection: () => ({ providerId: "account:zai-start-plan", modelId: "GLM-Fixture" }),
+    resolveZcodeSelection: () => ({ providerId, modelId: "GLM-Fixture" }),
     resolveZcodeMaxTokens: () => (useFallback ? undefined : 32768),
     buildZcodeModelRequest: (value) => {
       assert.deepEqual(value, body);
@@ -723,7 +744,10 @@ export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime
     body,
     signal: new AbortController().signal,
   };
-  const context = { options: { provider: "zcode-start" }, turnTimeoutMs: () => 500 };
+  const context = {
+    options: { provider: route.provider || "zcode-start" },
+    turnTimeoutMs: () => 500,
+  };
   const invoke = (inputValue = input, contextValue = context) =>
     runNativeExecutor.call(contextValue, deps, inputValue, structuredClone(request), {
       model: "GLM-Fixture",
@@ -758,6 +782,154 @@ export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime
       quotaPreserved: true,
       tokenFallback: true,
       mcpDisabled: true,
+    };
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// Inert Start route check: all native I/O is replaced with local fixtures. It
+// checks the executor's bridge contract, not a vendor/model or workspace-pool proof.
+export async function smokeStartExecutor(runNativeExecutor, ErrorClass, runtime) {
+  const { assert, fs, path, os, crypto } = runtime;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "zcode-start-executor-smoke-"));
+  const serverRoot = path.join(scratch, "start-profile/.zcode/server");
+  const selection = { providerId: "account:zai-start-plan", modelId: "GLM-Fixture" };
+  const messages = [{ role: "user", content: "Fixture only" }];
+  const tools = [{ name: "Read", inputSchema: { type: "object" } }];
+  const response = { text: "fixture-ok", toolCalls: [{ id: "fixture", name: "Read", input: {} }] };
+  let constructed = 0,
+    executed = 0,
+    failure,
+    hanging = false;
+  const withAbort = async (promise, signal) => {
+    signal?.throwIfAborted();
+    let listener;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          listener = () => reject(signal.reason);
+          signal.addEventListener("abort", listener, { once: true });
+        }),
+      ]);
+    } finally {
+      signal.removeEventListener("abort", listener);
+    }
+  };
+  class Client {
+    constructor(options) {
+      assert.equal(options.serverRoot, serverRoot);
+    }
+    async start(options) {
+      assert(options.timeoutMs > 0 && options.timeoutMs <= 500);
+      assert(options.signal instanceof AbortSignal);
+      const config = JSON.parse(fs.readFileSync(path.join(serverRoot, "../cli/config.json")));
+      assert.deepEqual(config.features, { mcp: false, subagent: false, memory: false });
+      assert.deepEqual(config.mcp.servers, {});
+      assert.equal(config.plugins.enabled, false);
+      assert.equal(config.hooks.enabled, false);
+    }
+    async call(channel, method) {
+      assert.equal(channel, "model-selection");
+      assert.equal(method, "getView", "Start must use the session bridge after native selection");
+      return {};
+    }
+    async close() {}
+  }
+  class Bridge {
+    constructor(options) {
+      constructed++;
+      assert.equal(options.workspaceRoot, path.join(serverRoot, "caller-workspaces"));
+      assert.equal(options.reuseWorkspaces, true);
+      assert.equal(options.timeoutMs, 500);
+      assert(options.clientFactory() instanceof Client);
+    }
+    async execute(input) {
+      executed++;
+      assert.equal(
+        input.scope,
+        "fixture:account:zai-start-plan:GLM-Fixture:" +
+          crypto.createHash("sha256").update("[]").digest("hex")
+      );
+      assert.deepEqual(input.selection, selection);
+      assert.deepEqual(input.messages, messages);
+      assert.deepEqual(input.tools, tools);
+      assert(input.deadline > Date.now() && input.deadline <= Date.now() + 500);
+      assert(input.signal instanceof AbortSignal);
+      if (failure) throw failure;
+      if (hanging) return withAbort(new Promise(() => {}), input.signal);
+      return response;
+    }
+  }
+  const deps = {
+    nativeZcodeHosts: {
+      ensure: async (credentials) => {
+        assert.equal(credentials.connectionId, "fixture:plain-start");
+        return serverRoot;
+      },
+    },
+    NativeZcodeHostClient: Client,
+    NativeZcodeSessionBridge: Bridge,
+    NativeSessionError: ErrorClass,
+    nativeBridges: new Map(),
+    tmpdir: () => scratch,
+    join: path.join,
+    createHash: crypto.createHash,
+    withAbort,
+    asRecord: (v) => (v && typeof v === "object" ? v : {}),
+    errorResponse: (status, message) => ({ status, message }),
+    sanitizeErrorMessage: (s) => s,
+    errorText: (e) => e.message,
+    resolveZcodeSelection: (_view, _model, providerId) => {
+      assert.equal(providerId, selection.providerId);
+      return selection;
+    },
+    resolveZcodeMaxTokens: () => 32768,
+    buildZcodeModelRequest: () => ({ messages, tools }),
+    modelResponse: (_model, value) => value,
+    isZcodeRequestCancelled: () => false,
+    UPSTREAM_REQUEST_CANCELLED_CODE: "upstream_request_cancelled",
+  };
+  const input = {
+    credentials: { authType: "oauth", connectionId: "fixture" },
+    body: { messages },
+    signal: new AbortController().signal,
+  };
+  const invoke = (value = input, timeout = 500) =>
+    runNativeExecutor.call(
+      { options: { provider: "zcode-start" }, turnTimeoutMs: () => timeout },
+      deps,
+      value,
+      structuredClone({ messages, tools }),
+      { model: "GLM-Fixture" }
+    );
+  try {
+    for (let n = 0; n < 2; n++) {
+      const result = await invoke();
+      assert.equal(result.url, "zcode://native-host/session");
+      assert.deepEqual(result.response, response);
+    }
+    assert.equal(constructed, 1);
+    assert.equal(executed, 2);
+    const cancelled = new AbortController();
+    cancelled.abort();
+    assert.equal((await invoke({ ...input, signal: cancelled.signal })).status, 499);
+    assert.equal(executed, 2);
+    failure = new ErrorClass("fixture quota", 429);
+    assert.equal((await invoke()).status, 429);
+    failure = null;
+    hanging = true;
+    assert.equal((await invoke(input, 100)).status, 504);
+    return {
+      sessionBridge: true,
+      startProfileSuffix: true,
+      isolatedWorkspace: true,
+      bridgeCache: true,
+      callerTools: true,
+      deadlinePassed: true,
+      cancellation: true,
+      quotaPreserved: true,
     };
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
@@ -804,7 +976,11 @@ const all=Object.assign({},require('node:crypto'),require('node:http'),require('
  let executorSmoke=null;
  if(manifest.overlay?.executorMap){
   const p=require(path.join(output,manifest.overlay.sidecarPath));
-  executorSmoke=await (${smokeNativeExecutor.toString()})(p.runNativeExecutor,p.NativeSessionError,{assert,fs,path,os:require('node:os'),crypto:require('node:crypto')});
+  const runtime={assert,fs,path,os:require('node:os'),crypto:require('node:crypto')};
+  executorSmoke=manifest.schema==='omniroute-zcode-timeout-patch/3'
+   ? {individual:await (${smokeNativeExecutor.toString()})(p.runNativeExecutor,p.NativeSessionError,runtime,{provider:'zcode-individual',providerId:'account:zai-individual-coding-plan'}),
+      start:await (${smokeStartExecutor.toString()})(p.runNativeExecutor,p.NativeSessionError,runtime)}
+   : await (${smokeNativeExecutor.toString()})(p.runNativeExecutor,p.NativeSessionError,runtime);
  }
  console.log(JSON.stringify({webpackFactories:tested,hostClients:clients,sessionBridges:bridges,abortedTurns:true,executorSmoke}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -1041,6 +1217,113 @@ async function stageOverlay(sourceSha, baselineDirectory) {
     })
   );
 }
+
+async function stageOverlayV3(sourceSha, baselineDirectory, compileReviewed) {
+  // No SSH, transpilation or new source access happens for a pending draft.
+  fullSha(sourceSha);
+  assert.equal(compileReviewed, true, "V3 compile requires --compile-reviewed after owner signal");
+  baselineDirectory = realpathSync(baselineDirectory);
+  assert(baselineDirectory.startsWith(AREA + "/overlay-base-v3-"));
+  const baseline = json(join(baselineDirectory, "baseline.json"));
+  assert.equal(baseline.schema, "omniroute-zcode-timeout-overlay-base/3");
+  checkOverlayBaseV3(baselineDirectory, baseline);
+  const changed = run(
+    "git",
+    [
+      "diff",
+      "--name-only",
+      OVERLAY_BASE_SOURCE,
+      sourceSha,
+      "--",
+      "open-sse/executors/zcode",
+      EXECUTOR_SOURCE,
+      SOURCES[2],
+    ],
+    { cwd: ROOT }
+  )
+    .split("\n")
+    .filter(Boolean);
+  assert(changed.includes(EXECUTOR_SOURCE), "Unified native executor delta required");
+  const sources = [...SOURCES, EXECUTOR_SOURCE].map((path) => {
+    const bytes = execFileSync("git", ["show", sourceSha + ":" + path], { cwd: ROOT });
+    return { path, sha256: sha256(bytes), bytes };
+  });
+  const sourceSnapshotSha256 = sha256(JSON.stringify(sources.map(({ bytes, ...file }) => file)));
+  const { parse } = createRequire(join(ROOT, "package.json"))("acorn");
+  const overlay = {
+    ...baseline,
+    files: baseline.codegen.files,
+    executorMap: baseline.codegen.executorCandidates.map((entry) =>
+      extendExecutorBindings(read(join(baselineDirectory, "codegen", entry.path)), parse, entry)
+    ),
+  };
+  const manifest = {
+    schema: V3,
+    expectedLive: EXPECTED_LIVE,
+    sourceSha,
+    sourceSnapshotSha256,
+    sources: sources.map(({ bytes, ...file }) => file),
+    overlay,
+    compileReviewed: true,
+    chunks: overlay.files.filter((f) => f.path.endsWith(".js")),
+    lockfileSha256: sha256(
+      execFileSync("git", ["show", sourceSha + ":package-lock.json"], {
+        cwd: ROOT,
+        maxBuffer: 16 * 1024 * 1024,
+      })
+    ),
+    createdAt: stamp(),
+  };
+  checkOverlaySourceCoverage(manifest, changed);
+  Object.assign(manifest, publishedSources(manifest, sourceSha));
+  for (const role of TARGET_ROLES)
+    checkOverlayPreimages(join(role === "primary" ? ROOT : STANDBY, "dist"), manifest, role);
+  const name = "input-v3-" + sourceSnapshotSha256.slice(0, 16);
+  const directory = join(AREA, name);
+  assert(!existsSync(directory), "V3 input exists; inspect previous attempt before replay");
+  mkdirSync(join(directory, "chunks"), { recursive: true, mode: 0o700 });
+  for (const file of sources) {
+    const path = join(directory, "source", file.path);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, file.bytes, { mode: 0o600, flag: "wx" });
+  }
+  for (const chunk of manifest.chunks)
+    writeFileSync(
+      join(directory, "chunks", chunk.path.split("/").at(-1)),
+      readFileSync(join(baselineDirectory, "codegen", chunk.path)),
+      { mode: 0o600, flag: "wx" }
+    );
+  for (const folder of ["rollback", "codegen"])
+    run("cp", ["-a", join(baselineDirectory, folder), join(directory, folder)]);
+  for (const [filename, source] of [
+    ["protocol-before.ts", SOURCES[2]],
+    ["executor-before.ts", EXECUTOR_SOURCE],
+  ])
+    writeFileSync(
+      join(directory, filename),
+      execFileSync("git", ["show", OVERLAY_BASE_SOURCE + ":" + source], { cwd: ROOT }),
+      { mode: 0o600, flag: "wx" }
+    );
+  save(join(directory, "input.json"), manifest);
+  run("ssh", ["-o", "BatchMode=yes", REMOTE, "mkdir -p " + REMOTE_ROOT]);
+  run("scp", ["-q", SELF, REMOTE + ":" + REMOTE_ROOT + "/runner.mjs"]);
+  run("scp", ["-qr", directory, REMOTE + ":" + REMOTE_ROOT + "/"]);
+  run("ssh", ["-o", "BatchMode=yes", REMOTE, "node " + REMOTE_ROOT + "/runner.mjs remote-stage"], {
+    input: JSON.stringify({ directory: join(REMOTE_ROOT, name) }),
+    stdio: ["pipe", "inherit", "inherit"],
+  });
+  run("scp", ["-qr", REMOTE + ":" + join(REMOTE_ROOT, name, "output"), directory + "/"]);
+  const artifact = join(directory, "output");
+  const result = checkArtifact(artifact, sourceSha).manifest;
+  const receipt = join(RECEIPTS, "deploy-prepare-v3-staged-" + stamp() + ".json");
+  save(receipt, {
+    ...result,
+    artifact,
+    productionChanged: false,
+    status: "compiled-awaiting-owner-review",
+  });
+  console.log(JSON.stringify({ phase: "overlay-v3-staged", artifact, receipt, sourceSha }));
+}
 function overlayBaseFiles(dist) {
   const raw = readFileSync(join(dist, "RUNTIME_PATCHES.json"));
   const manifest = JSON.parse(raw);
@@ -1137,7 +1420,212 @@ function captureOverlayBase() {
     })
   );
 }
-export function checkOverlayPreimages(dist, manifest) {
+// V3 keeps the reviewed installed state separate from the frozen code generator.
+// The manifest digest also binds every per-file hash and correction metadata.
+export function readOverlayTargetV3(dist, review, role) {
+  assert(TARGET_ROLES.includes(role), "Explicit overlay target role required");
+  assert.equal(review.schema, "omniroute-zcode-overlay-review/3");
+  assert.equal(review.expectedLive, EXPECTED_LIVE);
+  assert.equal(review.expectedSourceSha, OVERLAY_CURRENT_SOURCE);
+  assert.equal(review.expectedSnapshotSha256, OVERLAY_CURRENT_SNAPSHOT);
+  assert.equal(read(join(dist, "BUILD_SHA")).trim(), EXPECTED_LIVE);
+  const raw = readFileSync(join(dist, "RUNTIME_PATCHES.json"));
+  const current = JSON.parse(raw);
+  assert.equal(sha256(raw), review.targets[role].manifestSha256, "Reviewed manifest changed");
+  assert.equal(current.sourceSha, review.expectedSourceSha);
+  assert.equal(current.sourceSnapshotSha256, review.expectedSnapshotSha256);
+  const providerScope = current.providerScope || null;
+  assert.equal(providerScope, review.targets[role].providerScope);
+  assert.equal(providerScope, role === "primary" ? "individual" : null);
+  if (role === "primary")
+    assert.equal(current.partialSourceApplication?.startSource, OVERLAY_BASE_SOURCE);
+  assert.equal(review.correction.id, "zcode-route-rejection-20261110");
+  const correction = current.runtimeCorrections?.filter((c) => c.id === review.correction.id);
+  assert.equal(correction?.length, 1, "Runtime correction metadata missing");
+  assert.equal(correction[0].status, 502);
+  assert.equal(correction[0].code, "upstream_response_failed");
+  assert.equal(current.files.length, 8);
+  const files = current.files.map((file) => {
+    assert.equal(dirname(file.path), CHUNKS);
+    assert(/^[a-zA-Z0-9_-]+\.(js|cjs)$/.test(file.path.split("/").at(-1)));
+    assert.equal(sha256(readFileSync(join(dist, file.path))), file.after, "Installed file changed");
+    return { path: file.path, sha256: file.after, coverage: file.coverage || [] };
+  });
+  assert.equal(new Set(files.map((f) => f.path)).size, 8);
+  assert.deepEqual(
+    files
+      .filter((f) => f.path.endsWith(".js"))
+      .map((f) => f.path)
+      .sort(),
+    [11355, 14726, 36827, 37000, 41147, 61952, 77299].map((id) => join(CHUNKS, id + ".js"))
+  );
+  const sidecars = files.filter((f) => f.path.endsWith(".cjs"));
+  assert.equal(sidecars.length, 1);
+  assert.equal(
+    sidecars[0].sha256,
+    review.correction.sidecarSha256,
+    "Runtime correction bytes changed"
+  );
+  return {
+    sourceSha: current.sourceSha,
+    sourceSnapshotSha256: current.sourceSnapshotSha256,
+    manifestSha256: sha256(raw),
+    providerScope,
+    sidecarPath: sidecars[0].path,
+    files,
+  };
+}
+
+export function captureOverlayBaseV3({ directory, review, frozenDirectory, targets }) {
+  assert(!existsSync(directory), "Base output already exists; review before replay");
+  const baselineRaw = readFileSync(join(frozenDirectory, "baseline.json"));
+  assert.equal(
+    sha256(baselineRaw),
+    review.codegen.baselineSha256,
+    "Frozen codegen baseline changed"
+  );
+  const frozen = JSON.parse(baselineRaw);
+  assert.equal(frozen.schema, "omniroute-zcode-timeout-overlay-base/1");
+  assert.equal(frozen.expectedSourceSha, OVERLAY_BASE_SOURCE);
+  assert.equal(frozen.expectedLive, EXPECTED_LIVE);
+  assert.equal(frozen.executorCandidates.length, 2);
+  const files = [...frozen.files, ...frozen.extraFiles];
+  assert.equal(files.length, 8);
+  assert.equal(new Set(files.map((f) => f.path)).size, 8);
+  for (const file of files) {
+    assert.equal(dirname(file.path), CHUNKS);
+    assert.equal(
+      sha256(readFileSync(join(frozenDirectory, "rollback", file.path))),
+      file.sha256,
+      "Frozen codegen file changed"
+    );
+  }
+  const snapshots = Object.fromEntries(
+    TARGET_ROLES.map((role) => [role, readOverlayTargetV3(targets[role], review, role)])
+  );
+  for (const role of TARGET_ROLES) {
+    assert.deepEqual(
+      snapshots[role].files.map((f) => f.path).sort(),
+      files.map((f) => f.path).sort()
+    );
+    assert.equal(snapshots[role].sidecarPath, frozen.sidecarPath);
+    const destination = join(directory, "rollback", role);
+    mkdirSync(destination, { recursive: true, mode: 0o700 });
+    for (const file of snapshots[role].files) {
+      const path = join(destination, file.path);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, readFileSync(join(targets[role], file.path)), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      assert.equal(sha256(readFileSync(path)), file.sha256, "Rollback copy changed");
+    }
+    writeFileSync(
+      join(destination, "RUNTIME_PATCHES.json"),
+      readFileSync(join(targets[role], "RUNTIME_PATCHES.json")),
+      { mode: 0o600, flag: "wx" }
+    );
+    assert.equal(
+      sha256(readFileSync(join(destination, "RUNTIME_PATCHES.json"))),
+      snapshots[role].manifestSha256
+    );
+  }
+  for (const file of files) {
+    const path = join(directory, "codegen", file.path);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, readFileSync(join(frozenDirectory, "rollback", file.path)), {
+      mode: 0o600,
+      flag: "wx",
+    });
+  }
+  writeFileSync(join(directory, "codegen/baseline.json"), baselineRaw, { mode: 0o600, flag: "wx" });
+  const baseline = {
+    schema: "omniroute-zcode-timeout-overlay-base/3",
+    expectedLive: EXPECTED_LIVE,
+    review,
+    targets: snapshots,
+    codegen: {
+      expectedSourceSha: OVERLAY_BASE_SOURCE,
+      baselineSha256: sha256(baselineRaw),
+      files,
+      executorCandidates: frozen.executorCandidates,
+    },
+    sidecarPath: frozen.sidecarPath,
+    capturedAt: new Date().toISOString(),
+  };
+  for (const role of TARGET_ROLES)
+    assert.deepEqual(readOverlayTargetV3(targets[role], review, role), snapshots[role]);
+  checkOverlayBaseV3(directory, baseline);
+  save(join(directory, "baseline.json"), baseline);
+  return baseline;
+}
+
+export function checkOverlayBaseV3(directory, overlay) {
+  assert.equal(overlay.expectedLive, EXPECTED_LIVE);
+  assert.equal(overlay.codegen.expectedSourceSha, OVERLAY_BASE_SOURCE);
+  const raw = readFileSync(join(directory, "codegen/baseline.json"));
+  assert.equal(
+    sha256(raw),
+    overlay.review.codegen.baselineSha256,
+    "Frozen codegen manifest changed"
+  );
+  assert.equal(overlay.codegen.baselineSha256, sha256(raw));
+  const frozen = JSON.parse(raw);
+  assert.deepEqual(overlay.codegen.files, [...frozen.files, ...frozen.extraFiles]);
+  assert.deepEqual(overlay.codegen.executorCandidates, frozen.executorCandidates);
+  assert.equal(overlay.sidecarPath, frozen.sidecarPath);
+  for (const file of overlay.codegen.files) {
+    assert.equal(dirname(file.path), CHUNKS);
+    assert.equal(
+      sha256(readFileSync(join(directory, "codegen", file.path))),
+      file.sha256,
+      "Frozen codegen file changed"
+    );
+  }
+  for (const role of TARGET_ROLES) {
+    const target = overlay.targets[role];
+    const root = join(directory, "rollback", role);
+    assert.equal(
+      sha256(readFileSync(join(root, "RUNTIME_PATCHES.json"))),
+      target.manifestSha256,
+      "Current rollback manifest changed"
+    );
+    // The reviewed manifest, not just a mutable snapshot, binds rollback bytes.
+    const current = JSON.parse(read(join(root, "RUNTIME_PATCHES.json")));
+    assert.equal(target.manifestSha256, overlay.review.targets[role].manifestSha256);
+    assert.equal(current.sourceSha, overlay.review.expectedSourceSha);
+    assert.equal(current.sourceSnapshotSha256, overlay.review.expectedSnapshotSha256);
+    assert.deepEqual(
+      target.files,
+      current.files.map((f) => ({ path: f.path, sha256: f.after, coverage: f.coverage || [] }))
+    );
+    for (const file of target.files) {
+      assert.equal(dirname(file.path), CHUNKS);
+      assert.equal(
+        sha256(readFileSync(join(root, file.path))),
+        file.sha256,
+        "Current rollback file changed"
+      );
+    }
+  }
+}
+
+export function overlayTargetFilesV3(manifest, role) {
+  assert(TARGET_ROLES.includes(role), "Explicit overlay target role required");
+  return manifest.files.map(({ codegenBefore, beforeByTarget, ...file }) => {
+    const base = manifest.overlay.targets[role].files.find((f) => f.path === file.path);
+    assert(base && beforeByTarget[role] === base.sha256, "Target preimage mapping changed");
+    return { ...file, before: beforeByTarget[role] };
+  });
+}
+
+export function checkOverlayPreimages(dist, manifest, targetRole) {
+  if (manifest.schema === V3) {
+    assert.equal(manifest.expectedLive, EXPECTED_LIVE);
+    const snapshot = readOverlayTargetV3(dist, manifest.overlay.review, targetRole);
+    assert.deepEqual(snapshot, manifest.overlay.targets[targetRole], "Target snapshot changed");
+    return;
+  }
   const overlay = manifest.overlay;
   assert(overlay, "Overlay metadata required");
   assert.equal(read(join(dist, "BUILD_SHA")).trim(), EXPECTED_LIVE);
@@ -1164,6 +1652,7 @@ export function checkOverlayPreimages(dist, manifest) {
     );
 }
 export function checkOverlayArtifact(directory, manifest) {
+  if (manifest.schema === V3) return checkOverlayArtifactV3(directory, manifest);
   const overlay = manifest.overlay;
   assert.equal(manifest.schema, "omniroute-zcode-timeout-patch/2");
   assert.equal(overlay.expectedSourceSha, OVERLAY_BASE_SOURCE);
@@ -1223,6 +1712,89 @@ export function checkOverlayArtifact(directory, manifest) {
     ])
       assert.equal(manifest.checks.webpackFactories?.executorSmoke?.[check], true);
   } else assert.equal(manifest.checks.wrapperChunksUnchanged, true);
+}
+export function checkOverlayArtifactV3(directory, manifest) {
+  assert.equal(manifest.schema, V3);
+  assert.equal(manifest.compileReviewed, true, "Explicit v3 compile review required");
+  checkOverlayBaseV3(directory, manifest.overlay);
+  const overlay = manifest.overlay;
+  assert.deepEqual(overlay.files, overlay.codegen.files);
+  const { parse } = createRequire(join(ROOT, "package.json"))("acorn");
+  assert.deepEqual(
+    overlay.executorMap,
+    overlay.codegen.executorCandidates.map((entry) =>
+      extendExecutorBindings(read(join(directory, "codegen", entry.path)), parse, entry)
+    )
+  );
+  assert.deepEqual(overlay.executorMap.map((f) => f.path).sort(), [
+    join(CHUNKS, "37000.js"),
+    join(CHUNKS, "41147.js"),
+  ]);
+  for (const entry of overlay.executorMap) {
+    assert.equal(entry.individualOnly, undefined, "V3 requires the unified native branch");
+    const patched = patchExecutorBranch(
+      read(join(directory, "codegen", entry.path)),
+      parse,
+      entry,
+      overlay.sidecarPath.split("/").at(-1)
+    );
+    assert.equal(
+      sha256(patched.after),
+      manifest.files.find((f) => f.path === entry.path)?.after,
+      "Executor output differs outside the frozen native branch"
+    );
+  }
+  assert.equal(manifest.files.length, 8);
+  assert.equal(new Set(manifest.files.map((f) => f.path)).size, 8);
+  for (const role of TARGET_ROLES) {
+    const files = overlayTargetFilesV3(manifest, role);
+    assert.deepEqual(
+      files
+        .filter((f) => f.before !== f.after)
+        .map((f) => f.path)
+        .sort(),
+      [overlay.sidecarPath, ...overlay.executorMap.map((f) => f.path)].sort(),
+      "V3 replacements exceed sidecar and native executor branches"
+    );
+  }
+  for (const file of manifest.files) {
+    assert.equal(file.before, undefined, "V3 must not use a shared before hash");
+    assert.equal(
+      file.codegenBefore,
+      overlay.codegen.files.find((f) => f.path === file.path)?.sha256
+    );
+    assert.equal(sha256(readFileSync(join(directory, file.path))), file.after);
+  }
+  assert.equal(manifest.checks.nonExecutorChunksUnchanged, true);
+  assert.deepEqual(
+    manifest.checks.executorBranchOnly,
+    overlay.executorMap.map((f) => f.path)
+  );
+  const smoke = manifest.checks.webpackFactories?.executorSmoke;
+  for (const check of [
+    "boundedPreflight",
+    "deadlinePassed",
+    "cancellation",
+    "generateWorkspaceText",
+    "callerTools",
+    "noAgentSessions",
+    "isolatedWorkspace",
+    "quotaPreserved",
+    "tokenFallback",
+    "mcpDisabled",
+  ])
+    assert.equal(smoke?.individual?.[check], true);
+  for (const check of [
+    "sessionBridge",
+    "startProfileSuffix",
+    "isolatedWorkspace",
+    "bridgeCache",
+    "callerTools",
+    "deadlinePassed",
+    "cancellation",
+    "quotaPreserved",
+  ])
+    assert.equal(smoke?.start?.[check], true);
 }
 export function checkOverlaySourceCoverage(manifest, changed) {
   assert(
@@ -1340,9 +1912,11 @@ function checkArtifact(directory, sourceSha) {
   assert(directory.startsWith(AREA + "/input-") && directory.endsWith("/output"));
   const manifest = json(join(directory, "patch.json"));
   assert(
-    ["omniroute-zcode-timeout-patch/1", "omniroute-zcode-timeout-patch/2"].includes(manifest.schema)
+    ["omniroute-zcode-timeout-patch/1", "omniroute-zcode-timeout-patch/2", V3].includes(
+      manifest.schema
+    )
   );
-  assert.equal(Boolean(manifest.overlay), manifest.schema.endsWith("/2"));
+  assert.equal(Boolean(manifest.overlay), manifest.schema !== "omniroute-zcode-timeout-patch/1");
   assert.equal(manifest.expectedLive, EXPECTED_LIVE);
   assert.equal(manifest.compiledOn, "server-44");
   assert(
@@ -1379,8 +1953,8 @@ function checkArtifact(directory, sourceSha) {
   Object.assign(manifest, publishedSources(manifest, sourceSha));
   return { directory, manifest };
 }
-export function checkPreimages(dist, manifest) {
-  if (manifest.overlay) return checkOverlayPreimages(dist, manifest);
+export function checkPreimages(dist, manifest, role) {
+  if (manifest.overlay) return checkOverlayPreimages(dist, manifest, role);
   assert.equal(read(join(dist, "BUILD_SHA")).trim(), EXPECTED_LIVE);
   assert.deepEqual(inventory(dist), manifest.chunks, "Compiled baseline chunk inventory changed");
   for (const file of manifest.files) {
@@ -1389,8 +1963,10 @@ export function checkPreimages(dist, manifest) {
     else assert.equal(sha256(readFileSync(path)), file.before, "Runtime preimage changed");
   }
 }
-export function installFiles(dist, directory, manifest) {
-  for (const file of manifest.files) {
+export function installFiles(dist, directory, manifest, role) {
+  if (manifest.schema === V3) checkOverlayPreimages(dist, manifest, role);
+  const files = manifest.schema === V3 ? overlayTargetFilesV3(manifest, role) : manifest.files;
+  for (const file of files) {
     if (file.before === file.after) continue;
     const destination = join(dist, file.path);
     writeFileSync(destination + ".timeout-new", readFileSync(join(directory, file.path)), {
@@ -1417,7 +1993,7 @@ export function installFiles(dist, directory, manifest) {
     sourceSnapshotSha256: manifest.sourceSnapshotSha256,
     compiledOn: manifest.compiledOn,
     appliedAt: stamp(),
-    files: manifest.files,
+    files,
     ...(manifest.providerScope
       ? {
           providerScope: manifest.providerScope,
@@ -1429,7 +2005,13 @@ export function installFiles(dist, directory, manifest) {
       ? {
           previousManifestSha256: sha256(previousRaw),
           checks: manifest.checks,
-          rollbackSourceSha: manifest.overlay.expectedSourceSha,
+          rollbackSourceSha:
+            manifest.schema === V3
+              ? manifest.overlay.targets[role].sourceSha
+              : manifest.overlay.expectedSourceSha,
+          ...(manifest.schema === V3
+            ? { overlayTargetRole: role, codegenSourceSha: OVERLAY_BASE_SOURCE }
+            : {}),
           overlayOnly: manifest.overlay.sidecarPath,
         }
       : {}),
@@ -1739,6 +2321,8 @@ function assertFlock() {
 async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfile = false) {
   assertFlock();
   const { manifest } = checkArtifact(directory, sourceSha);
+  if (manifest.schema === V3)
+    assert.equal(resetNativeProfile, false, "V3 overlay must preserve all native profiles");
   const before = await inspect();
   const port = mode === "standby" ? 20130 : 20128;
   if (resetNativeProfile)
@@ -1766,7 +2350,7 @@ async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfi
     // The Lead reviews the consumer evidence. Preserve its exact hash in the receipt.
   }
   const sourceDist = port === 20130 ? frozen : join(ROOT, "dist");
-  checkPreimages(sourceDist, manifest);
+  checkPreimages(sourceDist, manifest, mode);
   const tag = stamp() + "-" + manifest.sourceSnapshotSha256.slice(0, 12);
   const resetPlan = resetNativeProfile
     ? planNativeProfileReset({
@@ -1779,7 +2363,7 @@ async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfi
     port === 20130 ? join(STANDBY, "snapshots/timeout-" + tag) : join(AREA, "primary-stage-" + tag);
   assert(!existsSync(staged));
   run("cp", ["-a", "--reflink=auto", sourceDist, staged]);
-  installFiles(staged, directory, manifest);
+  installFiles(staged, directory, manifest, mode);
   const adminInfo = discoverAdmin();
   const { runReleaseAdmin } = await import(pathToFileURL(adminInfo.cli).href);
   const owner = {
@@ -1840,13 +2424,13 @@ async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfi
     proof = json(proofPath);
     result.leaseAcquired = true;
     save(receipt, result);
-    checkPreimages(sourceDist, manifest);
+    checkPreimages(sourceDist, manifest, mode);
     assert.deepEqual(processState(port), port === 20130 ? before.standby : before.primary);
     assert.equal(readlinkSync(join(STANDBY, "dist")), before.standbyTarget);
     assert.equal(await health(port === 20130 ? 20128 : 20130), 200);
     // Last awaited gate before touching the running service. Never log its capability.
     await leaseCheck();
-    checkPreimages(sourceDist, manifest);
+    checkPreimages(sourceDist, manifest, mode);
     assert.deepEqual(processState(port), port === 20130 ? before.standby : before.primary);
     assert.equal(readlinkSync(join(STANDBY, "dist")), before.standbyTarget);
     stopAttempted = true;
@@ -1926,7 +2510,8 @@ async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfi
         await waitReady(port);
         checkPreimages(
           port === 20130 ? realpathSync(join(STANDBY, "dist")) : join(ROOT, "dist"),
-          manifest
+          manifest,
+          mode
         );
         if (resetPlan) assert.equal(processState(port).nativeInode, resetPlan.expectedInode);
         result.runtimeRolledBack = true;
@@ -1975,12 +2560,15 @@ async function main() {
     "--baseline",
     "--locked",
     "--reset-native-profile",
+    "--review",
+    "--compile-reviewed",
   ]);
   const flags = {};
   for (let i = 0; i < args.length; i++) {
     assert(allowed.has(args[i]) && !(args[i] in flags), "Unknown or duplicate argument");
     const flag = args[i];
-    if (["--locked", "--reset-native-profile"].includes(flag)) flags[flag] = true;
+    if (["--locked", "--reset-native-profile", "--compile-reviewed"].includes(flag))
+      flags[flag] = true;
     else {
       assert(args[i + 1] && !args[i + 1].startsWith("--"), "Missing argument value");
       flags[flag] = args[++i];
@@ -1998,6 +2586,57 @@ async function main() {
   }
   assert.equal(hostname(), "roomhacker-server-100");
   assert.equal(realpathSync(process.cwd()), ROOT);
+  if (mode === "overlay-base-v3") {
+    if (!flags["--locked"]) {
+      const child = spawnSync(
+        "flock",
+        ["-n", "--no-fork", LOCK, process.execPath, SELF, mode, ...args, "--locked"],
+        { stdio: "inherit" }
+      );
+      process.exitCode = child.status ?? 1;
+      return;
+    }
+    assertFlock();
+    const review = json(resolve(flags["--review"]));
+    const before = { primary: processState(20128), standby: processState(20130) };
+    assert.equal(before.primary.pkg, ROOT);
+    assert.equal(before.standby.pkg, STANDBY);
+    assert.notEqual(before.primary.nativeInode, before.standby.nativeInode);
+    const directory = join(AREA, "overlay-base-v3-" + stamp());
+    const baseline = captureOverlayBaseV3({
+      directory,
+      review,
+      frozenDirectory: realpathSync(flags["--baseline"]),
+      targets: { primary: join(ROOT, "dist"), standby: join(STANDBY, "dist") },
+    });
+    assert.deepEqual(processState(20128), before.primary);
+    assert.deepEqual(processState(20130), before.standby);
+    const receipt = join(RECEIPTS, "deploy-prepare-v3-baseline-" + stamp() + ".json");
+    save(receipt, {
+      ...baseline,
+      directory,
+      instances: before,
+      candidateSourceSha: null,
+      productionChanged: false,
+      compiled: false,
+      status: "inert-base-awaiting-owner-compile-signal",
+    });
+    console.log(
+      JSON.stringify({
+        phase: "overlay-base-v3-captured",
+        directory,
+        receipt,
+        productionChanged: false,
+      })
+    );
+    return;
+  }
+  if (mode === "stage-overlay-v3")
+    return stageOverlayV3(
+      flags["--source-sha"],
+      flags["--baseline"],
+      Boolean(flags["--compile-reviewed"])
+    );
   if (mode === "overlay-base") {
     if (!flags["--locked"]) {
       const child = spawnSync(
@@ -2030,7 +2669,7 @@ async function main() {
   if (mode === "prepare") {
     const { manifest } = checkArtifact(directory, sourceSha);
     const state = await inspect();
-    checkPreimages(join(ROOT, "dist"), manifest);
+    checkPreimages(join(ROOT, "dist"), manifest, "primary");
     save(join(directory, "patch.json"), manifest);
     const receipt = join(RECEIPTS, "deploy-prepare-ready-" + stamp() + ".json");
     save(receipt, { ...manifest, state, artifact: directory, productionChanged: false });
