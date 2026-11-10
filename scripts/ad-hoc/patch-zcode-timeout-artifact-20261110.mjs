@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -86,12 +87,178 @@ function nativeBranch(text, parse, sourceType = "script") {
     if (
       node.type === "IfStatement" &&
       text.slice(node.test.start, node.test.end).includes("native-host") &&
-      text.slice(node.consequent.start, node.consequent.end).includes("zcode://native-host/session")
+      (text
+        .slice(node.consequent.start, node.consequent.end)
+        .includes("zcode://native-host/session") ||
+        text.slice(node.consequent.start, node.consequent.end).includes('"generateWorkspaceText"'))
     )
       hits.push(node.consequent);
   });
   assert.equal(hits.length, 1, "Native executor branch is ambiguous");
   return hits[0];
+}
+// These functions already exist in both frozen webpack factories. Do not add
+// imports or replace a factory to make new native-only request mapping work.
+export function extendExecutorBindings(text, parse, entry) {
+  assert.equal(sha256(text), entry.sha256, "Executor preimage changed");
+  const node = nativeBranch(text, parse);
+  assert.equal(sha256(text.slice(node.start, node.end)), entry.branchSha256);
+  const dependencies = { ...entry.dependencies };
+  for (const [name, binding] of Object.entries({
+    buildZcodeModelRequest: "C",
+    resolveZcodeMaxTokens: "z",
+  })) {
+    assert(text.includes("function " + binding + "("), "Body helper binding changed");
+    assert(!dependencies[name] || dependencies[name] === binding);
+    dependencies[name] = binding;
+  }
+  return { ...entry, dependencies };
+}
+function nativeOutsideWithCleanup(previousCode, candidateCode, parse, previousBlock) {
+  const options = { ecmaVersion: "latest", sourceType: "module" };
+  const previous = parse(previousCode, options),
+    candidate = parse(candidateCode, options);
+  const imports = candidate.body.filter((node) => node.type === "ImportDeclaration");
+  const exactImport = (node, source, names) =>
+    node.type === "ImportDeclaration" &&
+    node.source.value === source &&
+    !node.attributes?.length &&
+    !node.assertions?.length &&
+    node.specifiers.length === names.length &&
+    node.specifiers.every(
+      (specifier, index) =>
+        specifier.type === "ImportSpecifier" &&
+        specifier.imported.name === names[index] &&
+        specifier.local.name === names[index]
+    );
+  const changes = [],
+    removed = new Set();
+  const remove = (node, name) => {
+    // Remove only this statement and its terminating newline, not surrounding
+    // code/comments/whitespace. This is deletion-only, never normalize additions.
+    const end = previousCode.startsWith("\r\n", node.end)
+      ? node.end + 2
+      : previousCode[node.end] === "\n"
+        ? node.end + 1
+        : node.end;
+    changes.push({ node, start: node.start, end, replacement: "" });
+    removed.add(name);
+  };
+  for (const node of previous.body) {
+    for (const [source, name] of [
+      ["node:crypto", "createHash"],
+      ["node:os", "tmpdir"],
+    ])
+      if (
+        exactImport(node, source, [name]) &&
+        !imports.some((entry) =>
+          entry.specifiers.some((specifier) => specifier.local.name === name)
+        )
+      )
+        remove(node, name);
+    if (
+      exactImport(node, "./zcode/nativeSession.ts", [
+        "NativeZcodeSessionBridge",
+        "NativeSessionError",
+      ]) &&
+      !imports.some((entry) =>
+        entry.specifiers.some((specifier) => specifier.local.name === "NativeZcodeSessionBridge")
+      )
+    ) {
+      const retained = imports.filter((entry) =>
+        exactImport(entry, "./zcode/nativeSession.ts", ["NativeSessionError"])
+      );
+      assert.equal(retained.length, 1, "NativeSessionError import changed outside native branch");
+      changes.push({
+        node,
+        start: node.start,
+        end: node.end,
+        replacement: candidateCode.slice(retained[0].start, retained[0].end),
+      });
+      removed.add("NativeZcodeSessionBridge");
+    }
+    const declaration = node.type === "VariableDeclaration" && node.declarations[0];
+    if (
+      node.kind === "const" &&
+      node.declarations?.length === 1 &&
+      declaration.id.type === "Identifier" &&
+      declaration.id.name === "nativeBridges" &&
+      declaration.init?.type === "NewExpression" &&
+      declaration.init.callee.type === "Identifier" &&
+      declaration.init.callee.name === "Map" &&
+      declaration.init.arguments.length === 0 &&
+      !candidate.body.some(
+        (entry) =>
+          entry.type === "VariableDeclaration" &&
+          entry.declarations.some((value) => value.id.name === "nativeBridges")
+      )
+    )
+      remove(node, "nativeBridges");
+  }
+  const ignored = new Set([previousBlock, ...changes.map((change) => change.node)]);
+  const referencedOutside = (node) => {
+    if (!node || typeof node !== "object" || ignored.has(node)) return false;
+    // previousBlock came from the selector's separate parse. Compare its exact
+    // range rather than node identity so old native-only uses remain excluded.
+    if (
+      node.type === "BlockStatement" &&
+      node.start === previousBlock.start &&
+      node.end === previousBlock.end
+    )
+      return false;
+    if (node.type === "Identifier" && removed.has(node.name)) return true;
+    return Object.values(node).some((value) =>
+      Array.isArray(value) ? value.some(referencedOutside) : referencedOutside(value)
+    );
+  };
+  assert(
+    !referencedOutside(previous),
+    "Removed native binding is still used outside native branch"
+  );
+  changes.push({ start: previousBlock.start, end: previousBlock.end, replacement: "{}" });
+  let normalized = previousCode;
+  for (const change of changes.sort((a, b) => b.start - a.start))
+    normalized =
+      normalized.slice(0, change.start) + change.replacement + normalized.slice(change.end);
+  return normalized;
+}
+export function nativeExecutorSource(previousCode, candidateCode, parse, dependencies) {
+  const previousBlock = nativeBranch(previousCode, parse, "module");
+  const candidateBlock = nativeBranch(candidateCode, parse, "module");
+  const outside = (text, block) => text.slice(0, block.start) + "{}" + text.slice(block.end);
+  assert.equal(
+    outside(candidateCode, candidateBlock),
+    nativeOutsideWithCleanup(previousCode, candidateCode, parse, previousBlock),
+    "Executor changes outside the native-host branch require an expanded review"
+  );
+  const body = candidateCode.slice(candidateBlock.start + 1, candidateBlock.end - 1);
+  assert(body.includes('"generateWorkspaceText"'), "Expected plain native model route");
+  // The frozen bundler inlined this helper at its old call site. Reuse its
+  // unchanged source inside the native wrapper, rather than inventing a binding.
+  const helper = parse(candidateCode, { ecmaVersion: "latest", sourceType: "module" }).body.find(
+    (node) => node.type === "FunctionDeclaration" && node.id?.name === "boundMaxOutputTokens"
+  );
+  const local = /\bboundMaxOutputTokens\b/.test(body) ? helper : null;
+  assert(!/\bboundMaxOutputTokens\b/.test(body) || local, "Native token-bound helper is missing");
+  const constant = parse(candidateCode, { ecmaVersion: "latest", sourceType: "module" })
+    .body.filter((node) => node.type === "VariableDeclaration")
+    .flatMap((node) => node.declarations)
+    .find((node) => node.id?.name === "fallbackMaxTokens");
+  const needsFallback = /\bfallbackMaxTokens\b/.test(body);
+  if (needsFallback) assert.equal(constant?.init?.value, 128000, "Fallback token bound changed");
+  return (
+    "exports.runNativeExecutor=async function(__dependencies,input,request,resolution){const {" +
+    Object.keys(dependencies).join(",") +
+    "}=__dependencies;\n" +
+    (local ? candidateCode.slice(local.start, local.end) + "\n" : "") +
+    (needsFallback
+      ? "const fallbackMaxTokens=" +
+        candidateCode.slice(constant.init.start, constant.init.end) +
+        ";\n"
+      : "") +
+    body +
+    "\n};\n"
+  );
 }
 function executorMap(dist) {
   const require = createRequire(join(ROOT, "package.json"));
@@ -299,21 +466,12 @@ async function remoteStage(inputDirectory) {
     const candidateCode = (
       await transform(read(join(inputDirectory, "source", EXECUTOR_SOURCE)), options)
     ).code;
-    const previousBlock = nativeBranch(previousCode, parse, "module");
-    const candidateBlock = nativeBranch(candidateCode, parse, "module");
-    const outside = (text, block) => text.slice(0, block.start) + "{}" + text.slice(block.end);
-    assert.equal(
-      outside(candidateCode, candidateBlock),
-      outside(previousCode, previousBlock),
-      "Executor changes outside the native-host branch require an expanded review"
+    bundle += nativeExecutorSource(
+      previousCode,
+      candidateCode,
+      parse,
+      manifest.overlay.executorMap[0].dependencies
     );
-    const names = Object.keys(manifest.overlay.executorMap[0].dependencies).join(",");
-    bundle +=
-      "exports.runNativeExecutor=async function(__dependencies,input,request,resolution){const {" +
-      names +
-      "}=__dependencies;\n" +
-      candidateCode.slice(candidateBlock.start + 1, candidateBlock.end - 1) +
-      "\n};\n";
   }
   const output = join(inputDirectory, "output");
   assert(!existsSync(output), "Output exists; inspect the previous attempt before replay");
@@ -373,6 +531,227 @@ async function remoteStage(inputDirectory) {
   remoteVerify(inputDirectory);
   console.log(JSON.stringify({ phase: "patch-compiled", output, chunks: manifest.chunks.length }));
 }
+// The same bounded smoke runs against future compiled overlays on44 and against
+// handwritten fixtures locally. It never imports or compiles an unfrozen source.
+export async function smokeNativeExecutor(runNativeExecutor, ErrorClass, runtime) {
+  const { assert, fs, path, os, crypto } = runtime;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "zcode-executor-smoke-"));
+  const serverRoot = path.join(scratch, "profile", ".zcode", "server");
+  const observed = [];
+  let failure,
+    hanging = false,
+    generated = 0,
+    useFallback = false;
+  const request = {
+    messages: [
+      { role: "system", content: "Caller owns tools." },
+      { role: "user", content: "Read fixture." },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "read-fixture", name: "Read", input: { filePath: "/fixture/non-secret" } },
+        ],
+      },
+      { role: "tool", content: "fixture-nonce", toolCallId: "read-fixture", toolName: "Read" },
+    ],
+    tools: [
+      {
+        name: "Read",
+        description: "Caller tool",
+        inputSchema: { type: "object", properties: { filePath: { type: "string" } } },
+      },
+    ],
+    maxOutputTokens: 100000,
+  };
+  const body = {
+    messages: [
+      ...request.messages.slice(0, 2),
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "read-fixture",
+            type: "function",
+            function: { name: "Read", arguments: '{"filePath":"/fixture/non-secret"}' },
+          },
+        ],
+      },
+      { role: "tool", content: "fixture-nonce", tool_call_id: "read-fixture" },
+    ],
+    tools: [
+      { type: "function", function: { name: "Read", parameters: request.tools[0].inputSchema } },
+    ],
+    max_tokens: 100000,
+  };
+  const nativeResult = {
+    text: "fixture-ok",
+    usage: { inputTokens: 13, outputTokens: 3 },
+    toolCalls: [{ id: "next-read", name: "Read", input: { filePath: "/fixture/next" } }],
+  };
+  const withAbort = async (promise, signal) => {
+    signal?.throwIfAborted();
+    if (!signal) return promise;
+    let listener;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          listener = () => reject(signal.reason);
+          signal.addEventListener("abort", listener, { once: true });
+        }),
+      ]);
+    } finally {
+      signal.removeEventListener("abort", listener);
+    }
+  };
+  const bounded = (options) => {
+    assert(options?.timeoutMs > 0 && options.timeoutMs <= 500);
+    assert(options.signal instanceof AbortSignal);
+  };
+  class Client {
+    async start(options) {
+      bounded(options);
+      const profile = JSON.parse(
+        fs.readFileSync(path.join(serverRoot, "..", "cli", "config.json"), "utf8")
+      );
+      for (const key of ["mcp", "memory", "subagent"]) assert.equal(profile.features[key], false);
+      assert.deepEqual(profile.mcp.servers, {});
+      assert.equal(profile.plugins.enabled, false);
+      assert.equal(profile.hooks.enabled, false);
+      observed.push("start");
+    }
+    async call(channel, method, args, options) {
+      bounded(options);
+      assert(
+        ["getView", "generateWorkspaceText"].includes(method),
+        "Session/project/MCP RPC is forbidden"
+      );
+      observed.push(method);
+      if (method === "getView") {
+        assert.equal(channel, "model-selection");
+        return {};
+      }
+      assert.equal(channel, "zcode-agent");
+      generated++;
+      const payload = args[0];
+      assert.equal(args.length, 1);
+      assert.equal(payload.workspacePath, payload.workspaceIdentity);
+      assert(
+        payload.workspacePath.startsWith(scratch + path.sep),
+        "Workspace escaped isolated scratch"
+      );
+      assert.deepEqual(
+        fs.readdirSync(payload.workspacePath),
+        [],
+        "Smoke workspace contains project or MCP state"
+      );
+      for (const name of ["sessionId", "projectId", "mcpServers"])
+        assert.equal(payload[name], undefined);
+      assert.deepEqual(payload.messages, request.messages);
+      assert.deepEqual(payload.tools, request.tools);
+      assert.deepEqual(payload.selection, {
+        providerId: "account:zai-start-plan",
+        modelId: "GLM-Fixture",
+      });
+      assert.equal(payload.maxOutputTokens, useFallback ? 100000 : 32768);
+      assert.equal(payload.querySource, "omniroute");
+      assert(payload.requestTimeoutMs > 0 && payload.requestTimeoutMs <= 500);
+      if (failure) throw failure;
+      if (hanging) return withAbort(new Promise(() => {}), options.signal);
+      return nativeResult;
+    }
+    async close() {
+      observed.push("close");
+    }
+  }
+  class Bridge {
+    constructor() {
+      throw Error("Native session bridge is forbidden");
+    }
+  }
+  const deps = {
+    nativeZcodeHosts: {
+      ensure: async () => {
+        observed.push("ensure");
+        return serverRoot;
+      },
+    },
+    NativeZcodeHostClient: Client,
+    NativeZcodeSessionBridge: Bridge,
+    NativeSessionError: ErrorClass,
+    nativeBridges: new Proxy(
+      {},
+      {
+        get() {
+          throw Error("Session cache is forbidden");
+        },
+      }
+    ),
+    tmpdir: () => scratch,
+    join: path.join,
+    createHash: crypto.createHash,
+    errorResponse: (status, message, extra) => ({ status, message, extra }),
+    sanitizeErrorMessage: (s) => s,
+    errorText: (e) => e.message,
+    asRecord: (v) => (v && typeof v === "object" ? v : {}),
+    withAbort,
+    resolveZcodeSelection: () => ({ providerId: "account:zai-start-plan", modelId: "GLM-Fixture" }),
+    resolveZcodeMaxTokens: () => (useFallback ? undefined : 32768),
+    buildZcodeModelRequest: (value) => {
+      assert.deepEqual(value, body);
+      return structuredClone(request);
+    },
+    modelResponse: (_model, result) => result,
+    isZcodeRequestCancelled: () => false,
+    UPSTREAM_REQUEST_CANCELLED_CODE: "upstream_request_cancelled",
+  };
+  const input = {
+    credentials: { authType: "oauth", connectionId: "fixture" },
+    body,
+    signal: new AbortController().signal,
+  };
+  const context = { options: { provider: "zcode-start" }, turnTimeoutMs: () => 500 };
+  const invoke = (inputValue = input, contextValue = context) =>
+    runNativeExecutor.call(contextValue, deps, inputValue, structuredClone(request), {
+      model: "GLM-Fixture",
+    });
+  try {
+    const result = await invoke();
+    assert(result.url.startsWith("zcode://native-host/") && !result.url.endsWith("/session"));
+    assert.deepEqual(result.response, nativeResult);
+    assert.deepEqual(observed, ["ensure", "start", "getView", "generateWorkspaceText", "close"]);
+    useFallback = true;
+    assert.deepEqual((await invoke()).response, nativeResult);
+    useFallback = false;
+    const cancelled = new AbortController();
+    cancelled.abort();
+    observed.length = 0;
+    assert.equal((await invoke({ ...input, signal: cancelled.signal })).status, 499);
+    assert(!observed.includes("ensure") && !observed.includes("start"));
+    failure = new ErrorClass("fixture quota", 429);
+    assert.equal((await invoke()).status, 429, "Real quota status was replaced");
+    failure = null;
+    hanging = true;
+    assert.equal((await invoke(input, { ...context, turnTimeoutMs: () => 100 })).status, 504);
+    assert.equal(generated, 4);
+    return {
+      boundedPreflight: true,
+      deadlinePassed: true,
+      cancellation: true,
+      generateWorkspaceText: true,
+      callerTools: true,
+      noAgentSessions: true,
+      isolatedWorkspace: true,
+      quotaPreserved: true,
+      tokenFallback: true,
+      mcpDisabled: true,
+    };
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
 function remoteVerify(inputDirectory) {
   assert.equal(hostname(), "server-44");
   assert.equal(dirname(inputDirectory), REMOTE_ROOT);
@@ -413,19 +792,8 @@ const all=Object.assign({},require('node:crypto'),require('node:http'),require('
  assert.equal(tested,6);assert.equal(clients,4);assert.equal(bridges,2);
  let executorSmoke=null;
  if(manifest.overlay?.executorMap){
-  const p=require(path.join(output,manifest.overlay.sidecarPath)), observed=[];
-  class Client{async start(options){assert(options?.timeoutMs>0&&options.timeoutMs<=500);assert(options.signal);observed.push('start');}async call(channel,method,args,options){assert.equal(method,'getView');assert(options?.timeoutMs>0);observed.push('getView');return {};}async close(){observed.push('close');}}
-  class Bridge{async execute(input){assert(Number.isFinite(input.deadline));assert(input.deadline<=Date.now()+500);observed.push('deadline');return {text:'fixture-ok'};}}
-  const withAbort=(promise,signal)=>Promise.race([promise,new Promise((_,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});})]);
-  const deps={nativeZcodeHosts:{ensure:async()=>'/fixture-root'},NativeZcodeHostClient:Client,NativeZcodeSessionBridge:Bridge,NativeSessionError:p.NativeSessionError,nativeBridges:new Map(),tmpdir:()=>'/fixture',join:path.join,createHash:require('node:crypto').createHash,errorResponse:(status,message,extra)=>({status,message,extra}),sanitizeErrorMessage:s=>s,errorText:e=>e.message,asRecord:v=>v&&typeof v==='object'?v:{},withAbort,resolveZcodeSelection:()=>({providerId:'fixture',modelId:'fixture'}),modelResponse:(_model,result)=>result,isZcodeRequestCancelled:()=>false,UPSTREAM_REQUEST_CANCELLED_CODE:'upstream_request_cancelled'};
-  const input={credentials:{authType:'oauth',connectionId:'fixture'},body:{messages:[{role:'user',content:'fixture'}]},signal:new AbortController().signal};
-  const context={options:{provider:'fixture'},turnTimeoutMs:()=>500};
-  const result=await p.runNativeExecutor.call(context,deps,input,{messages:[{content:'fixture'}],tools:[]},{model:'fixture'});
-  assert.equal(result.url,'zcode://native-host/session');assert.equal(result.response.text,'fixture-ok');assert.deepEqual(observed,['start','getView','deadline','close']);
-  const cancelled=new AbortController();cancelled.abort();
-  const rejected=await p.runNativeExecutor.call(context,deps,{...input,signal:cancelled.signal},{messages:[],tools:[]},{model:'fixture'});
-  assert.equal(rejected.status,499);
-  executorSmoke={boundedPreflight:true,deadlinePassed:true,cancellation:true};
+  const p=require(path.join(output,manifest.overlay.sidecarPath));
+  executorSmoke=await (${smokeNativeExecutor.toString()})(p.runNativeExecutor,p.NativeSessionError,{assert,fs,path,os:require('node:os'),crypto:require('node:crypto')});
  }
  console.log(JSON.stringify({webpackFactories:tested,hostClients:clients,sessionBridges:bridges,abortedTurns:true,executorSmoke}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -433,6 +801,7 @@ const all=Object.assign({},require('node:crypto'),require('node:http'),require('
   const result = JSON.parse(
     run(process.execPath, ["-e", test, output], {
       env: { ...process.env, NODE_PATH: join(DONOR, "node_modules") },
+      timeout: 30000,
     })
   );
   manifest.checks.webpackFactories = result;
@@ -577,7 +946,10 @@ async function stageOverlay(sourceSha, baselineDirectory) {
   const overlay = { ...baseline };
   if (needsExecutor) {
     assert.equal(baseline.executorCandidates?.length, 2, "Capture an executor-aware overlay base");
-    overlay.executorMap = baseline.executorCandidates;
+    const { parse } = createRequire(join(ROOT, "package.json"))("acorn");
+    overlay.executorMap = baseline.executorCandidates.map((entry) =>
+      extendExecutorBindings(read(join(baselineDirectory, "rollback", entry.path)), parse, entry)
+    );
     overlay.files = [...baseline.files, ...baseline.extraFiles];
   }
   const manifest = {
@@ -826,6 +1198,16 @@ export function checkOverlayArtifact(directory, manifest) {
     assert.equal(manifest.checks.webpackFactories?.executorSmoke?.boundedPreflight, true);
     assert.equal(manifest.checks.webpackFactories?.executorSmoke?.deadlinePassed, true);
     assert.equal(manifest.checks.webpackFactories?.executorSmoke?.cancellation, true);
+    for (const check of [
+      "generateWorkspaceText",
+      "callerTools",
+      "noAgentSessions",
+      "isolatedWorkspace",
+      "quotaPreserved",
+      "tokenFallback",
+      "mcpDisabled",
+    ])
+      assert.equal(manifest.checks.webpackFactories?.executorSmoke?.[check], true);
   } else assert.equal(manifest.checks.wrapperChunksUnchanged, true);
 }
 export function checkOverlaySourceCoverage(manifest, changed) {
@@ -1033,10 +1415,287 @@ export function installFiles(dist, directory, manifest) {
       : {}),
   });
 }
+export function nativeProfileResetTarget(mode) {
+  assert(["primary", "standby"].includes(mode), "Profile reset is apply-only");
+  return mode === "primary"
+    ? "/home/roomhacker/.omniroute/zcode-native"
+    : "/home/roomhacker/.omniroute-standby/native-state";
+}
+const inodeOf = (path) => {
+  const stat = lstatSync(path);
+  return `${stat.dev}:${stat.ino}`;
+};
+const present = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+function privateDirectory(path) {
+  assert.equal(realpathSync(path), path, "Private directory must be canonical");
+  const stat = lstatSync(path);
+  assert(stat.isDirectory() && stat.uid === process.getuid());
+  assert.equal(stat.mode & 0o077, 0, "Directory must be private");
+}
+function profileRootCas(state) {
+  privateDirectory(state.root);
+  assert.equal(inodeOf(state.root), state.expectedInode, "Native root inode changed");
+}
+// Hash metadata only, never credential values. No symlink is followed. Include
+// child ctime and inode so edits/replacements fail CAS; top ctime changes on rename.
+function profileSnapshot(path) {
+  const hash = createHash("sha256");
+  const visit = (path, relative) => {
+    const stat = lstatSync(path, { bigint: true });
+    hash.update(
+      JSON.stringify([
+        relative,
+        String(stat.dev),
+        String(stat.ino),
+        String(stat.mode),
+        String(stat.uid),
+        String(stat.gid),
+        String(stat.size),
+        String(stat.mtimeNs),
+        relative ? String(stat.ctimeNs) : null,
+        stat.isSymbolicLink() ? readlinkSync(path) : null,
+      ])
+    );
+    if (stat.isDirectory())
+      for (const name of readdirSync(path).sort()) visit(join(path, name), relative + "/" + name);
+  };
+  visit(path, "");
+  return { inode: inodeOf(path), metadataSha256: hash.digest("hex") };
+}
+export function planNativeProfileReset({ root, archive, expectedInode }) {
+  assert.equal(resolve(root), root);
+  assert.equal(resolve(archive), archive);
+  assert(archive !== root && !archive.startsWith(root + "/"), "Archive must be outside bind root");
+  const state = {
+    schema: "omniroute-native-profile-reset/1",
+    root,
+    archive,
+    expectedInode,
+    phase: "planned",
+    entries: [],
+  };
+  profileRootCas(state);
+  assert(!present(archive), "Profile archive exists; inspect previous outcome before replay");
+  return state;
+}
+function profileCheckpoint(state, checkpoint) {
+  save(join(state.archive, "reset.json"), state);
+  checkpoint?.();
+}
+const NATIVE_GRANT_FILES = ["cipher-secret", "account.json", ".zcode/v2/credentials.json"];
+const NATIVE_TELEMETRY_FILE = ".zcode/v2/telemetry-state.json";
+function nativeCarryFiles(profile) {
+  const files = [
+    ...NATIVE_GRANT_FILES,
+    ...(present(join(profile, NATIVE_TELEMETRY_FILE)) ? [NATIVE_TELEMETRY_FILE] : []),
+  ];
+  for (const file of files) {
+    const path = join(profile, file);
+    assert.equal(realpathSync(path), path, "Native grant file must be canonical");
+    const stat = lstatSync(path);
+    assert(
+      stat.isFile() && stat.uid === process.getuid() && stat.size > 0,
+      "Native grant file is missing or invalid"
+    );
+  }
+  return files;
+}
+function seedNativeGrant(state, entry, checkStopped, checkpoint) {
+  const old = join(state.archive, "profiles", entry.name);
+  assert.deepEqual(profileSnapshot(old), entry.snapshot, "Archived native grant changed");
+  const seeded = join(state.archive, "new-profiles", entry.name);
+  mkdirSync(seeded, { mode: 0o700 });
+  entry.carriedFiles = [];
+  for (const file of nativeCarryFiles(old)) {
+    const bytes = readFileSync(join(old, file)),
+      to = join(seeded, file);
+    mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+    writeFileSync(to, bytes, { mode: 0o600, flag: "wx" });
+    assert.deepEqual(readFileSync(to), bytes);
+    assert.equal(lstatSync(to).mode & 0o777, 0o600);
+    entry.carriedFiles.push({ path: file, sha256: sha256(bytes), mode: "0600" });
+  }
+  const settings = join(old, ".zcode/v2/setting.json");
+  if (present(settings) && realpathSync(settings) === settings && lstatSync(settings).isFile()) {
+    let prefs;
+    try {
+      prefs = json(settings);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+    const family = prefs?.providerFamilyDomain;
+    const selections = prefs?.providerFamilyConnectionSelections;
+    if (
+      ["zai", "bigmodel"].includes(family) &&
+      selections &&
+      Object.keys(selections).length === 1 &&
+      selections[family]?.kind === "individual-coding-plan" &&
+      Object.keys(selections[family]).length === 1
+    )
+      save(join(seeded, ".zcode/v2/setting.json"), {
+        providerFamilyDomain: family,
+        providerFamilyConnectionSelections: selections,
+      });
+  }
+  // Ciphertext, cipher secret and grant fingerprint come from the refreshed
+  // native account together. Never reconstruct these three files from DB.
+  assert.deepEqual(profileSnapshot(old), entry.snapshot, "Native grant changed while copying");
+  entry.seedSnapshot = profileSnapshot(seeded);
+  entry.seedStatus = "pending";
+  profileCheckpoint(state, checkpoint);
+  checkStopped();
+  profileRootCas(state);
+  const to = join(state.root, entry.name);
+  assert(!present(to), "Unknown new account state appeared before native grant carry");
+  renameSync(seeded, to);
+  entry.seedStatus = "installed";
+  profileCheckpoint(state, checkpoint);
+  assert.deepEqual(profileSnapshot(to), entry.seedSnapshot);
+}
+export function moveNativeProfiles(state, checkStopped, checkpoint) {
+  assert.equal(state.schema, "omniroute-native-profile-reset/1");
+  assert.equal(state.phase, "planned");
+  assert.equal(typeof checkStopped, "function");
+  checkStopped();
+  profileRootCas(state);
+  // Only account roots may be moved. Unexpected state is preserved and stops reset.
+  const names = readdirSync(state.root).sort();
+  for (const name of names)
+    assert(
+      /^[a-f0-9]{64}$/.test(name) && lstatSync(join(state.root, name)).isDirectory(),
+      "Unexpected native account state"
+    );
+  for (const name of names) nativeCarryFiles(join(state.root, name));
+  assert(!present(state.archive), "Profile archive already exists");
+  mkdirSync(dirname(state.archive), { recursive: true, mode: 0o700 });
+  privateDirectory(dirname(state.archive));
+  mkdirSync(state.archive, { mode: 0o700 });
+  privateDirectory(state.archive);
+  assert.equal(
+    lstatSync(state.archive).dev,
+    lstatSync(state.root).dev,
+    "Profile archive must share filesystem"
+  );
+  state.archiveInode = inodeOf(state.archive);
+  mkdirSync(join(state.archive, "profiles"), { mode: 0o700 });
+  state.profilesInode = inodeOf(join(state.archive, "profiles"));
+  mkdirSync(join(state.archive, "new-profiles"), { mode: 0o700 });
+  state.newProfilesInode = inodeOf(join(state.archive, "new-profiles"));
+  state.entries = names.map((name) => ({
+    name,
+    snapshot: profileSnapshot(join(state.root, name)),
+    status: "pending",
+  }));
+  state.phase = "moving";
+  profileCheckpoint(state, checkpoint);
+  for (const entry of state.entries) {
+    checkStopped();
+    profileRootCas(state);
+    const from = join(state.root, entry.name),
+      to = join(state.archive, "profiles", entry.name);
+    assert(!present(to), "Archive destination changed");
+    assert.deepEqual(profileSnapshot(from), entry.snapshot, "Account profile changed before move");
+    renameSync(from, to);
+    entry.status = "moved";
+    profileCheckpoint(state, checkpoint);
+    assert.deepEqual(profileSnapshot(to), entry.snapshot, "Account profile changed during move");
+  }
+  profileRootCas(state);
+  assert.equal(readdirSync(state.root).length, 0, "New native state appeared during reset");
+  state.phase = "archived";
+  profileCheckpoint(state, checkpoint);
+  for (const entry of state.entries) seedNativeGrant(state, entry, checkStopped, checkpoint);
+  profileRootCas(state);
+  assert.deepEqual(
+    readdirSync(state.root).sort(),
+    names,
+    "Unknown native state appeared while seeding"
+  );
+  state.phase = "seeded";
+  state.retainedNativeGrant = true;
+  profileCheckpoint(state, checkpoint);
+  return state;
+}
+export function rollbackNativeProfiles(state, checkStopped, checkpoint) {
+  assert.equal(state.schema, "omniroute-native-profile-reset/1");
+  checkStopped();
+  profileRootCas(state);
+  if (state.phase === "planned" && state.entries.length === 0)
+    return { restored: true, conflicts: [] };
+  privateDirectory(state.archive);
+  assert.equal(inodeOf(state.archive), state.archiveInode, "Archive inode changed");
+  const profiles = join(state.archive, "profiles");
+  privateDirectory(profiles);
+  assert.equal(inodeOf(profiles), state.profilesInode, "Archived profiles root changed");
+  const newProfiles = join(state.archive, "new-profiles");
+  privateDirectory(newProfiles);
+  assert.equal(inodeOf(newProfiles), state.newProfilesInode, "Seeded profiles archive changed");
+  const conflicts = [];
+  for (const entry of state.entries.slice().reverse()) {
+    assert(/^[a-f0-9]{64}$/.test(entry.name), "Invalid journaled account name");
+    checkStopped();
+    profileRootCas(state);
+    const from = join(profiles, entry.name),
+      to = join(state.root, entry.name);
+    if (!present(from) && present(to)) {
+      if (JSON.stringify(profileSnapshot(to)) === JSON.stringify(entry.snapshot)) {
+        entry.status = "restored";
+        profileCheckpoint(state, checkpoint);
+        continue;
+      }
+    }
+    // Only the exact minimal profile created by this transaction may move aside.
+    // Native OAuth refreshes, new projects/tasks or other writes are preserved.
+    const ownSeed =
+      entry.seedSnapshot &&
+      present(to) &&
+      JSON.stringify(profileSnapshot(to)) === JSON.stringify(entry.seedSnapshot);
+    const seedBackup = join(newProfiles, entry.name);
+    if (
+      !present(from) ||
+      (present(to) && (!ownSeed || present(seedBackup))) ||
+      JSON.stringify(profileSnapshot(from)) !== JSON.stringify(entry.snapshot)
+    ) {
+      conflicts.push({ name: entry.name, reason: "profile-state-changed" });
+      continue;
+    }
+    if (ownSeed) {
+      renameSync(to, seedBackup);
+      entry.seedStatus = "rolled-back";
+      profileCheckpoint(state, checkpoint);
+    }
+    renameSync(from, to);
+    entry.status = "restored";
+    profileCheckpoint(state, checkpoint);
+  }
+  state.phase = conflicts.length ? "rollback-conflict" : "restored";
+  state.conflicts = conflicts;
+  profileCheckpoint(state, checkpoint);
+  return { restored: conflicts.length === 0, conflicts };
+}
 function stopped(port) {
   const unit = "omniroute@" + port + ".service";
   assert.equal(run("systemctl", ["show", unit, "-p", "MainPID", "--value"]), "0");
   assert.equal(run("ss", ["-H", "-ltn", "sport", "=", ":" + port]), "");
+}
+function stoppedNativeProfile(port) {
+  stopped(port);
+  const unit = "omniroute@" + port + ".service";
+  assert.equal(run("systemctl", ["show", unit, "-p", "ActiveState", "--value"]), "inactive");
+  const group = run("systemctl", ["show", unit, "-p", "ControlGroup", "--value"]);
+  if (!group) return;
+  assert(group.startsWith("/") && !group.split("/").includes(".."));
+  const empty = (path) => {
+    if (!existsSync(path)) return;
+    assert.equal(
+      read(join(path, "cgroup.procs")).trim(),
+      "",
+      "Native child processes are still running"
+    );
+    for (const name of readdirSync(path))
+      if (lstatSync(join(path, name)).isDirectory()) empty(join(path, name));
+  };
+  empty("/sys/fs/cgroup" + group);
 }
 const control = (action, port) =>
   run("sudo", ["-n", "systemctl", action, "omniroute@" + port + ".service"]);
@@ -1057,11 +1716,17 @@ function assertFlock() {
     "Canonical deploy flock is not held by this process"
   );
 }
-async function apply(mode, directory, sourceSha, canaryReceipt) {
+async function apply(mode, directory, sourceSha, canaryReceipt, resetNativeProfile = false) {
   assertFlock();
   const { manifest } = checkArtifact(directory, sourceSha);
   const before = await inspect();
   const port = mode === "standby" ? 20130 : 20128;
+  if (resetNativeProfile)
+    assert.equal(
+      manifest.checks.webpackFactories?.executorSmoke?.generateWorkspaceText,
+      true,
+      "Profile reset requires the verified plain native model route"
+    );
   const frozen = realpathSync(join(STANDBY, "dist"));
   if (port === 20128) {
     const installed = json(join(frozen, "RUNTIME_PATCHES.json"));
@@ -1076,6 +1741,13 @@ async function apply(mode, directory, sourceSha, canaryReceipt) {
   const sourceDist = port === 20130 ? frozen : join(ROOT, "dist");
   checkPreimages(sourceDist, manifest);
   const tag = stamp() + "-" + manifest.sourceSnapshotSha256.slice(0, 12);
+  const resetPlan = resetNativeProfile
+    ? planNativeProfileReset({
+        root: nativeProfileResetTarget(mode),
+        archive: join(dirname(nativeProfileResetTarget(mode)), "native-profile-archive", tag),
+        expectedInode: (port === 20130 ? before.standby : before.primary).nativeInode,
+      })
+    : null;
   const staged =
     port === 20130 ? join(STANDBY, "snapshots/timeout-" + tag) : join(AREA, "primary-stage-" + tag);
   assert(!existsSync(staged));
@@ -1105,6 +1777,7 @@ async function apply(mode, directory, sourceSha, canaryReceipt) {
     staged,
     before,
     sourceSnapshotSha256: manifest.sourceSnapshotSha256,
+    ...(resetPlan ? { nativeProfileReset: resetPlan } : {}),
     ...(canaryReceipt
       ? {
           consumerReceipt: {
@@ -1152,6 +1825,12 @@ async function apply(mode, directory, sourceSha, canaryReceipt) {
     stopAttempted = true;
     control("stop", port);
     stopped(port);
+    if (resetPlan)
+      moveNativeProfiles(
+        resetPlan,
+        () => stoppedNativeProfile(port),
+        () => save(receipt, result)
+      );
     if (port === 20130) {
       const next = join(STANDBY, "dist.timeout-" + tag);
       symlinkSync("snapshots/" + staged.split("/").at(-1), next);
@@ -1185,6 +1864,7 @@ async function apply(mode, directory, sourceSha, canaryReceipt) {
     result.installed = true;
     result.after = after;
     result.rollback = port === 20130 ? { standbyTarget: before.standbyTarget } : { dist: backup };
+    if (resetPlan) result.rollback.nativeProfileArchive = resetPlan.archive;
     result.consumerProof = "pending-separate-worker";
   } catch (error) {
     result.failure = { name: error.name, code: error.code || null };
@@ -1193,13 +1873,19 @@ async function apply(mode, directory, sourceSha, canaryReceipt) {
         await leaseCheck();
         if (port === 20130 && pointerChanged)
           assert.equal(realpathSync(join(STANDBY, "dist")), staged);
-        if (port === 20128 && existsSync(join(ROOT, "dist/RUNTIME_PATCHES.json")))
+        if (port === 20128 && oldDistMoved && existsSync(join(ROOT, "dist/RUNTIME_PATCHES.json")))
           assert.equal(
             json(join(ROOT, "dist/RUNTIME_PATCHES.json")).sourceSnapshotSha256,
             manifest.sourceSnapshotSha256
           );
         control("stop", port);
         stopped(port);
+        if (resetPlan)
+          result.nativeProfileRollback = rollbackNativeProfiles(
+            resetPlan,
+            () => stoppedNativeProfile(port),
+            () => save(receipt, result)
+          );
         if (port === 20130 && pointerChanged) {
           const next = join(STANDBY, "dist.rollback-" + tag);
           symlinkSync(before.standbyTarget, next);
@@ -1215,7 +1901,9 @@ async function apply(mode, directory, sourceSha, canaryReceipt) {
           port === 20130 ? realpathSync(join(STANDBY, "dist")) : join(ROOT, "dist"),
           manifest
         );
-        result.rolledBack = true;
+        if (resetPlan) assert.equal(processState(port).nativeInode, resetPlan.expectedInode);
+        result.runtimeRolledBack = true;
+        result.rolledBack = !resetPlan || result.nativeProfileRollback.restored;
       } catch (failure) {
         result.rollbackFailure = { name: failure.name, code: failure.code || null };
       }
@@ -1259,12 +1947,22 @@ async function main() {
     "--consumer-receipt",
     "--baseline",
     "--locked",
+    "--reset-native-profile",
   ]);
   const flags = {};
   for (let i = 0; i < args.length; i++) {
     assert(allowed.has(args[i]) && !(args[i] in flags), "Unknown or duplicate argument");
-    flags[args[i]] = args[i] === "--locked" ? true : args[++i];
+    const flag = args[i];
+    if (["--locked", "--reset-native-profile"].includes(flag)) flags[flag] = true;
+    else {
+      assert(args[i + 1] && !args[i + 1].startsWith("--"), "Missing argument value");
+      flags[flag] = args[++i];
+    }
   }
+  assert(
+    !flags["--reset-native-profile"] || ["standby", "primary"].includes(mode),
+    "Profile reset is apply-only"
+  );
   if (mode === "remote-stage") {
     return remoteStage(JSON.parse(readFileSync(0, "utf8")).directory);
   }
@@ -1323,7 +2021,13 @@ async function main() {
     process.exitCode = child.status ?? 1;
     return;
   }
-  return apply(mode, directory, sourceSha, flags["--consumer-receipt"]);
+  return apply(
+    mode,
+    directory,
+    sourceSha,
+    flags["--consumer-receipt"],
+    Boolean(flags["--reset-native-profile"])
+  );
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
   main().catch((error) => {
