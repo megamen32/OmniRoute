@@ -60,12 +60,21 @@ if (phase === "selftest") {
   classifyTrace(abort);
   assert.equal(abort.localGateObserved, false);
   assert.equal(abort.httpOutcomes[0].scope, "client_abort");
-  console.log(JSON.stringify({ selftest: "GREEN", assertions: 9, networkRequests: 0 }));
+  assert.equal(earlyStopDecision(aggregate.trace, aggregate).kind, "local_gate");
+  assert.equal(earlyStopDecision(native.trace, native).kind, "provider_quota");
+  assert.equal(earlyStopDecision(unknownQuota.trace, unknownQuota), undefined);
+  assert.equal(earlyStopDecision([{ ...row, status: 200 }], native), undefined);
+  console.log(JSON.stringify({ selftest: "GREEN", assertions: 13, networkRequests: 0 }));
   process.exit(0);
 }
 assert(["baseline", "after"].includes(phase), "Use baseline or after");
 const option = (name) => args.find((arg) => arg.startsWith(name + "="))?.slice(name.length + 1);
-assert(args.every((arg) => /^--(expect-build|leg|timeout-ms|base)=/.test(arg)));
+assert(args.every((arg) => /^--(expect-build|expect-source|leg|timeout-ms|base|combo)=/.test(arg)));
+const expectedSource = option("--expect-source");
+assert(!expectedSource || /^[a-f0-9]{40}$/.test(expectedSource));
+const ordinaryCombo = option("--combo");
+assert(!ordinaryCombo || ordinaryCombo === "glm-5.3-flash-minimax-m3.1");
+assert(!ordinaryCombo || !option("--leg"));
 const expectedBuild = option("--expect-build") || (phase === "baseline" ? "30bae46b37" : "");
 assert(/^[a-f0-9]{7,40}$/.test(expectedBuild), "Supply --expect-build after delivery");
 const base = option("--base") || "http://127.0.0.1:20128";
@@ -83,9 +92,9 @@ assert(
   !selectedProviders ||
     selectedProviders.every((name) => definitions.some(([provider]) => name === provider))
 );
-const legs = definitions.filter(
-  ([provider]) => !selectedProviders || selectedProviders.includes(provider)
-);
+const legs = ordinaryCombo
+  ? [["ordinary-combo", null]]
+  : definitions.filter(([provider]) => !selectedProviders || selectedProviders.includes(provider));
 assert(legs.length, "Unknown leg");
 const binary = await realpath("/home/roomhacker/.npm-global/bin/opencode");
 const clientVersion = execFileSync(binary, ["--version"], { encoding: "utf8" }).trim();
@@ -146,10 +155,13 @@ const summary = {
   startedAt: new Date().toISOString(),
   base,
   expectedBuild,
+  expectedSource,
   client: clientVersion + " official installed standalone",
   binary,
   authority: "Current owner canary scope; .agents/TEST_ACCESS.md references only",
-  scope: "Sequential, pinned account, no fallback, no build/restart/deploy, no breaker reset",
+  scope: ordinaryCombo
+    ? "One ordinary combo roundtrip; existing combo read-only; actual fallback trace; no build/restart/deploy or breaker reset"
+    : "Sequential, pinned account, no fallback, no build/restart/deploy, no breaker reset",
   legs: [],
 };
 let interrupted = false;
@@ -224,6 +236,12 @@ async function buildIdentity(leg) {
     );
     assert.equal(leg.runtimePatchReadback.compiledOn, "server-44");
   }
+  if (expectedSource)
+    assert.equal(
+      leg.runtimePatchReadback?.sourceSha,
+      expectedSource,
+      "Unexpected installed patch source"
+    );
   leg.serviceMainPid = Number(
     execFileSync(
       "systemctl",
@@ -269,6 +287,26 @@ function isLocalGate(row) {
     row.error_summary || ""
   );
 }
+function isQuotaError(row) {
+  return (
+    row.status === 429 &&
+    /quota|rate.?limit|usage limit|token.*limit|limit.*(?:reached|exceed)|too many requests/i.test(
+      row.error_summary || ""
+    )
+  );
+}
+function earlyStopDecision(rows, target) {
+  const latest = rows.at(-1);
+  if (latest && isLocalGate(latest)) return { kind: "local_gate", row: latest };
+  const quota = rows.find(
+    (row) =>
+      row.provider === target.provider &&
+      row.connection_id === target.connectionId &&
+      !isLocalGate(row) &&
+      isQuotaError(row)
+  );
+  if (quota) return { kind: "provider_quota", row: quota };
+}
 function classifyTrace(leg) {
   const native = leg.trace.filter(
     (row) =>
@@ -276,13 +314,7 @@ function classifyTrace(leg) {
   );
   leg.dispatchProven = native.length > 0;
   leg.provider429Candidates = native.filter((row) => row.status === 429).map((row) => row.id);
-  leg.provider429 = native.some(
-    (row) =>
-      row.status === 429 &&
-      /quota|rate.?limit|usage limit|token.*limit|limit.*(?:reached|exceed)|too many requests/i.test(
-        row.error_summary || ""
-      )
-  );
+  leg.provider429 = native.some(isQuotaError);
   leg.localGateObserved = leg.trace.some(isLocalGate);
   leg.unexpectedTrace = leg.trace.filter(
     (row) =>
@@ -310,7 +342,7 @@ function classifyTrace(leg) {
   }));
   leg.classificationVersion = 2;
 }
-async function runClient(command, cwd, env, budget, onEvent, observeTrace) {
+async function runClient(command, cwd, env, budget, onEvent, observeTrace, watchTarget) {
   const startedAt = new Date().toISOString();
   const start = performance.now();
   let stdout = "",
@@ -319,6 +351,7 @@ async function runClient(command, cwd, env, budget, onEvent, observeTrace) {
     timedOut = false;
   const events = [];
   let stoppedAfterLocalGate;
+  let stoppedAfterProviderQuota;
   let earlyKillTimer;
   const child = spawn(binary, command, {
     cwd,
@@ -335,14 +368,17 @@ async function runClient(command, cwd, env, budget, onEvent, observeTrace) {
   const observer =
     observeTrace &&
     setInterval(() => {
-      const row = observeTrace().at(-1);
-      if (row && isLocalGate(row) && !stoppedAfterLocalGate) {
-        stoppedAfterLocalGate = {
+      const decision = earlyStopDecision(observeTrace(), watchTarget);
+      if (decision && !stoppedAfterLocalGate && !stoppedAfterProviderQuota) {
+        const { row, kind } = decision;
+        const observation = {
           id: row.id,
           http: row.status,
           reason: row.error_summary,
           elapsedMs: Math.round(performance.now() - start),
         };
+        if (kind === "local_gate") stoppedAfterLocalGate = observation;
+        else stoppedAfterProviderQuota = observation;
         stopChild();
         earlyKillTimer = setTimeout(() => stopChild("SIGKILL"), 5000);
       }
@@ -397,6 +433,7 @@ async function runClient(command, cwd, env, budget, onEvent, observeTrace) {
     signal,
     timedOut,
     stoppedAfterLocalGate,
+    stoppedAfterProviderQuota,
     spawnError,
     stdout: scrub(stdout),
     stderr: scrub(stderr),
@@ -430,6 +467,10 @@ try {
   for (const [provider, connectionId] of legs) {
     if (interrupted) break;
     const leg = {
+      phase,
+      base,
+      runId,
+      clientVersion,
       provider,
       connectionId,
       startedAt: new Date().toISOString(),
@@ -439,8 +480,9 @@ try {
     summary.legs.push(leg);
     const receiptSuffix = "-" + provider + ".json";
     let scratch;
-    const name = "consumer-timeout-" + runId.slice(0, 8) + "-" + provider;
-    leg.temporaryComboName = name;
+    const name = ordinaryCombo || "consumer-timeout-" + runId.slice(0, 8) + "-" + provider;
+    if (!ordinaryCombo) leg.temporaryComboName = name;
+    else leg.existingComboName = name;
     try {
       leg.installedBuild = await buildIdentity(leg);
       scratch = await mkdtemp(path.join(os.tmpdir(), "omni-oc-timeout-"));
@@ -450,28 +492,46 @@ try {
       await writeFile(path.join(workspace, "nonce.txt"), nonce + "\n", { mode: 0o600 });
       leg.expectedNonce = nonce;
       leg.scratchWorkspace = workspace;
-      leg.temporaryComboIntent = {
-        name,
-        strategy: "priority",
-        models: [
-          { kind: "model", model: provider + "/glm-5.3-flash", providerId: provider, connectionId },
-        ],
-        config: {
-          maxRetries: 0,
-          retryDelayMs: 0,
-          fallbackDelayMs: 0,
-          disableSessionStickiness: true,
-        },
-      };
-      await save(receiptSuffix, leg);
-      const combo = await management("/api/combos", "POST", leg.temporaryComboIntent);
-      leg.temporaryComboId = combo.id;
-      assert(combo.id && combo.name === name);
-      const readback = await management("/api/combos/" + combo.id);
-      assert.equal(readback.models.length, 1);
-      assert.equal(readback.models[0].connectionId, connectionId);
-      assert.equal(readback.models[0].providerId, provider);
-      leg.temporaryComboReadback = readback;
+      if (ordinaryCombo) {
+        leg.temporaryComboCreated = false;
+        const existing = await management("/api/combos/7a4a012a-ee6a-4553-8d78-18279dc79885");
+        assert.equal(existing.name, ordinaryCombo);
+        leg.existingComboReadback = {
+          id: existing.id,
+          name: existing.name,
+          strategy: existing.strategy,
+          modelCount: existing.models.length,
+          sha256: createHash("sha256").update(JSON.stringify(existing)).digest("hex"),
+        };
+      } else {
+        leg.temporaryComboIntent = {
+          name,
+          strategy: "priority",
+          models: [
+            {
+              kind: "model",
+              model: provider + "/glm-5.3-flash",
+              providerId: provider,
+              connectionId,
+            },
+          ],
+          config: {
+            maxRetries: 0,
+            retryDelayMs: 0,
+            fallbackDelayMs: 0,
+            disableSessionStickiness: true,
+          },
+        };
+        await save(receiptSuffix, leg);
+        const combo = await management("/api/combos", "POST", leg.temporaryComboIntent);
+        leg.temporaryComboId = combo.id;
+        assert(combo.id && combo.name === name);
+        const readback = await management("/api/combos/" + combo.id);
+        assert.equal(readback.models.length, 1);
+        assert.equal(readback.models[0].connectionId, connectionId);
+        assert.equal(readback.models[0].providerId, provider);
+        leg.temporaryComboReadback = readback;
+      }
       const config = {
         model: "timeout-canary/" + name,
         small_model: "timeout-canary/" + name,
@@ -563,7 +623,8 @@ try {
             leg.firstToolMs = elapsedMs;
           if (event.type === "text" && leg.firstTextMs === undefined) leg.firstTextMs = elapsedMs;
         },
-        () => traceQuery.all(leg.correlationId, name, name)
+        ordinaryCombo ? undefined : () => traceQuery.all(leg.correlationId, name, name),
+        { provider, connectionId }
       );
       const events = leg.consumer.events;
       const read = events.find(
@@ -644,9 +705,16 @@ try {
       leg.harnessFailure = { name: error.name, message: scrub(error.message).slice(0, 1500) };
     } finally {
       await delay(2000);
-      leg.trace = traceQuery.all(leg.correlationId, name, name);
+      // The public combo has other callers/history: include only our correlation.
+      leg.trace = traceQuery.all(
+        leg.correlationId,
+        ordinaryCombo ? runId : name,
+        ordinaryCombo ? runId : name
+      );
       // A timed-out create is reconciled by the unique name, never replayed.
-      const owned = db.prepare("SELECT id FROM combos WHERE name=?").get(name);
+      const owned = ordinaryCombo
+        ? undefined
+        : db.prepare("SELECT id FROM combos WHERE name=?").get(name);
       if (owned) {
         leg.temporaryComboId ||= owned.id;
         try {
@@ -655,7 +723,9 @@ try {
           leg.cleanupError = scrub(error.message).slice(0, 500);
         }
       }
-      leg.temporaryComboRemoved = !db.prepare("SELECT id FROM combos WHERE name=?").get(name);
+      leg.temporaryComboRemoved = ordinaryCombo
+        ? true
+        : !db.prepare("SELECT id FROM combos WHERE name=?").get(name);
       leg.actualPinnedTrace = leg.trace.some(
         (row) =>
           row.provider === provider &&
@@ -670,8 +740,57 @@ try {
         trace: leg.trace,
       });
       classifyTrace(leg);
+      if (ordinaryCombo) {
+        leg.actualProviderTrace = leg.trace.filter((row) => row.connection_id);
+        const isNamedZcode = (row) =>
+          definitions.some(
+            ([providerId, account]) =>
+              row.provider === providerId &&
+              row.connection_id === account &&
+              row.model === "glm-5.3-flash"
+          );
+        const success = leg.actualProviderTrace.filter((row) => row.status === 200);
+        leg.actualPinnedTrace =
+          success.length >= 2 &&
+          success.every(
+            (row) =>
+              isNamedZcode(row) &&
+              row.client_session_id === leg.sessionID &&
+              row.api_key_name === "opencode-100"
+          );
+        leg.unexpectedTrace = leg.actualProviderTrace.filter((row) => !isNamedZcode(row));
+        leg.dispatchProven = leg.actualProviderTrace.length > 0;
+        leg.provider429 = leg.actualProviderTrace.some(
+          (row) => isNamedZcode(row) && !isLocalGate(row) && isQuotaError(row)
+        );
+        leg.nonZcodeSuccess = success.filter((row) => !isNamedZcode(row));
+        for (const outcome of leg.httpOutcomes) {
+          const row = leg.trace.find((row) => row.id === outcome.id);
+          if (row.connection_id)
+            outcome.scope = isNamedZcode(row)
+              ? "native_provider_attempt"
+              : "other_provider_attempt";
+          else if (row.provider === name && !isLocalGate(row)) outcome.scope = "aggregate_error";
+        }
+        try {
+          const existing = await management("/api/combos/7a4a012a-ee6a-4553-8d78-18279dc79885");
+          leg.existingComboUnchanged =
+            leg.existingComboReadback?.sha256 ===
+            createHash("sha256").update(JSON.stringify(existing)).digest("hex");
+        } catch (error) {
+          leg.existingComboUnchanged = false;
+          leg.existingComboVerificationError = scrub(error.message).slice(0, 500);
+        }
+      }
       leg.hostClosedObserved = /host client is closed/i.test(diagnosticText);
       leg.hostTimeoutObserved = /host request timed out/i.test(diagnosticText);
+      leg.consumerRoundtrip = Boolean(
+        leg.readCompleted &&
+        leg.readReturnedNonce &&
+        leg.answerMatchesNonce &&
+        leg.historyContinuationObserved &&
+        leg.consumer?.exitCode === 0
+      );
       leg.status = leg.harnessFailure
         ? "HARNESS_ERROR"
         : leg.readCompleted &&
@@ -680,6 +799,7 @@ try {
             leg.historyContinuationObserved &&
             leg.actualPinnedTrace &&
             leg.unexpectedTrace.length === 0 &&
+            (!ordinaryCombo || leg.existingComboUnchanged) &&
             leg.consumer?.exitCode === 0
           ? "GREEN"
           : "RED";
