@@ -8,6 +8,8 @@ import type { ExecuteInput, ProviderCredentials } from "../base.ts";
 import { NativeSessionError } from "./nativeSession.ts";
 import { exchangeZaiBusinessToken, isLegacyZaiOAuthToken } from "./oauthGrant.ts";
 
+export type NativePlanKind = "start-plan" | "individual-coding-plan";
+
 type NativeAccount = {
   connectionId: string;
   family: "zai" | "bigmodel";
@@ -16,9 +18,13 @@ type NativeAccount = {
   accessToken: string;
   refreshToken?: string;
   idToken: string;
+  plan: NativePlanKind;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-export function nativeAccountFromCredentials(credentials: ProviderCredentials): NativeAccount {
+export function nativeAccountFromCredentials(
+  credentials: ProviderCredentials,
+  plan: NativePlanKind = "individual-coding-plan"
+): NativeAccount {
   const data = credentials.providerSpecificData || {};
   if (
     !credentials.connectionId ||
@@ -36,6 +42,7 @@ export function nativeAccountFromCredentials(credentials: ProviderCredentials): 
     accessToken: credentials.accessToken,
     refreshToken: credentials.refreshToken || undefined,
     idToken: credentials.idToken,
+    plan,
   };
 }
 async function privateWrite(path: string, value: unknown): Promise<void> {
@@ -68,7 +75,7 @@ export async function prepareNativeAccountState(root: string, account: NativeAcc
   const fingerprint = hash(
     JSON.stringify([account.accessToken, account.refreshToken, account.idToken])
   );
-  let previous: { identity?: string; fingerprint?: string } = {};
+  let previous: { identity?: string; fingerprint?: string; plan?: NativePlanKind } = {};
   try {
     previous = JSON.parse(await readFile(join(directory, "account.json"), "utf8"));
   } catch (error) {
@@ -79,7 +86,8 @@ export async function prepareNativeAccountState(root: string, account: NativeAcc
       "Native ZCode account identity changed; reconnect this account",
       409
     );
-  if (previous.fingerprint !== fingerprint) {
+  const credentialsChanged = previous.fingerprint !== fingerprint;
+  if (credentialsChanged) {
     const plain: Record<string, string> = {
       "oauth:active_provider": account.family,
       [`oauth:${account.family}:access_token`]: account.accessToken,
@@ -99,11 +107,17 @@ export async function prepareNativeAccountState(root: string, account: NativeAcc
         Object.entries(plain).map(([name, value]) => [name, encrypt(value, secret)])
       )
     );
+  }
+  if (credentialsChanged || previous.plan !== account.plan) {
     await privateWrite(join(config, "setting.json"), {
       providerFamilyDomain: account.family,
-      providerFamilyConnectionSelections: { [account.family]: { kind: "individual-coding-plan" } },
+      providerFamilyConnectionSelections: { [account.family]: { kind: account.plan } },
     });
-    await privateWrite(join(directory, "account.json"), { identity, fingerprint });
+    await privateWrite(join(directory, "account.json"), {
+      identity,
+      fingerprint,
+      plan: account.plan,
+    });
   }
   return { directory, serverRoot: join(directory, ".zcode", "server"), secret, fingerprint };
 }
@@ -156,7 +170,7 @@ export async function resolveNativeRuntime(dataDirectory = resolveDataDir()): Pr
   throw new NativeSessionError("A compatible ZCode native server runtime is not installed", 503);
 }
 
-type Host = { child: ChildProcess; fingerprint: string; serverRoot: string };
+type Host = { child: ChildProcess; fingerprint: string; plan: NativePlanKind; serverRoot: string };
 export class NativeZcodeHostManager {
   private hosts = new Map<string, Host>();
   private starting = new Map<string, Promise<string>>();
@@ -167,9 +181,10 @@ export class NativeZcodeHostManager {
 
   async ensure(
     credentials: ProviderCredentials,
-    persist?: ExecuteInput["onCredentialsRefreshed"]
+    persist?: ExecuteInput["onCredentialsRefreshed"],
+    plan: NativePlanKind = "individual-coding-plan"
   ): Promise<string> {
-    const account = nativeAccountFromCredentials(credentials);
+    const account = nativeAccountFromCredentials(credentials, plan);
     if (
       account.family === "zai" &&
       credentials.providerSpecificData?.accessTokenFormat !== "business" &&
@@ -202,13 +217,14 @@ export class NativeZcodeHostManager {
       host &&
       host.child.exitCode === null &&
       !host.child.killed &&
-      host.fingerprint === fingerprint
+      host.fingerprint === fingerprint &&
+      host.plan === account.plan
     )
       return host.serverRoot;
     const existing = this.starting.get(account.connectionId);
     if (existing) {
       await existing;
-      return this.ensure(credentials, persist);
+      return this.ensure(credentials, persist, plan);
     }
     const task = this.start(account);
     this.starting.set(account.connectionId, task);
@@ -294,6 +310,7 @@ export class NativeZcodeHostManager {
       this.hosts.set(account.connectionId, {
         child,
         fingerprint: state.fingerprint,
+        plan: account.plan,
         serverRoot: state.serverRoot,
       });
       child.once("exit", () => {

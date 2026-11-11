@@ -614,7 +614,11 @@ export class ZcodeExecutor extends BaseExecutor {
         let serverRoot: string;
         if (oauth)
           serverRoot = await waitNative(() =>
-            nativeZcodeHosts.ensure(credentials, input.onCredentialsRefreshed)
+            nativeZcodeHosts.ensure(
+              credentials,
+              input.onCredentialsRefreshed,
+              individual ? "individual-coding-plan" : "start-plan"
+            )
           );
         else {
           if (
