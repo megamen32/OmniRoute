@@ -187,3 +187,35 @@ test("no session affinity configured: reset-aware forcedConnectionId applies exa
     "with affinity disabled (ttl=0) each request must honor the fresh forcedConnectionId"
   );
 });
+
+test("explicit ZCode account pin wins over stale session affinity", async () => {
+  await settingsDb.updateSettings({
+    fallbackStrategy: "reset-aware",
+    zcodeSessionAffinityTtlMs: 60_000,
+  });
+
+  const start = await seedConnection("zcode", {
+    name: "zcode-start-pin",
+    providerSpecificData: { family: "zai" },
+  });
+  const other = await seedConnection("zcode", {
+    name: "zcode-other-pin",
+    providerSpecificData: { family: "zai" },
+  });
+
+  const request1 = await auth.getProviderCredentials("zcode-start", null, null, "glm-5.3-flash", {
+    sessionKey: "zcode-session-pin",
+    forcedConnectionId: start.id,
+  });
+  assert.equal(request1?.connectionId, start.id);
+
+  const request2 = await auth.getProviderCredentials("zcode-start", null, null, "glm-5.3-flash", {
+    sessionKey: "zcode-session-pin",
+    forcedConnectionId: other.id,
+  });
+  assert.equal(
+    request2?.connectionId,
+    other.id,
+    "an explicit ZCode pin must not be redirected by stale session affinity"
+  );
+});

@@ -1061,7 +1061,12 @@ export async function getProviderCredentials(
       affinityStore.driver === "redis" && options.sessionKey && sessionAffinityTtlMs > 0
         ? await affinityStore.get(options.sessionKey, provider, sessionAffinityTtlMs)
         : undefined;
-    if (!options.lease) {
+    // An explicit ZCode account pin comes from the caller's provider profile
+    // (for example OpenCode's x-omniroute-connection header). A stale session
+    // affinity record must not redirect that request to another tariff or
+    // account; doing so can turn Start into an Individual fallback after the
+    // pinned account's native registry is checked.
+    if (!options.lease && !isZcodeRoute) {
       forcedConnectionId =
         applySessionAffinityPin({
           affinityRecord,
