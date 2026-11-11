@@ -87,7 +87,28 @@ export async function prepareNativeAccountState(root: string, account: NativeAcc
       409
     );
   const credentialsChanged = previous.fingerprint !== fingerprint;
-  if (credentialsChanged) {
+  let credentialsNeedRepair = credentialsChanged;
+  if (!credentialsNeedRepair) {
+    try {
+      const stored = JSON.parse(await readFile(join(config, "credentials.json"), "utf8")) as Record<
+        string,
+        unknown
+      >;
+      const requiredKeys = [
+        "oauth:active_provider",
+        `oauth:${account.family}:access_token`,
+        `oauth:${account.family}:user_info`,
+        "zcodejwttoken",
+      ];
+      credentialsNeedRepair = requiredKeys.some(
+        (key) => typeof stored[key] !== "string" || !stored[key].startsWith("enc:v1:")
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") credentialsNeedRepair = true;
+      else throw error;
+    }
+  }
+  if (credentialsNeedRepair) {
     const plain: Record<string, string> = {
       "oauth:active_provider": account.family,
       [`oauth:${account.family}:access_token`]: account.accessToken,
@@ -108,7 +129,7 @@ export async function prepareNativeAccountState(root: string, account: NativeAcc
       )
     );
   }
-  if (credentialsChanged || previous.plan !== account.plan) {
+  if (credentialsChanged || credentialsNeedRepair || previous.plan !== account.plan) {
     await privateWrite(join(config, "setting.json"), {
       providerFamilyDomain: account.family,
       providerFamilyConnectionSelections: { [account.family]: { kind: account.plan } },

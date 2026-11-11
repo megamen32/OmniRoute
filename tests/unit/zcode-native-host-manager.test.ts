@@ -69,10 +69,18 @@ test("native account state is encrypted, isolated, preserves refresh, and reject
     );
     decipher.setAuthTag(tag);
     assert.equal(Buffer.concat([decipher.update(data), decipher.final()]).toString(), "access-one");
-    await writeFile(path, JSON.stringify({ nativeRefreshedState: "preserved" }));
+    await writeFile(
+      path,
+      JSON.stringify({ ...JSON.parse(stored), nativeRefreshedState: "preserved" })
+    );
     const same = await prepareNativeAccountState(root, account);
     assert.equal(same.secret, first.secret);
     assert.equal(JSON.parse(await readFile(path, "utf8")).nativeRefreshedState, "preserved");
+    await writeFile(path, JSON.stringify({}));
+    await prepareNativeAccountState(root, account);
+    const repaired = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(repaired["oauth:zai:access_token"].startsWith("enc:v1:"), true);
+    assert.equal(repaired["oauth:zai:user_info"].startsWith("enc:v1:"), true);
     const second = await prepareNativeAccountState(root, {
       ...account,
       connectionId: "two",
