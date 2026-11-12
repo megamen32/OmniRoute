@@ -127,6 +127,19 @@ type RuntimeModelMeta = {
 // catalog-side skip list in `open-sse/utils/syncedEffortVariants.ts`).
 const SYNCED_EFFORT_SKIP_PROVIDER_PREFIXES = ["kimi"];
 
+const EXPLICIT_ZCODE_MODEL_PREFIXES = new Set([
+  "zcode",
+  "zcode-start",
+  "zcode-individual",
+  "zcode-cn-start",
+  "zcode-cn-individual",
+  "zc",
+  "zc-start",
+  "zc-individual",
+  "zc-cn-start",
+  "zc-cn-individual",
+]);
+
 function isSyncedEffortSkippedProvider(providerId: string): boolean {
   return SYNCED_EFFORT_SKIP_PROVIDER_PREFIXES.some((prefix) => providerId.startsWith(prefix));
 }
@@ -481,7 +494,14 @@ async function lookupModelMeta(
       compatOverrideMatch
     );
     if (effort) metadata.resolvedThinkingEffort = effort;
-    if (!metadata.targetFormat && !syncedMatch && !registryMatch) {
+    const syncedDeclaresChatEndpoint =
+      Array.isArray(syncedMatch?.supportedEndpoints) &&
+      syncedMatch.supportedEndpoints.some(
+        (ep: unknown) =>
+          typeof ep === "string" &&
+          (ep === "chat" || ep.includes("chat/completions") || ep.includes("chat-completions"))
+      );
+    if (!metadata.targetFormat && !syncedDeclaresChatEndpoint && !registryMatch) {
       const inferredTargetFormat = inferGithubUnsyncedTargetFormat(providerId, resolvedModelId);
       if (inferredTargetFormat) metadata.targetFormat = inferredTargetFormat;
     }
@@ -800,10 +820,20 @@ export async function getComboForModel(modelStr) {
     if (combo) return combo;
   }
 
+  // Explicit ZCode provider/model pins must reach their selected native
+  // account directly. The generic GLM Flash subscription mapping is intended
+  // for bare or client-namespaced models; applying it to zcode-* turns a
+  // China Start pin into the worldwide Start/Individual ladder first.
+  const mappingModel = baseModelStr || modelStr;
+  const mappingProvider =
+    typeof mappingModel === "string" ? mappingModel.slice(0, mappingModel.indexOf("/")) : "";
+  if (mappingProvider && EXPLICIT_ZCODE_MODEL_PREFIXES.has(mappingProvider.toLowerCase()))
+    return null;
+
   // 2. NEW — check model-combo mappings table (pattern match)
   try {
     const { resolveComboForModel } = await import("@/lib/db/modelComboMappings");
-    const mapped = await resolveComboForModel(baseModelStr || modelStr);
+    const mapped = await resolveComboForModel(mappingModel);
     if (mapped && (mapped as any).models?.length > 0) {
       return mapped;
     }

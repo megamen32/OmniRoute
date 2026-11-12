@@ -22,6 +22,7 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 
 const core = await import("../../src/lib/db/core.ts");
 const combosDb = await import("../../src/lib/db/combos.ts");
+const modelComboMappingsDb = await import("../../src/lib/db/modelComboMappings.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
 const sseModelService = await import("../../src/sse/services/model.ts");
 
@@ -90,6 +91,22 @@ test("known provider id keeps an explicit provider/model pin even with a homonym
   assert.equal(await sseModelService.getComboForModel("openai/gpt-5.5"), null);
   // The bare name still resolves to the combo (documented #6940 mechanism).
   assert.equal(((await sseModelService.getCombo("gpt-5.5")) as ComboLike | null)?.name, "gpt-5.5");
+});
+
+test("explicit ZCode model pins bypass generic subscription mappings", async () => {
+  const combo = await seedCombo("glm-flash-subscription-ladder");
+  await modelComboMappingsDb.createModelComboMapping({
+    pattern: "*/glm-5.3-flash",
+    comboId: combo.id,
+    priority: 100,
+  });
+
+  assert.equal(await sseModelService.getComboForModel("zcode-start/glm-5.3-flash"), null);
+  assert.equal(await sseModelService.getComboForModel("zcode-cn-start/glm-5.3-flash"), null);
+  assert.equal(
+    ((await sseModelService.getComboForModel("tenant/glm-5.3-flash")) as ComboLike | null)?.name,
+    "glm-flash-subscription-ladder"
+  );
 });
 
 test("known provider id (openrouter) is never stripped to reach a combo", async () => {
