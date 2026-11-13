@@ -356,7 +356,42 @@ function assertLease(
 }
 
 function maxAttemptsFor(provider: string): number {
-  return provider === "codex" ? 3 : 1;
+  if (provider === "codex") return 3;
+  if (
+    provider === "zcode-start" ||
+    provider === "zcode-cn-start" ||
+    provider === "zcode-individual" ||
+    provider === "zcode-cn-individual"
+  )
+    return 4;
+  return 1;
+}
+
+function isZcodeNativeRegistryError(provider: string, status: number, message: string): boolean {
+  return (
+    status === 400 &&
+    (provider === "zcode-start" ||
+      provider === "zcode-cn-start" ||
+      provider === "zcode-individual" ||
+      provider === "zcode-cn-individual") &&
+    /^ZCode Coding Plan model ".+" is not supported or not enabled in the native provider registry\.$/.test(
+      message
+    )
+  );
+}
+
+async function upstreamErrorMessage(response: Response): Promise<string> {
+  let message = response.statusText || "upstream error";
+  try {
+    const parsed = JSON.parse(await readResponseTextWithinCap(response.clone())) as {
+      error?: { message?: unknown };
+    };
+    if (typeof parsed?.error?.message === "string" && parsed.error.message)
+      message = parsed.error.message;
+  } catch {
+    // Keep statusText when the upstream body is unavailable or non-JSON.
+  }
+  return message;
 }
 
 /**
@@ -453,6 +488,29 @@ export async function runProviderExecutionPipeline(
 
     const isolateProbe = await state.isolateProbeFailures();
     const canRotateAccount = policy.allowAccountRotation && !isolateProbe;
+
+    if (
+      canRotateAccount &&
+      isZcodeNativeRegistryError(
+        target.provider,
+        status,
+        await upstreamErrorMessage(attempt.response)
+      ) &&
+      attempts < maxAttempts - 1
+    ) {
+      const failedId = currentConnectionId(connection);
+      if (failedId && !excludedIds.includes(failedId)) excludedIds.push(failedId);
+      const nextCreds = await connection
+        .getProviderCredentials(target.provider, null, allowedConnections, wire.currentModel, {
+          excludeConnectionIds: [...excludedIds],
+        })
+        .catch(() => null);
+      if (nextCreds && !nextCreds.allRateLimited && nextCreds.connectionId) {
+        connection.replaceCredentials(nextCreds as Record<string, unknown>);
+        attempts += 1;
+        continue;
+      }
+    }
 
     if (
       canRotateAccount &&

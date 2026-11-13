@@ -203,6 +203,102 @@ test("initial Antigravity 422 gcp_project_required: rotation resolver>=1 and suc
   }
 });
 
+test("ZCode native registry 400 rotates an unpinned account and retries", async () => {
+  const { runProviderExecutionPipeline } =
+    await import("../../open-sse/handlers/chatCore/providerExecutionPipeline.ts");
+  const sentConnectionIds: string[] = [];
+  const resolverCalls: Array<{
+    provider: string;
+    excludeConnectionIds?: string[] | null;
+  }> = [];
+  let activeConnectionId = "zcode-a";
+  let sends = 0;
+  const input = makeInput({
+    policy: { allowAccountRotation: true, allowModelFallback: false },
+    provider: "zcode-start",
+    model: "glm-5.3-flash",
+    connectionId: "zcode-a",
+    getCurrentConnectionId: () => activeConnectionId,
+    replaceCredentials: (next) => {
+      activeConnectionId = String(next.connectionId);
+    },
+    send: async () => {
+      sentConnectionIds.push(activeConnectionId);
+      sends += 1;
+      if (sends === 1) {
+        return makeAttempt(
+          {
+            error: {
+              message:
+                'ZCode Coding Plan model "glm-5.3-flash" is not supported or not enabled in the native provider registry.',
+            },
+          },
+          400
+        );
+      }
+      return makeAttempt({ choices: [{ message: { content: "recovered" } }] }, 200);
+    },
+    getProviderCredentials: (async (
+      provider,
+      _excludeConnectionId,
+      _allowedConnections,
+      _requestedModel,
+      options
+    ) => {
+      resolverCalls.push({ provider, excludeConnectionIds: options.excludeConnectionIds });
+      return { connectionId: "zcode-b", allRateLimited: false };
+    }) as PipelineConnectionContext["getProviderCredentials"],
+  });
+
+  const outcome = await runProviderExecutionPipeline(input);
+  assert.equal(outcome.kind, "response");
+  assert.equal(sends, 2);
+  assert.deepEqual(sentConnectionIds, ["zcode-a", "zcode-b"]);
+  assert.deepEqual(resolverCalls, [{ provider: "zcode-start", excludeConnectionIds: ["zcode-a"] }]);
+  if (outcome.kind === "response") {
+    assert.equal(outcome.connectionId, "zcode-b");
+    assert.equal(outcome.response.status, 200);
+  }
+});
+
+test("ZCode native registry 400 does not rotate a pinned account", async () => {
+  const { runProviderExecutionPipeline } =
+    await import("../../open-sse/handlers/chatCore/providerExecutionPipeline.ts");
+  let resolverCalls = 0;
+  const input = makeInput({
+    policy: {
+      allowAccountRotation: false,
+      allowModelFallback: false,
+      expectedConnectionId: "zcode-a",
+    },
+    provider: "zcode-start",
+    model: "glm-5.3-flash",
+    connectionId: "zcode-a",
+    send: async () =>
+      makeAttempt(
+        {
+          error: {
+            message:
+              'ZCode Coding Plan model "glm-5.3-flash" is not supported or not enabled in the native provider registry.',
+          },
+        },
+        400
+      ),
+    getProviderCredentials: (async () => {
+      resolverCalls += 1;
+      return { connectionId: "zcode-b", allRateLimited: false };
+    }) as PipelineConnectionContext["getProviderCredentials"],
+  });
+
+  const outcome = await runProviderExecutionPipeline(input);
+  assert.equal(outcome.kind, "error");
+  assert.equal(resolverCalls, 0);
+  if (outcome.kind === "error") {
+    assert.equal(outcome.connectionId, "zcode-a");
+    assert.equal(outcome.result.status, 400);
+  }
+});
+
 test("terminal error carries only the final attempt diagnostic outside ChatCoreErrorResult", async () => {
   const { runProviderExecutionPipeline } =
     await import("../../open-sse/handlers/chatCore/providerExecutionPipeline.ts");
