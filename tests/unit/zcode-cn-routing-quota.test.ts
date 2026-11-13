@@ -19,7 +19,7 @@ test.after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("OAuth route selects the proper family, respects pins and never falls across families", async () => {
+test("region-specific routes stay isolated while zcode-start pools every Start account", async () => {
   const accounts = [];
   for (const family of ["zai", "bigmodel"]) {
     accounts.push(
@@ -35,7 +35,6 @@ test("OAuth route selects the proper family, respects pins and never falls acros
     );
   }
   for (const [provider, index] of [
-    ["zcode-start", 0],
     ["zcode-individual", 0],
     ["zcode-cn-start", 1],
     ["zcode-cn-individual", 1],
@@ -63,6 +62,18 @@ test("OAuth route selects the proper family, respects pins and never falls acros
     );
     assert.notEqual(wrongOnly?.connectionId, "noauth", `${provider} must not use synthetic`);
   }
+
+  const dynamic = await auth.getProviderCredentials("zcode-start", null, null, "glm-5.3-flash");
+  assert.ok(dynamic?.connectionId === accounts[0].id || dynamic?.connectionId === accounts[1].id);
+  const allowedBoth = await auth.getProviderCredentials(
+    "zcode-start",
+    null,
+    accounts.map((account) => account.id),
+    "glm-5.3-flash"
+  );
+  assert.ok(
+    allowedBoth?.connectionId === accounts[0].id || allowedBoth?.connectionId === accounts[1].id
+  );
 });
 
 test("CN OAuth quota is isolated by tariff and never hides auth or provider errors", () => {

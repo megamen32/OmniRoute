@@ -522,9 +522,13 @@ const ZCODE_ACCOUNT_PROVIDER_IDS = new Set([
   "zcode-cn-individual",
 ]);
 
-function zcodeAccountFamily(provider: string): "zai" | "bigmodel" | null {
+function zcodeAccountFamily(provider: string): "zai" | "bigmodel" | "mixed-start" | null {
   if (provider === "zcode-cn-start" || provider === "zcode-cn-individual") return "bigmodel";
-  if (provider === "zcode-start" || provider === "zcode-individual") return "zai";
+  if (provider === "zcode-individual") return "zai";
+  // The public Start route is intentionally region-agnostic. The executor
+  // reads the selected connection's family and uses the matching ZCode
+  // endpoint/model-selection provider, so account selection can stay dynamic.
+  if (provider === "zcode-start") return "mixed-start";
   return null;
 }
 
@@ -539,7 +543,11 @@ function filterZcodeAccountFamily<T extends { providerSpecificData?: unknown }>(
   if (!family || forcedConnectionId) return connections;
   const familyConnections = connections.filter((connection) => {
     const data = connection.providerSpecificData;
-    return Boolean(data && typeof data === "object" && (data as JsonRecord).family === family);
+    if (!data || typeof data !== "object") return family === "mixed-start";
+    const accountFamily = (data as JsonRecord).family;
+    return family === "mixed-start"
+      ? accountFamily === "zai" || accountFamily === "bigmodel"
+      : accountFamily === family;
   });
   if (familyConnections.length > 0) return familyConnections;
   // Older OAuth rows may predate the family marker. Keep them usable until a
