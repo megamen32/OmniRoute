@@ -449,7 +449,8 @@ function getP2CConnectionScore(
       connection.id,
       provider,
       requestedModel,
-      connection.providerSpecificData
+      connection.providerSpecificData,
+      connection.authType
     );
   }
 
@@ -514,6 +515,41 @@ function compareP2CConnections(
  * exclude it (#3061), otherwise it gets re-selected forever.
  */
 const SYNTHETIC_NOAUTH_CONNECTION_ID = "noauth";
+const ZCODE_ACCOUNT_PROVIDER_IDS = new Set([
+  "zcode-start",
+  "zcode-individual",
+  "zcode-cn-start",
+  "zcode-cn-individual",
+]);
+
+function zcodeAccountFamily(provider: string): "zai" | "bigmodel" | null {
+  if (provider === "zcode-cn-start" || provider === "zcode-cn-individual") return "bigmodel";
+  if (provider === "zcode-start" || provider === "zcode-individual") return "zai";
+  return null;
+}
+
+function filterZcodeAccountFamily<T extends { providerSpecificData?: unknown }>(
+  provider: string,
+  connections: T[],
+  forcedConnectionId: string | null
+): T[] {
+  const family = zcodeAccountFamily(provider);
+  // An explicit dashboard or combo pin is authoritative. Unpinned selection
+  // stays inside the requested international or China account family.
+  if (!family || forcedConnectionId) return connections;
+  const familyConnections = connections.filter((connection) => {
+    const data = connection.providerSpecificData;
+    return Boolean(data && typeof data === "object" && (data as JsonRecord).family === family);
+  });
+  if (familyConnections.length > 0) return familyConnections;
+  // Older OAuth rows may predate the family marker. Keep them usable until a
+  // re-login supplies the metadata; a tagged pool remains strictly isolated.
+  const hasFamilyMetadata = connections.some((connection) => {
+    const data = connection.providerSpecificData;
+    return Boolean(data && typeof data === "object" && typeof (data as JsonRecord).family === "string");
+  });
+  return hasFamilyMetadata ? [] : connections;
+}
 type AnonymousFallbackProviderDefinition = {
   anonymousFallback?: boolean;
   noAuth?: boolean;
@@ -656,6 +692,7 @@ async function maybeSyntheticNoAuthFallback(
   requestedModelForPause?: string | null,
   restrictionSources?: readonly ConnectionRestrictionSource[]
 ) {
+  if (ZCODE_ACCOUNT_PROVIDER_IDS.has(providerId)) return null;
   if (!providerCanUseSyntheticNoAuthFallback(providerId)) return null;
   const refuse = createNoAuthRefusalLogger(providerId, allowedConnections, restrictionSources);
   // Restricted callers must explicitly admit the synthetic connection.
@@ -852,6 +889,7 @@ async function materializeConnection(
     apiKey: connection.apiKey,
     accessToken: connection.accessToken,
     refreshToken: connection.refreshToken,
+    idToken: connection.idToken,
     expiresAt: connection.tokenExpiresAt || connection.expiresAt || null,
     projectId: connection.projectId,
     defaultModel: connection.defaultModel || null,
@@ -918,7 +956,15 @@ export async function getProviderCredentials(
       NOAUTH_PROVIDERS as Record<string, { noAuth?: boolean } | undefined>,
       WEB_COOKIE_PROVIDERS as Record<string, { noAuth?: boolean } | undefined>,
     ];
-    if (providerMaps.some((map) => map[resolvedId]?.noAuth)) {
+    const usesStoredZcodeAccount =
+      ZCODE_ACCOUNT_PROVIDER_IDS.has(resolvedId) ||
+      (resolvedId === "zcode" &&
+        (Boolean(options.forcedConnectionId) ||
+          Boolean(allowedConnections && allowedConnections.length > 0)));
+    if (
+      providerMaps.some((map) => map[resolvedId]?.noAuth) &&
+      !usesStoredZcodeAccount
+    ) {
       if (await isNoAuthProviderBlockedBySettings(resolvedId)) return null;
       // #3061: there is only one synthetic "noauth" connection for a no-auth
       // provider. If the caller already tried and excluded it (account-fallback
@@ -1000,6 +1046,7 @@ export async function getProviderCredentials(
     let connections = (Array.isArray(connectionsRaw) ? connectionsRaw : [])
       .map(createLazyConnectionView)
       .filter((conn) => conn.id.length > 0);
+    connections = filterZcodeAccountFamily(provider, connections, forcedConnectionId);
     if (isAlibabaModelStudioProvider(provider)) {
       for (const conn of connections) {
         rehydrateAlibabaFreeDrainedModelLocks(
@@ -1087,7 +1134,8 @@ export async function getProviderCredentials(
       // next target — the same mechanism a whole disabled provider already relies on.
       connections = [];
     } else {
-      forcedConnectionId = resolveForcedConnectionForCredentialPool({
+      const requestedForcedConnectionId = forcedConnectionId;
+      const resolvedForcedConnectionId = resolveForcedConnectionForCredentialPool({
         forcedConnectionId,
         excludedConnectionIds,
         connections,
@@ -1099,13 +1147,35 @@ export async function getProviderCredentials(
             connectionId,
             provider,
             requestedModel,
-            conn?.providerSpecificData
+            conn?.providerSpecificData,
+            conn?.authType
           );
         },
         isQuotaPolicyBlocked: (connection) =>
           evaluateQuotaLimitPolicy(provider, connection as ProviderConnectionView, requestedModel)
             .blocked,
       });
+
+      // A direct ZCode account pin must surface that account's exhausted tariff
+      // instead of silently switching to another account. Combo retries release
+      // the pin by adding it to excludedConnectionIds; an unexcluded operator
+      // pin remains authoritative and reaches the allRateLimited result below.
+      forcedConnectionId =
+        ZCODE_ACCOUNT_PROVIDER_IDS.has(provider) &&
+        requestedForcedConnectionId &&
+        !excludedConnectionIds.has(requestedForcedConnectionId) &&
+        resolvedForcedConnectionId === null &&
+        connections.some((connection) => connection.id === requestedForcedConnectionId) &&
+        isQuotaExhaustedForRequest(
+          requestedForcedConnectionId,
+          provider,
+          requestedModel,
+          connections.find((connection) => connection.id === requestedForcedConnectionId)
+            ?.providerSpecificData,
+          connections.find((connection) => connection.id === requestedForcedConnectionId)?.authType
+        )
+        ? requestedForcedConnectionId
+        : resolvedForcedConnectionId;
 
       if (forcedConnectionId) {
         connections = connections.filter((conn) => conn.id === forcedConnectionId);
@@ -1141,6 +1211,7 @@ export async function getProviderCredentials(
       let allConnections = (allConnectionsResults.filter(Array.isArray).flat() as unknown[])
         .map(toProviderConnection)
         .filter((conn) => conn.id.length > 0);
+      allConnections = filterZcodeAccountFamily(provider, allConnections, forcedConnectionId);
       // #13832: remember how many connections the provider really has BEFORE the
       // key-policy filter, so an empty pool can say which gate emptied it. Without
       // this the caller only ever saw "No active credentials for provider: X",
@@ -1634,7 +1705,8 @@ export async function getProviderCredentials(
         c.id,
         provider,
         requestedModel,
-        c.providerSpecificData
+        c.providerSpecificData,
+        c.authType
       );
       const existing = quotaResults.get(c.id);
       if (existing) existing.exhausted = exhausted;

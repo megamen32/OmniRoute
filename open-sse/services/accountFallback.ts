@@ -1021,6 +1021,16 @@ export function hasPerModelQuota(
   }
   if (!provider) return false;
   const canonicalId = resolveProviderId(provider);
+  if (
+    [
+      "zcode",
+      "zcode-start",
+      "zcode-individual",
+      "zcode-cn-start",
+      "zcode-cn-individual",
+    ].includes(canonicalId)
+  )
+    return true;
   if (getCanonicalLockProvider(canonicalId) === "antigravity") return true;
   if (getCanonicalLockProvider(canonicalId) === "codex") return true;
   if (canonicalId === "gemini" || canonicalId === "github") return true;

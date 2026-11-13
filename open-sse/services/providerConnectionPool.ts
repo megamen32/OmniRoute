@@ -12,6 +12,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 const PROVIDER_SEARCH_PAIRS: string[][] = [
   ["nvidia", "nvidia_nim"],
   ["kimi-coding", "kimi-coding-apikey"],
+  // ZCode stores the encrypted OAuth accounts under the shared zcode
+  // provider. Explicit tariff and region routes need that account pool so
+  // their connection pins select the real account.
+  ["zcode-start", "zcode"],
+  ["zcode-individual", "zcode"],
+  ["zcode-cn-start", "zcode"],
+  ["zcode-cn-individual", "zcode"],
   // The model layer canonicalizes `agy/` to `antigravity`, but the Antigravity
   // CLI card stores its connection under `agy`. Same account, either id serves.
   ["antigravity", "agy"],
