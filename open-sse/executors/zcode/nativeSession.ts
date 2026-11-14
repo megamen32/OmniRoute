@@ -147,6 +147,15 @@ function validateCompletedNativeResults(messages: RecordValue[], required: strin
 }
 
 type Tool = { name: string; description?: string; inputSchema: RecordValue };
+export type NativeZcodeAttachment = {
+  kind: "image" | "audio" | "video" | "pdf" | "file";
+  filename: string;
+  mimeType: string;
+  sizeBytes?: number;
+  dataBase64?: string;
+  localPath?: string;
+  textContent?: string;
+};
 type PendingTool = {
   id: string;
   rpcId: string | number;
@@ -227,6 +236,7 @@ export class NativeZcodeSessionBridge {
     selection: { providerId: string; modelId: string; options?: { reasoningLevel?: string } };
     messages: RecordValue[];
     tools: Tool[];
+    attachments?: NativeZcodeAttachment[];
     signal?: AbortSignal | null;
     deadline?: number;
   }): Promise<RecordValue> {
@@ -744,6 +754,7 @@ export class NativeZcodeSessionBridge {
             modelSelection: input.selection,
             inputId: randomUUID(),
             content,
+            ...(input.attachments?.length ? { attachments: input.attachments } : {}),
           },
         ],
         turn

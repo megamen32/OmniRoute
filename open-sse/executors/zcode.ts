@@ -21,7 +21,11 @@ import { MAX_CURSOR_IMAGES, resolveCursorImages } from "../utils/cursorImages.ts
 import { isInstanceDraining as isDraining } from "../utils/drainStatus.ts";
 import { createHash } from "node:crypto";
 import { NativeZcodeHostClient } from "./zcode/nativeHostClient.ts";
-import { NativeZcodeSessionBridge, NativeSessionError } from "./zcode/nativeSession.ts";
+import {
+  NativeZcodeSessionBridge,
+  NativeSessionError,
+  type NativeZcodeAttachment,
+} from "./zcode/nativeSession.ts";
 import { nativeZcodeHosts } from "./zcode/nativeHostManager.ts";
 
 import { normalizeZcodeResponseText } from "./zcode/responseText.ts";
@@ -194,6 +198,38 @@ function userContent(content: unknown): string | JsonRecord[] {
   return blocks.some((part) => part.type === "image")
     ? blocks
     : blocks.map((part) => part.text).join("");
+}
+
+function nativeSessionText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => ["text", "input_text", "output_text"].includes(String(asRecord(part).type)))
+    .map((part) => String(asRecord(part).text ?? ""))
+    .join("");
+}
+
+function nativeSessionAttachments(messages: JsonRecord[]): NativeZcodeAttachment[] {
+  let index = 0;
+  return messages.flatMap((message) => {
+    if (!Array.isArray(message.content)) return [];
+    return message.content.flatMap((part) => {
+      const block = asRecord(part);
+      if (block.type !== "image" || typeof block.dataUrl !== "string") return [];
+      const match = /^data:([^;,]+);base64,(.*)$/s.exec(block.dataUrl);
+      if (!match) return [];
+      index += 1;
+      return [
+        {
+          kind: "image",
+          filename: "image-" + index + "." + (match[1].split("/")[1] || "bin"),
+          mimeType: typeof block.mediaType === "string" ? block.mediaType : match[1],
+          sizeBytes: Math.floor(Buffer.byteLength(match[2], "base64")),
+          dataBase64: match[2],
+        } satisfies NativeZcodeAttachment,
+      ];
+    });
+  });
 }
 
 /** Reuse bounded public-URL fetching; retain original image bytes without JPEG prep. */
@@ -697,13 +733,18 @@ export class ZcodeExecutor extends BaseExecutor {
         const sessionBridge = bridge;
         // Reuse validated text parts while retaining the caller's tool-call identity fields.
         const preparedMessages = request.messages as JsonRecord[];
-        const messages = (Array.isArray(body.messages) ? body.messages : []).map(
-          (value, index) => ({ ...asRecord(value), content: preparedMessages[index].content })
-        );
-        if (
-          messages.some((message) => typeof message.content !== "string" && message.content != null)
-        )
-          return errorResponse(400, "Native ZCode sessions currently require text messages");
+        const attachments = nativeSessionAttachments(preparedMessages);
+        const messages = (Array.isArray(body.messages) ? body.messages : []).map((value, index) => {
+          const content = nativeSessionText(preparedMessages[index].content);
+          return {
+            ...asRecord(value),
+            content:
+              content ||
+              (attachments.length
+                ? "Please inspect the attached image and answer the user's request."
+                : ""),
+          };
+        });
         const callerIdentity = Object.entries(input.clientHeaders || {})
           .filter(([name]) => ["authorization", "x-api-key"].includes(name.toLowerCase()))
           .map(([name, value]) => [name.toLowerCase(), value])
@@ -724,6 +765,7 @@ export class ZcodeExecutor extends BaseExecutor {
             description?: string;
             inputSchema: JsonRecord;
           }>,
+          attachments,
           signal: input.signal,
           deadline,
         });
