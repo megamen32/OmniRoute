@@ -79,6 +79,8 @@ interface StickyEntry {
   lastUsedAt: number;
   /** Combo identity that owns this binding (matches `scopeMessageHash` namespace). */
   namespace?: string;
+  /** Provider owning the connection; needed to materialize dynamic pool targets. */
+  provider?: string;
 }
 
 /**
@@ -358,13 +360,15 @@ function evict(): void {
 export function recordStickyBinding(
   messageHash: string,
   connectionId: string,
-  namespace?: string
+  namespace?: string,
+  provider?: string
 ): void {
   const existing = stickyMap.get(messageHash);
   if (existing) {
     existing.connectionId = connectionId;
     existing.lastUsedAt = Date.now();
     if (namespace) existing.namespace = namespace;
+    if (provider) existing.provider = provider;
   } else {
     evict();
     stickyMap.set(messageHash, {
@@ -372,6 +376,7 @@ export function recordStickyBinding(
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       ...(namespace ? { namespace } : {}),
+      ...(provider ? { provider } : {}),
     });
   }
 }
@@ -509,8 +514,22 @@ export async function applySessionStickiness(
 
     const { connectionId } = existing;
 
-    // Find the target that matches the sticky connection
-    const stickyIdx = orderedTargets.findIndex((t) => t.connectionId === connectionId);
+    // Dynamic provider-pool targets have no connectionId until dispatch, so
+    // materialize the saved account on the matching provider target before
+    // promoting it after a successful dynamic failover.
+    let targets = orderedTargets;
+    let stickyIdx = orderedTargets.findIndex((t) => t.connectionId === connectionId);
+    if (stickyIdx === -1 && existing.provider) {
+      const dynamicIdx = orderedTargets.findIndex(
+        (target) => !target.connectionId && target.provider === existing.provider
+      );
+      if (dynamicIdx !== -1) {
+        stickyIdx = dynamicIdx;
+        targets = orderedTargets.map((target, index) =>
+          index === dynamicIdx ? { ...target, connectionId } : target
+        );
+      }
+    }
     if (stickyIdx === -1) {
       // Connection gone from pool — clear binding, fall through
       clearStickyBinding(messageHash);
@@ -521,7 +540,7 @@ export async function applySessionStickiness(
     // durably unhealthy (#6692 — credits_exhausted/banned/expired/rate-limited
     // accounts report healthy 5h/weekly utilization, so headroom alone never
     // catches them).
-    const stickyTarget = orderedTargets[stickyIdx];
+    const stickyTarget = targets[stickyIdx];
     const [sat, connHealth, quotaExhausted] = await Promise.all([
       resolveSaturation(connectionId, stickyTarget.provider),
       resolveConnectionHealth(connectionId, stickyTarget.provider),
@@ -542,14 +561,14 @@ export async function applySessionStickiness(
     // #15241: a caller preserving an operator-declared head keeps its order —
     // a mid-list sticky connection stays mid-list.
     if (options?.respectDeclaredOrder && stickyIdx > 0) {
-      return { targets: orderedTargets, messageHash, stuck: false };
+      return { targets, messageHash, stuck: false };
     }
 
     // Promote the sticky target to position 0
     const reordered = [
-      orderedTargets[stickyIdx],
-      ...orderedTargets.slice(0, stickyIdx),
-      ...orderedTargets.slice(stickyIdx + 1),
+      targets[stickyIdx],
+      ...targets.slice(0, stickyIdx),
+      ...targets.slice(stickyIdx + 1),
     ];
 
     // Refresh lastUsedAt

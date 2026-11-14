@@ -1067,7 +1067,8 @@ export async function handleRoundRobinCombo({
             // #3825: (re)record the sticky binding so the next turn re-pins (prompt-cache).
             if (_rrSessionSticky.messageHash) {
               const stickyConn = effectiveConnectionId || target.connectionId;
-              if (stickyConn) recordStickyBinding(_rrSessionSticky.messageHash, stickyConn);
+              if (stickyConn)
+                recordStickyBinding(_rrSessionSticky.messageHash, stickyConn, undefined, provider);
             }
 
             if (provider) {

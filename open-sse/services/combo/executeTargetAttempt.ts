@@ -776,7 +776,7 @@ export async function executeTargetAttempt(
       // too, so a successful failover from OpenCode to ZCode stays on that
       // working account until the next failure or the session TTL expires.
       if (deps.sticky.messageHash && effectiveConnectionId)
-        recordStickyBinding(deps.sticky.messageHash, effectiveConnectionId); // LKGP (#919):
+        recordStickyBinding(deps.sticky.messageHash, effectiveConnectionId, undefined, provider); // LKGP (#919):
       if (provider) {
         const connId = effectiveConnectionId || undefined;
         recordLkgpPin({

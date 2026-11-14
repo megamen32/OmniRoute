@@ -155,6 +155,27 @@ test("same message hash → same connection in repeated calls while healthy", as
   assert.equal(r2.targets[0].connectionId, "conn-B");
 });
 
+test("dynamic provider target materializes the sticky connection", async () => {
+  const targets = [
+    makeTarget("opencode-account"),
+    {
+      ...makeTarget("dynamic-placeholder"),
+      connectionId: null,
+      provider: "zcode-start",
+      modelStr: "zcode-start/glm-5.3-flash",
+    },
+  ];
+  const messages = [{ role: "user", content: "dynamic account conversation" }];
+  const hash = deriveMessageHash(messages)!;
+  recordStickyBinding(hash, "zcode-account-b", undefined, "zcode-start");
+
+  const result = await applySessionStickiness(targets, messages);
+
+  assert.equal(result.stuck, true);
+  assert.equal(result.targets[0]?.provider, "zcode-start");
+  assert.equal(result.targets[0]?.connectionId, "zcode-account-b");
+});
+
 test("saturated connection → rebind (clear sticky, return normal ordering)", async () => {
   injectSat({ util5h: 0.9, util7d: 0.9 }); // headroom = 0.1, below threshold
   const targets = [makeTarget("conn-A"), makeTarget("conn-B")];
