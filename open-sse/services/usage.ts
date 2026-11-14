@@ -157,6 +157,8 @@ export async function getUsageForProvider(
   switch (provider) {
     case "zcode":
     case "zcode-individual":
+    case "zcode-cn-start":
+    case "zcode-cn-individual":
       return await getManagedZcodeUsage(connection);
     case "zcode-start":
       if (connection.authType === "oauth") return await getManagedZcodeUsage(connection);
