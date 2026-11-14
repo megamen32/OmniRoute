@@ -8,6 +8,10 @@ import type { ExecuteInput, ProviderCredentials } from "../base.ts";
 import { NativeSessionError } from "./nativeSession.ts";
 import { exchangeZaiBusinessToken, isLegacyZaiOAuthToken } from "./oauthGrant.ts";
 
+// Keep the runtime path opaque to Next/Turbopack. The native server is an
+// installed runtime asset and must be resolved only when the host starts.
+const forkNativeRuntime = fork;
+
 export type NativePlanKind = "start-plan" | "individual-coding-plan";
 
 type NativeAccount = {
@@ -293,7 +297,7 @@ export class NativeZcodeHostManager {
     };
     delete env.ZCODE_SERVER_ROOT;
     delete env.NODE_OPTIONS;
-    const child = fork(join(runtime, "server-core.js"), ["1"], {
+    const child = forkNativeRuntime(join(runtime, "server-core.js"), ["1"], {
       execPath: join(runtime, "node"),
       execArgv: [],
       cwd: state.directory,
