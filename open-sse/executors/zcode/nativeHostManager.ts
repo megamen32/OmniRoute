@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, readdir, access } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -263,9 +263,6 @@ export class NativeZcodeHostManager {
       this.hosts.delete(account.connectionId);
     }
     const runtime = this.options.runtime || (await resolveNativeRuntime());
-    // Load the process launcher at runtime so Turbopack does not treat the
-    // installed native server asset as a bundled module.
-    const forkNativeRuntime = (await import("node:child_process")).fork;
     const state = await prepareNativeAccountState(
       this.options.stateRoot || join(resolveDataDir(), "zcode-native"),
       account
@@ -296,9 +293,10 @@ export class NativeZcodeHostManager {
     };
     delete env.ZCODE_SERVER_ROOT;
     delete env.NODE_OPTIONS;
-    const child = forkNativeRuntime(join(runtime, "server-core.js"), ["1"], {
-      execPath: join(runtime, "node"),
-      execArgv: [],
+    // Use an IPC spawn instead of fork so Turbopack never treats the installed
+    // native server asset as a bundled module. The child still receives the
+    // same IPC channel and runs with the pinned runtime executable.
+    const child = spawn(join(runtime, "node"), [join(runtime, "server-core.js"), "1"], {
       cwd: state.directory,
       env,
       stdio: ["ignore", "ignore", "ignore", "ipc"],
