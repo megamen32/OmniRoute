@@ -19,6 +19,11 @@ Once the repair is proven through the real client, make one final reproducible b
 that includes the tested patches. A live patch is not permission to lose source
 provenance, foreign work, secrets, account isolation or an available rollback.
 
+This is the default repair sequence: make and verify live fixes without rebuilding
+the production artifact after each edit; when the behavior is proven, perform one
+final reproducible build on server-44, verify that exact artifact, and only then
+install it on server-100. Keep the previous live release available for rollback.
+
 For server-44 and server-88, build one Docker image on server-44 and transfer or pull
 that exact image on server-88, verified by digest. Do not rebuild the same release on
 each host. Prefer blue-green delivery: start green alongside blue, verify readiness
