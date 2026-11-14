@@ -269,6 +269,56 @@ test("quality-rejected 200 calls releaseStickyPinOnFailure and records kind qual
   assert.equal(result, null);
 });
 
+test("successful dynamic target pins the provider-selected connection", async () => {
+  const { executeTargetAttempt } =
+    await import("../../../open-sse/services/combo/executeTargetAttempt.ts");
+  const { clearAllStickyBindings, peekStickyConnectionId } =
+    await import("../../../open-sse/services/combo/sessionStickiness.ts");
+  clearAllStickyBindings();
+
+  const target = modelTarget({
+    connectionId: null,
+    modelStr: "zcode-start/glm-5.3-flash",
+    provider: "zcode-start",
+  });
+  const deps = baseDeps({
+    maxRetries: 0,
+    sticky: { targets: [], messageHash: "dynamic-sticky", stuck: false },
+    handleSingleModelWithTimeout: async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-omniroute-selected-connection-id": "zcode-account-b",
+          },
+        }
+      ),
+  });
+  const state = emptyState({
+    orderedTargets: [target],
+    abortControllers: new Map([[0, new AbortController()]]),
+  });
+
+  const result = await executeTargetAttempt({
+    index: 0,
+    state,
+    deps,
+    targetForAttempt: target,
+    profile: {},
+    protectedPriorityTarget: false,
+  });
+
+  assert.equal(result?.ok, true);
+  assert.equal(
+    peekStickyConnectionId("dynamic-sticky"),
+    "zcode-account-b",
+    "dynamic pool must pin the connection that actually served the response"
+  );
+  clearAllStickyBindings();
+});
+
 test("injection: missing releaseStickyPinOnFailure forwarding goes red on quality fail", async () => {
   const { executeTargetAttempt } =
     await import("../../../open-sse/services/combo/executeTargetAttempt.ts");

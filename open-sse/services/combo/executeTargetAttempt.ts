@@ -771,8 +771,12 @@ export async function executeTargetAttempt(
           }
         }
       }
-      if (deps.sticky.messageHash && target.connectionId)
-        recordStickyBinding(deps.sticky.messageHash, target.connectionId); // LKGP (#919):
+      // Dynamic provider-pool targets do not carry a connectionId before
+      // dispatch. Keep the account selected by the provider response sticky
+      // too, so a successful failover from OpenCode to ZCode stays on that
+      // working account until the next failure or the session TTL expires.
+      if (deps.sticky.messageHash && effectiveConnectionId)
+        recordStickyBinding(deps.sticky.messageHash, effectiveConnectionId); // LKGP (#919):
       if (provider) {
         const connId = effectiveConnectionId || undefined;
         recordLkgpPin({
