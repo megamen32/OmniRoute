@@ -1107,7 +1107,7 @@ test("finishOk caches reasoning against translatedBody.messages, not Responses i
   );
 });
 
-test("semaphore capacity errors rethrow so chatCore can map them to 429", async () => {
+test("semaphore capacity errors rethrow so chatCore can map them to local 503", async () => {
   const timeout = Object.assign(new Error("Semaphore timeout"), { code: "SEMAPHORE_TIMEOUT" });
   const input = baseInput({
     executeProviderRequest: async () => {

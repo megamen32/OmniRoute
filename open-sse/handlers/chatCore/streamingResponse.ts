@@ -67,6 +67,7 @@ import { wasRefreshTokenRotated } from "@omniroute/open-sse/services/refreshSeri
 import {
   createSafeAbortError,
   createStreamingErrorResult,
+  LOCAL_CAPACITY_RETRY_AFTER_MS,
   isSemaphoreCapacityError,
   getSafeErrorMetadata,
   getUpstreamErrorIdentifier,
@@ -403,17 +404,32 @@ export async function runStreamingResponse(deps: StreamingDeps) {
       }).catch(() => {});
       const failureMessage = sanitizeErrorMessage(errorMetadata.message) || "Semaphore timeout";
       persistAttemptLogs({
-        status: HTTP_STATUS.RATE_LIMITED,
+        status: HTTP_STATUS.SERVICE_UNAVAILABLE,
         error: failureMessage,
         providerRequest: finalBody || translatedBody,
-        clientResponse: buildErrorBody(HTTP_STATUS.RATE_LIMITED, failureMessage),
+        clientResponse: buildErrorBody(HTTP_STATUS.SERVICE_UNAVAILABLE, failureMessage, undefined, {
+          code: semaphoreCode,
+          type: "account_semaphore_capacity",
+        }),
         claudeCacheMeta: claudePromptCacheLogMeta,
-        cacheSource: "upstream",
+        cacheSource: "local_capacity",
       });
-      persistFailureUsage(HTTP_STATUS.RATE_LIMITED, semaphoreCode);
+      persistFailureUsage(HTTP_STATUS.SERVICE_UNAVAILABLE, semaphoreCode);
       const result = stream
-        ? createStreamingErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage, semaphoreCode)
-        : createErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage);
+        ? createStreamingErrorResult(
+            HTTP_STATUS.SERVICE_UNAVAILABLE,
+            failureMessage,
+            semaphoreCode,
+            "account_semaphore_capacity",
+            LOCAL_CAPACITY_RETRY_AFTER_MS
+          )
+        : createErrorResult(
+            HTTP_STATUS.SERVICE_UNAVAILABLE,
+            failureMessage,
+            LOCAL_CAPACITY_RETRY_AFTER_MS,
+            semaphoreCode,
+            "account_semaphore_capacity"
+          );
       return {
         response: {
           ...result,

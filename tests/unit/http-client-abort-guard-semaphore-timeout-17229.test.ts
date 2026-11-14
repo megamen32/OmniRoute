@@ -1,7 +1,7 @@
 // Account-semaphore capacity rejections (#17229). `rateLimitSemaphore` rejects
 // with `SEMAPHORE_TIMEOUT` (queue wait expired) or `SEMAPHORE_QUEUE_FULL`
 // (admission refused) when an account is saturated. The request layer already
-// maps both to a 429 (chatCore/streamErrorResult.ts::isSemaphoreCapacityError),
+// maps both to a 503 local-capacity response (chatCore/streamErrorResult.ts::isSemaphoreCapacityError),
 // so a stray copy of the rejection that reaches the process-level handlers is
 // a capacity signal for a request that was already answered — never a reason to
 // take the whole gateway down. Same escape class as RELAY_TIMEOUT (#15339),

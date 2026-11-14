@@ -65,15 +65,28 @@ export function isSemaphoreCapacityError(error: unknown): error is Error & { cod
   return code === "SEMAPHORE_TIMEOUT" || code === "SEMAPHORE_QUEUE_FULL";
 }
 
+/** A short client retry hint for local admission pressure, not upstream quota. */
+export const LOCAL_CAPACITY_RETRY_AFTER_MS = 1_000;
+
 export function createStreamingErrorResult(
   statusCode: number,
   message: string,
   code?: string,
-  type?: string
+  type?: string,
+  retryAfterMs?: number | null
 ) {
   const errorBody = buildErrorBody(statusCode, message, undefined, { code, type });
 
   const body = `data: ${JSON.stringify(errorBody)}\n\ndata: [DONE]\n\n`;
+  const headers: Record<string, string> = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  };
+  if (retryAfterMs && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    headers["Retry-After"] = String(Math.ceil(retryAfterMs / 1000));
+  }
 
   return {
     success: false as const,
@@ -81,12 +94,7 @@ export function createStreamingErrorResult(
     error: message,
     response: new Response(body, {
       status: statusCode,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
+      headers,
     }),
   };
 }

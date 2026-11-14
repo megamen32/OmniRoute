@@ -42,6 +42,7 @@ export {
 };
 
 import { HTTP_STATUS } from "../../config/constants.ts";
+import { LOCAL_CAPACITY_RETRY_AFTER_MS } from "./streamErrorResult.ts";
 import { buildMalformedResponseDiagnostic } from "../../utils/responseShapeDiagnostic.ts";
 
 import { lockModel } from "../../services/accountFallback.ts";
@@ -1180,15 +1181,24 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       }).catch(() => {});
       const failureMessage = sanitizeErrorMessage(errorMetadata.message) || "Semaphore timeout";
       persistAttemptLogs({
-        status: HTTP_STATUS.RATE_LIMITED,
+        status: HTTP_STATUS.SERVICE_UNAVAILABLE,
         error: failureMessage,
         providerRequest: finalBody || translatedBody,
-        clientResponse: buildErrorBody(HTTP_STATUS.RATE_LIMITED, failureMessage),
+        clientResponse: buildErrorBody(HTTP_STATUS.SERVICE_UNAVAILABLE, failureMessage, undefined, {
+          code: semaphoreCode,
+          type: "account_semaphore_capacity",
+        }),
         claudeCacheMeta: claudePromptCacheLogMeta,
-        cacheSource: "upstream",
+        cacheSource: "local_capacity",
       });
-      persistFailureUsage(HTTP_STATUS.RATE_LIMITED, semaphoreCode);
-      const result = createErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage);
+      persistFailureUsage(HTTP_STATUS.SERVICE_UNAVAILABLE, semaphoreCode);
+      const result = createErrorResult(
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        failureMessage,
+        LOCAL_CAPACITY_RETRY_AFTER_MS,
+        semaphoreCode,
+        "account_semaphore_capacity"
+      );
       return {
         response: {
           ...result,
