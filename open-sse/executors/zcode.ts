@@ -98,7 +98,13 @@ function findNativeModelEntry(
 ): NativeModelEntry | null {
   const providers = asRecord(view).providers;
   // Preserve the app-server's Individual account then builtin profile fallback.
-  const allowed = providerId ? [providerId] : [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID];
+  const allowed = providerId
+    ? providerId === ZCODE_START_PLAN_PROVIDER_ID
+      ? [ZCODE_START_PLAN_PROVIDER_ID, "builtin:zai-start-plan"]
+      : providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID
+        ? [ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID, DEFAULT_PROVIDER_ID]
+        : [providerId]
+    : [ACCOUNT_PROVIDER_ID, DEFAULT_PROVIDER_ID];
   for (const id of allowed) {
     const provider = (Array.isArray(providers) ? providers : [])
       .map(asRecord)

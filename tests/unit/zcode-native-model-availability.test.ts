@@ -24,3 +24,15 @@ test("a missing Start model is a 400 and a fresh registry can enable it", () => 
     modelId: "GLM-5.3",
   });
 });
+
+test("a native Start registry may expose the builtin provider for an account selection", () => {
+  const view = {
+    providers: [
+      { providerId: "builtin:zai-start-plan", models: [{ modelId: "GLM-5.3-Flash", config: {} }] },
+    ],
+  };
+  assert.deepEqual(resolveZcodeSelection(view, "glm-5.3-flash", "account:zai-start-plan"), {
+    providerId: "builtin:zai-start-plan",
+    modelId: "GLM-5.3-Flash",
+  });
+});
