@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, readdir, access } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -7,10 +7,6 @@ import { resolveDataDir } from "../../../src/lib/dataPaths.ts";
 import type { ExecuteInput, ProviderCredentials } from "../base.ts";
 import { NativeSessionError } from "./nativeSession.ts";
 import { exchangeZaiBusinessToken, isLegacyZaiOAuthToken } from "./oauthGrant.ts";
-
-// Keep the runtime path opaque to Next/Turbopack. The native server is an
-// installed runtime asset and must be resolved only when the host starts.
-const forkNativeRuntime = fork;
 
 export type NativePlanKind = "start-plan" | "individual-coding-plan";
 
@@ -267,6 +263,9 @@ export class NativeZcodeHostManager {
       this.hosts.delete(account.connectionId);
     }
     const runtime = this.options.runtime || (await resolveNativeRuntime());
+    // Load the process launcher at runtime so Turbopack does not treat the
+    // installed native server asset as a bundled module.
+    const forkNativeRuntime = (await import("node:child_process")).fork;
     const state = await prepareNativeAccountState(
       this.options.stateRoot || join(resolveDataDir(), "zcode-native"),
       account
