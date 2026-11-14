@@ -36,6 +36,20 @@ server-100 over SSH for infrastructure instructions; server-44 must not have a
 permanent ServerAdministration checkout. Transfer the required OmniRoute source or
 build context to server-44 as needed, preserving other work and secrets.
 
+### Required green-before-blue rollout
+
+For the release-store installation on server-100, never stop or replace the current
+blue process merely to discover whether a candidate starts. Build the candidate on
+server-44, transfer the exact immutable artifact and verify its digest, then start
+green on a separate free port or standby instance while blue continues serving.
+Check green readiness, the real consumer path, and the candidate build SHA first.
+Only after those checks pass may traffic move to green; drain blue, retain its exact
+release pointer for rollback, and verify the post-switch consumer. If green cannot
+run beside blue because the existing installation has no spare port or standby,
+record that concrete limitation and use the smallest reversible switch with an
+explicit extended readiness window. A health check after stopping blue is not
+green acceptance.
+
 ## Quick Start
 
 ```bash
