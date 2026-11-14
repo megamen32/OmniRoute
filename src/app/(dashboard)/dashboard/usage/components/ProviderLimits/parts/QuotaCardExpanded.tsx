@@ -365,7 +365,13 @@ export default function QuotaCardExpanded({
   );
   const zcodeGroups = useMemo(
     () =>
-      ["zcode", "zcode-start", "zcode-individual"].includes(providerId || "")
+      [
+        "zcode",
+        "zcode-start",
+        "zcode-individual",
+        "zcode-cn-start",
+        "zcode-cn-individual",
+      ].includes(providerId || "")
         ? quotaGroups.filter((group) => group.plan === "start" || group.plan === "individual")
         : [],
     [providerId, quotaGroups]

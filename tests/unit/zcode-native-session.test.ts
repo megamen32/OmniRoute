@@ -212,6 +212,72 @@ test("native session returns caller tool, binds continuation, and consumes exter
   }
 });
 
+test("native session forwards vision attachments with a text prompt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-session-vision-"));
+  let sent: Record<string, unknown> | undefined;
+  const bridge = new NativeZcodeSessionBridge({
+    workspaceRoot: root,
+    pollMs: 1,
+    timeoutMs: 1000,
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel, method, args) {
+        const params = (args[0] ?? {}) as Record<string, unknown>;
+        if (method === "saveProject") return { id: "vision-project" };
+        if (method === "createSession") return { session: { sessionId: "vision-session" } };
+        if (method === "sendPrompt") {
+          sent = params;
+          return { accepted: true };
+        }
+        if (method === "readSession")
+          return {
+            session: { status: "idle" },
+            messages: [
+              {
+                info: { finish: "stop", semantics: { kind: "assistant_response" } },
+                parts: [{ type: "text", text: "vision accepted" }],
+              },
+            ],
+          };
+        if (method === "closeSession" || method === "disposeWorkspace") return true;
+        return {};
+      },
+    }),
+  });
+  try {
+    const result = await bridge.execute({
+      scope: "vision-account:start:caller",
+      selection: { providerId: "account:zai-start-plan", modelId: "GLM-5.3-Flash" },
+      messages: [{ role: "user", content: "Inspect the attached image." }],
+      tools: [],
+      attachments: [
+        {
+          kind: "image",
+          filename: "gender.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+          dataBase64: "YWJj",
+        },
+      ],
+    });
+    assert.equal(result.text, "vision accepted");
+    assert.deepEqual(sent?.attachments, [
+      {
+        kind: "image",
+        filename: "gender.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+        dataBase64: "YWJj",
+      },
+    ]);
+    assert.equal(sent?.content, "Inspect the attached image.");
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("native session rejects a successful answer when caller tools never connected", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-session-missing-tools-"));
   const bridge = new NativeZcodeSessionBridge({

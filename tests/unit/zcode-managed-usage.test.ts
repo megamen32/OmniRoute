@@ -188,6 +188,29 @@ test("saved non-OAuth Start cannot read the global virtual-account quota", async
   );
 });
 
+test("CN ZCode region aliases expose the same two account plan lanes", async () => {
+  const { getUsageForProvider } = await import("../../open-sse/services/usage.ts");
+  for (const provider of ["zcode-cn-start", "zcode-cn-individual"]) {
+    const result = await getUsageForProvider({
+      id: "saved-" + provider,
+      provider,
+      authType: "oauth",
+      providerSpecificData: { family: "bigmodel" },
+    });
+    assert.ok("quotaGroups" in result);
+    assert.deepEqual(
+      result.quotaGroups.map((group: { plan: string; status: string }) => [
+        group.plan,
+        group.status,
+      ]),
+      [
+        ["start", "unknown"],
+        ["individual", "unknown"],
+      ]
+    );
+  }
+});
+
 test("usage API returns and caches separate unknown groups for an incomplete saved account", async () => {
   const { createProviderConnection, deleteProviderConnection } =
     await import("../../src/lib/db/providers.ts");

@@ -25,6 +25,24 @@ function render(quotaGroups: Array<Record<string, unknown>>, loading = false) {
   );
 }
 
+function renderForProvider(providerId: string, quotaGroups: Array<Record<string, unknown>>) {
+  return renderToStaticMarkup(
+    <QuotaCardExpanded
+      providerId={providerId}
+      quotas={[]}
+      quotaGroups={quotaGroups}
+      loading={false}
+      error={null}
+      hasStaleData={false}
+      canEditCutoff={false}
+      hasCutoffOverrides={false}
+      onRefresh={() => {}}
+      onOpenCutoff={() => {}}
+      onOpenCost={() => {}}
+    />
+  );
+}
+
 describe("ZCode account quota groups", () => {
   it("shows both plans, their own quotas and observation time while refreshing", () => {
     const html = render(
@@ -70,5 +88,22 @@ describe("ZCode account quota groups", () => {
     expect(html).toContain("Individual");
     expect(html).toContain("No quota data");
     expect(html).not.toContain("0% left");
+  });
+
+  it("renders the same two quota lanes for a China region alias", () => {
+    const html = renderForProvider("zcode-cn-individual", [
+      { plan: "start", status: "unknown", observedAt: null, quotas: {} },
+      {
+        plan: "individual",
+        status: "available",
+        observedAt: null,
+        quotas: {
+          session: { used: 1, total: 10, remainingPercentage: 90, displayName: "Session" },
+        },
+      },
+    ]);
+    expect(html).toContain("Start");
+    expect(html).toContain("Individual");
+    expect(html).toContain("Session");
   });
 });

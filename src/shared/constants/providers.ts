@@ -104,6 +104,14 @@ export const PROVIDER_CONNECTION_FAMILY_ALIASES: Readonly<Record<string, readonl
   // alias so old URLs and pre-migration connection rows keep working.
   magnific: ["freepik"],
   freepik: ["magnific"],
+  // ZCode stores one OAuth account, while the runtime keeps regional and
+  // tariff-specific route IDs so Start/Individual and zai/bigmodel can be
+  // selected independently inside that account.
+  zcode: ["zcode-start", "zcode-individual", "zcode-cn-start", "zcode-cn-individual"],
+  "zcode-start": ["zcode", "zcode-individual", "zcode-cn-start", "zcode-cn-individual"],
+  "zcode-individual": ["zcode", "zcode-start", "zcode-cn-start", "zcode-cn-individual"],
+  "zcode-cn-start": ["zcode", "zcode-start", "zcode-individual", "zcode-cn-individual"],
+  "zcode-cn-individual": ["zcode", "zcode-start", "zcode-individual", "zcode-cn-start"],
 };
 
 export function getProviderConnectionFamilyIds(providerId: unknown): readonly string[] {

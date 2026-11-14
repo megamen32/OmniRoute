@@ -224,7 +224,11 @@ function shouldRefreshProviderLimitsCache(
 
 export function isSupportedUsageConnection(connection: ProviderConnectionLike | null): boolean {
   if (!connection?.provider) return false;
-  if (["zcode", "zcode-start", "zcode-individual"].includes(connection.provider))
+  if (
+    ["zcode", "zcode-start", "zcode-individual", "zcode-cn-start", "zcode-cn-individual"].includes(
+      connection.provider
+    )
+  )
     return connection.authType === "oauth";
 
   if (connection.authType === "oauth") {
@@ -242,7 +246,9 @@ function mergeZcodeUsageCache(
 ): ProviderLimitsCacheEntry {
   // Never retain stale account/plan results after an unavailable ZCode readback.
   if (
-    ["zcode", "zcode-start", "zcode-individual"].includes(provider) &&
+    ["zcode", "zcode-start", "zcode-individual", "zcode-cn-start", "zcode-cn-individual"].includes(
+      provider
+    ) &&
     (Array.isArray(next.quotaGroups) || (next.message && !next.quotas))
   )
     return next;
