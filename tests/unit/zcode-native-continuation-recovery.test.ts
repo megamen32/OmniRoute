@@ -48,7 +48,12 @@ function callerCall(result: Record<string, unknown>): CallerCall {
 }
 
 async function harness(
-  options: { firstCallsTool?: boolean; closeFails?: boolean; usageFails?: boolean } = {}
+  options: {
+    firstCallsTool?: boolean;
+    closeFails?: boolean;
+    usageFails?: boolean;
+    continuationDelayMs?: number;
+  } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "native-continuation-metadata-"));
   const events: string[] = [];
@@ -138,6 +143,10 @@ async function harness(
           if (method === "readSession") {
             if (index === 0 && options.firstCallsTool !== false && !state.toolReply) {
               return { session: { status: "running" }, messages: [] };
+            }
+            if (state.toolReply && options.continuationDelayMs) {
+              events.push("continuation-started:" + index);
+              await new Promise((resolve) => setTimeout(resolve, options.continuationDelayMs));
             }
             const messages = state.toolReply
               ? []
@@ -260,6 +269,25 @@ test("ordinary continuation still consumes its result in the same run, and calle
   }
 });
 
+test("parallel retries of the same continuation share one native turn", async () => {
+  const h = await harness({ continuationDelayMs: 50 });
+  try {
+    const call = callerCall(await h.bridge.execute(base));
+    const messages = returned(call, "once");
+    const first = h.bridge.execute({ ...base, messages });
+    for (let attempt = 0; attempt < 50 && !h.events.includes("continuation-started:0"); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    const second = h.bridge.execute({ ...base, messages });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(firstResult.text, "once");
+    assert.equal(secondResult.text, "once");
+    assert.equal(h.clients.length, 1);
+    assert.equal(h.events.filter((event) => event === "tool-result:0").length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
 test("orphaned and duplicate native results cannot create replacement sessions", async () => {
   const h = await harness({ firstCallsTool: false });
   try {
@@ -277,7 +305,7 @@ test("orphaned and duplicate native results cannot create replacement sessions",
   }
 });
 
-test("changed pending tool identity is rejected before recovery, and overlapping recovery stays reserved", async () => {
+test("changed pending tool identity is rejected before recovery, and overlapping recovery is shared", async () => {
   const h = await harness();
   try {
     const call = callerCall(await h.bridge.execute(base));
@@ -287,11 +315,9 @@ test("changed pending tool identity is rejected before recovery, and overlapping
     const recoveryMessages = [{ role: "system", content: "new caller context" }, ...messages];
     const recovery = h.bridge.execute({ ...base, messages: recoveryMessages });
     await new Promise((resolve) => setTimeout(resolve, 5));
-    await assert.rejects(
-      h.bridge.execute({ ...base, messages: recoveryMessages }),
-      /being recovered/
-    );
+    const duplicateRecovery = h.bridge.execute({ ...base, messages: recoveryMessages });
     assert.equal((await recovery).text, "once");
+    assert.equal((await duplicateRecovery).text, "once");
     assert.equal(h.clients.length, 2);
   } finally {
     await h.close();

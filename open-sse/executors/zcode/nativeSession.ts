@@ -147,6 +147,15 @@ function validateCompletedNativeResults(messages: RecordValue[], required: strin
 }
 
 type Tool = { name: string; description?: string; inputSchema: RecordValue };
+type ContinuationInput = {
+  scope: string;
+  selection: { providerId: string; modelId: string; options?: { reasoningLevel?: string } };
+  messages: RecordValue[];
+  tools: Tool[];
+  attachments?: NativeZcodeAttachment[];
+  signal?: AbortSignal | null;
+  deadline?: number;
+};
 export type NativeZcodeAttachment = {
   kind: "image" | "audio" | "video" | "pdf" | "file";
   filename: string;
@@ -223,6 +232,7 @@ export interface NativeSessionOptions {
 /** A caller tool is a suspended MCP request. Only the caller supplies its result. */
 export class NativeZcodeSessionBridge {
   private continuations = new Map<string, Run>();
+  private continuationRequests = new Map<string, Promise<RecordValue>>();
   private runs = new Set<Run>();
   private recovering = new Set<string>();
   private projectIds = new Map<string, string>();
@@ -231,15 +241,7 @@ export class NativeZcodeSessionBridge {
     await Promise.allSettled([...this.runs].map((run) => this.dispose(run)));
   }
 
-  async execute(input: {
-    scope: string;
-    selection: { providerId: string; modelId: string; options?: { reasoningLevel?: string } };
-    messages: RecordValue[];
-    tools: Tool[];
-    attachments?: NativeZcodeAttachment[];
-    signal?: AbortSignal | null;
-    deadline?: number;
-  }): Promise<RecordValue> {
+  async execute(input: ContinuationInput): Promise<RecordValue> {
     const controller = new AbortController();
     const deadline = Math.min(
       input.deadline ?? Infinity,
@@ -263,10 +265,36 @@ export class NativeZcodeSessionBridge {
     }
   }
 
-  private async executeTurn(
-    input: Parameters<NativeZcodeSessionBridge["execute"]>[0],
-    turn: Turn
-  ): Promise<RecordValue> {
+  private continuationRequestKey(input: ContinuationInput): string | null {
+    const ids = input.messages
+      .filter((message) => message.role === "tool")
+      .map((message) => String(message.tool_call_id || ""))
+      .filter((id) => id.startsWith("call_zcn_"));
+    if (!ids.length) return null;
+    return digest({
+      scope: input.scope,
+      selection: input.selection,
+      messages: input.messages,
+      tools: input.tools,
+      attachments: input.attachments,
+    });
+  }
+
+  private async executeTurn(input: ContinuationInput, turn: Turn): Promise<RecordValue> {
+    const key = this.continuationRequestKey(input);
+    const existing = key ? this.continuationRequests.get(key) : undefined;
+    if (existing) return duringTurn(() => existing, turn.signal);
+    const request = this.executeTurnInternal(input, turn);
+    if (!key) return request;
+    this.continuationRequests.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (this.continuationRequests.get(key) === request) this.continuationRequests.delete(key);
+    }
+  }
+
+  private async executeTurnInternal(input: ContinuationInput, turn: Turn): Promise<RecordValue> {
     const results = input.messages.filter((m) => m.role === "tool");
     const ids = results.map((m) => String(m.tool_call_id || ""));
     if (ids.some((id) => this.recovering.has(id)))
