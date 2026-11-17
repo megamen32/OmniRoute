@@ -476,6 +476,52 @@ async function withAbort<T>(promise: Promise<T>, signal?: AbortSignal | null): P
   }
 }
 
+/**
+ * Wait for a pinned native provider to publish its model registry. Start Plan
+ * hosts can answer the first view request before entitlement hydration finishes.
+ */
+export async function waitForNativeZcodeSelection(
+  client: ZcodeClientLike,
+  model: string,
+  providerId?: string,
+  signal?: AbortSignal | null,
+  startupTimeoutMs = 10_000,
+  fallbackMaxOutputTokens?: number
+): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
+  const fallbackProviderId = providerId || ZCODE_FALLBACK_PROVIDER_ID;
+  const readyDeadline = Date.now() + startupTimeoutMs;
+  for (;;) {
+    let registry: unknown;
+    try {
+      registry = await withAbort(client.call("model-selection", "getView", []), signal);
+    } catch {
+      return {
+        selection: { providerId: fallbackProviderId, modelId: model },
+        nativeMaxTokens: fallbackMaxOutputTokens,
+      };
+    }
+    try {
+      return {
+        selection: resolveZcodeSelection(registry, model, providerId),
+        nativeMaxTokens:
+          fallbackMaxOutputTokens ?? resolveZcodeMaxTokens(registry, model, providerId),
+      };
+    } catch (error) {
+      if (Date.now() >= readyDeadline) {
+        return {
+          selection: { providerId: fallbackProviderId, modelId: model },
+          nativeMaxTokens: fallbackMaxOutputTokens,
+        };
+      }
+      void error;
+      await withAbort(
+        new Promise((resolve) => setTimeout(resolve, Math.min(250, readyDeadline - Date.now()))),
+        signal
+      );
+    }
+  }
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -682,23 +728,22 @@ export class ZcodeExecutor extends BaseExecutor {
         client = nativeClient;
         const body = asRecord(input.body);
         await waitNative(() => nativeClient.start(budget()));
-        const view = await waitNative(() =>
-          nativeClient.call("model-selection", "getView", [], budget())
-        );
         const providerId = individual
           ? "account:zai-individual-coding-plan"
           : "account:zai-start-plan";
         const family = input.credentials.providerSpecificData?.family;
-        const selection = resolveZcodeSelection(
-          view,
-          resolution.model,
-          family === "bigmodel" ? providerId.replace("zai", "bigmodel") : providerId
+        const selected = await waitNative(() =>
+          waitForNativeZcodeSelection(
+            nativeClient,
+            resolution.model,
+            family === "bigmodel" ? providerId.replace("zai", "bigmodel") : providerId,
+            input.signal,
+            this.startupTimeoutMs
+          )
         );
+        const selection = selected.selection;
+        boundMaxOutputTokens(request, selected.nativeMaxTokens ?? fallbackMaxTokens);
         if (individual) {
-          boundMaxOutputTokens(
-            request,
-            resolveZcodeMaxTokens(view, resolution.model, selection.providerId) ?? fallbackMaxTokens
-          );
           const result = await waitNative(() => {
             modelRequestStarted = true;
             return nativeClient.call(
@@ -991,42 +1036,16 @@ export class ZcodeExecutor extends BaseExecutor {
     signal?: AbortSignal | null
   ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
     const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
-    const readyDeadline = Date.now() + (this.options.startupTimeoutMs ?? 10_000);
-    // Start-plan entitlements can be invisible to the spawned server's registry
-    // (its hydration egress gets a degraded z.ai context), while the gateway
-    // request itself reaches z.ai fine and z.ai validates the model on its side
-    // (business codes 1005/1310). When the pinned provider is disabled-or-absent
-    // in the view, skip the registry round-trip and select directly.
-    const fallbackProviderId = providerId || ZCODE_FALLBACK_PROVIDER_ID;
-    for (;;) {
-      let registry: unknown;
-      try {
-        registry = await withAbort(client.call("model-selection", "getView", []), signal);
-      } catch {
-        return {
-          selection: { providerId: fallbackProviderId, modelId: model },
-          nativeMaxTokens: undefined,
-        };
-      }
-      try {
-        return {
-          selection: resolveZcodeSelection(registry, model, providerId),
-          nativeMaxTokens: fallbackMaxTokens ?? resolveZcodeMaxTokens(registry, model, providerId),
-        };
-      } catch (error) {
-        if (Date.now() >= readyDeadline) {
-          return {
-            selection: { providerId: fallbackProviderId, modelId: model },
-            nativeMaxTokens: fallbackMaxTokens,
-          };
-        }
-        void error;
-        await withAbort(
-          new Promise((resolve) => setTimeout(resolve, Math.min(250, readyDeadline - Date.now()))),
-          signal
-        );
-      }
-    }
+    // Start and Individual hosts share the same hydration race. Keep the
+    // historical 128K native output fallback for the generic path.
+    return waitForNativeZcodeSelection(
+      client,
+      model,
+      providerId,
+      signal,
+      this.options.startupTimeoutMs,
+      fallbackMaxTokens
+    );
   }
   private workingDirectory(): string {
     return this.options.cwd || process.env.ZCODE_CWD || process.cwd();

@@ -11,13 +11,19 @@ function targetProvider(target: Pick<ResolvedComboTarget, "provider">): string {
   return target.provider.toLowerCase();
 }
 
+function isFlashModel(target: Pick<ResolvedComboTarget, "modelStr">): boolean {
+  return targetModel(target).startsWith(GLM_FLASH_MODEL);
+}
+
 function declaredTier(target: ResolvedComboTarget): number {
   const provider = targetProvider(target);
   if (provider === "opencode-zen" && targetModel(target).endsWith("-free")) return 0;
-  if (provider === "zcode-start") return 1;
-  if (provider === "zcode-cn-start") return 2;
-  if (provider === "zcode-individual") return 3;
-  if (provider === "zcode-cn-individual") return 4;
+  if (isFlashModel(target)) {
+    if (provider === "zcode-start") return 1;
+    if (provider === "zcode-cn-start") return 2;
+    if (provider === "zcode-individual") return 3;
+    if (provider === "zcode-cn-individual") return 4;
+  }
   if (provider === "glm") return 6;
   return 5;
 }

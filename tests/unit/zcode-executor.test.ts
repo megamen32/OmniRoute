@@ -62,6 +62,39 @@ test("ZCode waits for the signed-in provider to finish native registry hydration
   assert.equal(views, 2);
 });
 
+test("ZCode Start waits for Flash to appear before rejecting a pinned account", async () => {
+  const { waitForNativeZcodeSelection } = await loadZcodeExecutor();
+  let views = 0;
+  const selection = await waitForNativeZcodeSelection(
+    {
+      async call(_channel, method) {
+        assert.equal(method, "getView");
+        views += 1;
+        return views === 1
+          ? { providers: [] }
+          : {
+              providers: [
+                {
+                  providerId: "account:zai-start-plan",
+                  models: [{ modelId: "GLM-5.3-Flash", config: {} }],
+                },
+              ],
+            };
+      },
+    },
+    "glm-5.3-flash",
+    "account:zai-start-plan",
+    undefined,
+    500
+  );
+
+  assert.equal(views, 2);
+  assert.deepEqual(selection, {
+    selection: { providerId: "account:zai-start-plan", modelId: "GLM-5.3-Flash" },
+    nativeMaxTokens: undefined,
+  });
+});
+
 test("ZCode uses the explicitly pinned provider when the registry RPC fails", async () => {
   const { ZcodeExecutor } = await loadZcodeExecutor();
   let selected: unknown;

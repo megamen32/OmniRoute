@@ -49,3 +49,23 @@ test("unrelated auto routes keep their incoming order", () => {
   assert.equal(isDeclaredGlmFlashRoute(targets), false);
   assert.deepEqual(orderDeclaredGlmFlashTargets(targets), targets);
 });
+
+test("optional base GLM 5.3 never outranks the Flash Start lane", () => {
+  const targets = [
+    target("zcode-start", "glm-5.3", 0),
+    target("opencode-zen", "glm-5.3-flash-free", 1),
+    target("zcode-start", "glm-5.3-flash", 2),
+    target("glm", "glm-5.3-flash", 3),
+  ];
+
+  assert.equal(isDeclaredGlmFlashRoute(targets), true);
+  assert.deepEqual(
+    orderDeclaredGlmFlashTargets(targets).map((entry) => entry.modelStr),
+    [
+      "opencode-zen/glm-5.3-flash-free",
+      "zcode-start/glm-5.3-flash",
+      "zcode-start/glm-5.3",
+      "glm/glm-5.3-flash",
+    ]
+  );
+});
