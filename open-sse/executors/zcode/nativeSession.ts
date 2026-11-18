@@ -201,6 +201,7 @@ type Run = {
   workspaceLease?: WorkspaceLease;
   sessionCreationPending?: boolean;
   scope: string;
+  selection: { providerId: string; modelId: string; options?: { reasoningLevel?: string } };
   history: RecordValue[];
   toolsHash: string;
   pending: PendingTool[];
@@ -223,6 +224,7 @@ export interface NativeSessionOptions {
 /** A caller tool is a suspended MCP request. Only the caller supplies its result. */
 export class NativeZcodeSessionBridge {
   private continuations = new Map<string, Run>();
+  private completed = new Map<string, Run>();
   private runs = new Set<Run>();
   private recovering = new Set<string>();
   private projectIds = new Map<string, string>();
@@ -364,7 +366,23 @@ export class NativeZcodeSessionBridge {
         input.messages,
         nativeResults.map((message) => String(message.tool_call_id))
       );
-      run = await this.start(input, turn);
+      const cached = this.completed.get(input.scope);
+      if (cached && this.canReuse(cached, input)) {
+        this.completed.delete(input.scope);
+        clearTimeout(cached.expires);
+        cached.expires = undefined;
+        cached.busy = true;
+        run = cached;
+        try {
+          await this.sendPrompt(run, input.messages.at(-1)?.content, turn, input.attachments);
+        } catch (error) {
+          await this.dispose(run).catch(() => undefined);
+          throw error;
+        }
+      } else {
+        if (cached) await this.dispose(cached);
+        run = await this.start(input, turn);
+      }
     }
     try {
       while (Date.now() < turn.deadline) {
@@ -538,8 +556,23 @@ export class NativeZcodeSessionBridge {
             .map((part) => String(part.text ?? ""))
             .join("\n\n");
           const tokens = record(record(response.info).tokens);
-          // The model has completed; cleanup cannot replace its answer.
-          await this.dispose(run).catch(() => undefined);
+          // Keep the native session alive for the next sticky turn. The native
+          // runtime can reuse its prompt cache, while the expiry remains a
+          // bounded cleanup guard for abandoned conversations.
+          run.history = [
+            ...input.messages,
+            {
+              role: "assistant",
+              content: text,
+              ...(reasoning ? { reasoning_content: reasoning } : {}),
+            },
+          ];
+          run.busy = false;
+          run.expires = setTimeout(() => {
+            void this.dispose(run).catch(() => undefined);
+          }, this.options.continuationTimeoutMs ?? 600_000);
+          run.expires.unref();
+          this.completed.set(run.scope, run);
           if (input.signal?.aborted) throw new NativeSessionError("ZCode request cancelled", 499);
           return {
             text,
@@ -676,6 +709,7 @@ export class NativeZcodeSessionBridge {
       relay,
       sessionId: "",
       scope: input.scope,
+      selection: input.selection,
       history: input.messages,
       toolsHash: digest(input.tools),
       pending: [],
@@ -743,22 +777,7 @@ export class NativeZcodeSessionBridge {
         input.messages.length === 1 && typeof input.messages[0].content === "string"
           ? input.messages[0].content
           : `Respond to the latest user request in this caller conversation. Preserve its instructions and history. Only use the provided caller tools.\n${JSON.stringify(input.messages)}`;
-      await call(
-        client,
-        "zcode-agent",
-        "sendPrompt",
-        [
-          {
-            ...run.workspace,
-            sessionId: run.sessionId,
-            modelSelection: input.selection,
-            inputId: randomUUID(),
-            content,
-            ...(input.attachments?.length ? { attachments: input.attachments } : {}),
-          },
-        ],
-        turn
-      );
+      await this.sendPrompt(run, content, turn, input.attachments);
       return run;
     } catch (error) {
       await this.dispose(run).catch(() => undefined);
@@ -802,6 +821,7 @@ export class NativeZcodeSessionBridge {
 
   private async dispose(run: Run): Promise<void> {
     if (!this.runs.delete(run)) return;
+    if (this.completed.get(run.scope) === run) this.completed.delete(run.scope);
     clearTimeout(run.expires);
     for (const [id, owner] of this.continuations) if (owner === run) this.continuations.delete(id);
     for (const tool of run.pending) tool.response.destroy();
@@ -836,5 +856,49 @@ export class NativeZcodeSessionBridge {
         await rm(run.workspace.workspacePath, { recursive: true, force: true });
       }
     }
+  }
+
+  private canReuse(run: Run, input: Parameters<NativeZcodeSessionBridge["execute"]>[0]): boolean {
+    if (run.busy || run.toolsHash !== digest(input.tools)) return false;
+    if (input.messages.length <= run.history.length) return false;
+    if (historyDigest(input.messages.slice(0, run.history.length)) !== historyDigest(run.history))
+      return false;
+    const suffix = input.messages.slice(run.history.length);
+    return suffix.length === 1 && suffix[0]?.role === "user";
+  }
+
+  private async sendPrompt(
+    run: Run,
+    content: unknown,
+    turn: Turn,
+    attachments?: NativeZcodeAttachment[]
+  ): Promise<void> {
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((part) => {
+                const value = record(part);
+                return typeof value.text === "string" ? value.text : "";
+              })
+              .join("")
+          : JSON.stringify(content ?? "");
+    await call(
+      run.client,
+      "zcode-agent",
+      "sendPrompt",
+      [
+        {
+          ...run.workspace,
+          sessionId: run.sessionId,
+          modelSelection: run.selection,
+          inputId: randomUUID(),
+          content: text,
+          ...(attachments?.length ? { attachments } : {}),
+        },
+      ],
+      turn
+    );
   }
 }

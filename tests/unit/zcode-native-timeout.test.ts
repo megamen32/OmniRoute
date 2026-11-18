@@ -103,9 +103,10 @@ test("continuation expiry does not close an actively running native turn", async
   });
   try {
     assert.equal((await bridge.execute(input)).text, "completed");
-    assert.equal(closed, true, "completed turn still releases its client");
+    assert.equal(closed, false, "completed sticky turn keeps its client for reuse");
   } finally {
     await bridge.close();
+    assert.equal(closed, true, "bridge shutdown releases the retained client");
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -244,10 +245,12 @@ test("a completed answer survives a closeSession error", async () => {
   try {
     const result = await bridge.execute(input);
     assert.equal(result.text, "completed");
-    assert.equal(closed, true);
-    assert.equal(releasedWorkspace, true);
+    assert.equal(closed, false);
+    assert.equal(releasedWorkspace, false);
   } finally {
     await bridge.close();
+    assert.equal(closed, true);
+    assert.equal(releasedWorkspace, true);
     await rm(root, { recursive: true, force: true });
   }
 });

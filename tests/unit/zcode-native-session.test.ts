@@ -203,11 +203,13 @@ test("native session returns caller tool, binds continuation, and consumes exter
     });
     assert.equal(final.reasoning, "Checked caller result");
     await toolRequest;
-    assert.equal(closeCount, 1);
-    assert.equal(releasedWorkspaces, 1, "completed request releases its native engine");
-    assert.deepEqual(await readdir(root), [], "completed request workspace is removed");
+    assert.equal(closeCount, 0, "sticky native session remains available for the next turn");
+    assert.equal(releasedWorkspaces, 0, "sticky workspace remains available for the next turn");
+    assert.notDeepEqual(await readdir(root), [], "sticky workspace is retained until expiry");
   } finally {
     await bridge.close();
+    assert.equal(closeCount, 1);
+    assert.equal(releasedWorkspaces, 1, "bridge shutdown releases the native engine");
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -411,3 +413,80 @@ for (const statusCode of [429, 503]) {
     }
   });
 }
+
+test("native session reuses a completed sticky session for the next turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-session-reuse-"));
+  let createCount = 0;
+  let sendCount = 0;
+  let closeCount = 0;
+  const prompts: string[] = [];
+  const bridge = new NativeZcodeSessionBridge({
+    workspaceRoot: root,
+    pollMs: 1,
+    timeoutMs: 1000,
+    continuationTimeoutMs: 1000,
+    clientFactory: () => ({
+      async start() {},
+      async close() {
+        closeCount++;
+      },
+      async call(_channel, method, args) {
+        const params = (args[0] || {}) as Record<string, unknown>;
+        if (method === "saveProject") return { id: "reuse-project" };
+        if (method === "createSession") {
+          createCount++;
+          return { session: { sessionId: "reuse-session" } };
+        }
+        if (method === "sendPrompt") {
+          sendCount++;
+          prompts.push(String(params.content));
+          return { accepted: true };
+        }
+        if (method === "readSession")
+          return {
+            session: { status: "idle" },
+            messages: [
+              {
+                info: {
+                  finish: "stop",
+                  semantics: { kind: "assistant_response" },
+                  tokens: { input: 10, output: 1, total: 11, reasoning: 0, cache: { read: 9 } },
+                },
+                parts: [{ type: "text", text: `answer-${sendCount}` }],
+              },
+            ],
+          };
+        if (method === "closeSession") return true;
+        if (method === "disposeWorkspace") return true;
+        throw new Error(`Unexpected method ${method}`);
+      },
+    }),
+  });
+  const first = {
+    scope: "sticky-scope",
+    selection: { providerId: "account:zai-start-plan", modelId: "GLM-5.3-Flash" },
+    messages: [{ role: "user", content: "first" }],
+    tools: [],
+  };
+  try {
+    const firstResult = await bridge.execute(first);
+    assert.equal(firstResult.text, "answer-1");
+    const secondResult = await bridge.execute({
+      ...first,
+      messages: [
+        ...first.messages,
+        { role: "assistant", content: "answer-1" },
+        { role: "user", content: "second" },
+      ],
+    });
+    assert.equal(secondResult.text, "answer-2");
+    assert.equal(createCount, 1);
+    assert.equal(sendCount, 2);
+    assert.deepEqual(prompts, ["first", "second"]);
+    assert.equal(closeCount, 0);
+  } finally {
+    await bridge.close();
+    assert.equal(closeCount, 1);
+    await rm(root, { recursive: true, force: true });
+  }
+});
