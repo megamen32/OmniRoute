@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { visibleReasoningOverlay } from "./zcode-reasoning-runtime.mjs";
 
 const MANIFEST_NAME = ".zcode-native-runtime-manifest.json";
 const REQUIRED_FILES = ["node", "server-core.js", "zcode.cjs"];
@@ -176,7 +177,12 @@ function atomicWriteCurrent(currentPath, value) {
   }
 }
 
-export function installZcodeNativeRuntime({ source, dataDir, activate = false }) {
+export function installZcodeNativeRuntime({
+  source,
+  dataDir,
+  activate = false,
+  visibleReasoning = false,
+}) {
   if (typeof source !== "string" || !isAbsolute(source))
     throw new Error("--source must be an absolute path");
   if (typeof dataDir !== "string" || !dataDir) throw new Error("--data-dir is required");
@@ -190,7 +196,18 @@ export function installZcodeNativeRuntime({ source, dataDir, activate = false })
 
   const initialManifest = manifestFor(enumerateRuntime(sourceRoot));
   const currentPath = join(stateRoot, "current.json");
-  const targetPath = join(releasesPath, initialManifest.id);
+  const overlay = visibleReasoning
+    ? visibleReasoningOverlay(sourceRoot, initialManifest.records)
+    : new Map();
+  const releaseManifest = visibleReasoning
+    ? manifestFor(
+        initialManifest.records.map((record) => {
+          const file = overlay.get(record.path);
+          return file ? { ...record, sha256: file.sha256 } : record;
+        })
+      )
+    : initialManifest;
+  const targetPath = join(releasesPath, releaseManifest.id);
 
   ensurePrivateDirectory(stateRoot);
   ensurePrivateDirectory(releasesPath);
@@ -220,9 +237,12 @@ export function installZcodeNativeRuntime({ source, dataDir, activate = false })
       const copiedManifest = manifestFor(enumerateRuntime(stagingPath));
       if (copiedManifest.id !== initialManifest.id)
         throw new Error("Runtime source changed while it was being copied; staged copy rejected");
+      for (const [entry, file] of overlay) {
+        writeFileSync(join(stagingPath, entry), file.text);
+      }
       writeFileSync(
         join(stagingPath, MANIFEST_NAME),
-        `${JSON.stringify({ id: copiedManifest.id, records: copiedManifest.records }, null, 2)}\n`,
+        `${JSON.stringify({ id: releaseManifest.id, records: releaseManifest.records }, null, 2)}\n`,
         { mode: 0o600, flag: "wx" }
       );
       chmodSync(join(stagingPath, MANIFEST_NAME), 0o600);
@@ -233,7 +253,7 @@ export function installZcodeNativeRuntime({ source, dataDir, activate = false })
     }
   }
 
-  const result = { runtime: targetPath, id: initialManifest.id };
+  const result = { runtime: targetPath, id: releaseManifest.id };
   if (activate) {
     const current = readCurrent(currentPath, releasesPath);
     if (current?.id === result.id && current.runtime === result.runtime) return result;
@@ -253,6 +273,8 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === "--activate") {
       options.activate = true;
+    } else if (arg === "--visible-reasoning") {
+      options.visibleReasoning = true;
     } else if (arg === "--source" || arg === "--data-dir") {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
