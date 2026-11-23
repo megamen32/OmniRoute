@@ -2258,7 +2258,12 @@ export function createSSEStream(options: StreamOptions = {}) {
                       choices: [
                         {
                           ...parsed.choices[0],
-                          delta: { ...parsed.choices[0].delta, content: undefined },
+                          delta: {
+                            ...parsed.choices[0].delta,
+                            content: undefined,
+                            tool_calls: undefined,
+                            function_call: undefined,
+                          },
                           finish_reason: null,
                         },
                         ...parsed.choices.slice(1),
