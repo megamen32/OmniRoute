@@ -352,11 +352,93 @@ test("ZCode prefers the Individual Plan account and falls back only to the built
 test("ZCode accepts GLM Coding Plan models and rejects unsafe/unknown ids", async () => {
   const { resolveZcodeModel } = await loadZcodeExecutor();
   assert.deepEqual(resolveZcodeModel("glm-5.2"), { ok: true, model: "glm-5.2" });
-  assert.deepEqual(resolveZcodeModel("glm-5.4"), { ok: true, model: "glm-5.4" });
+  assert.equal(resolveZcodeModel("glm-5.4").ok, false);
+  assert.deepEqual(resolveZcodeModel("GLM-5.4", true), { ok: true, model: "glm-5.4" });
+  assert.equal(resolveZcodeModel("../invalid", true).ok, false);
   assert.equal(resolveZcodeModel("glm-5.2-high").ok, false);
   assert.equal(resolveZcodeModel("glm-5.3-low").ok, false);
   assert.equal(resolveZcodeModel("-unexpected").ok, false);
   assert.equal(resolveZcodeModel("unknown-model").ok, false);
+});
+
+test("ZCode discovery only accepts enabled IDs from the selected account and does not guess", async () => {
+  const { waitForNativeZcodeSelection } = await loadZcodeExecutor();
+  const { projectNativeZcodeModels } =
+    await import("../../open-sse/executors/zcode/nativeModelCatalog.ts");
+  const provider = "account:zai-individual-coding-plan";
+  const view = {
+    providers: [
+      {
+        providerId: "builtin:zai-coding-plan",
+        models: [{ modelId: "Unpinned", config: { enabled: true } }],
+      },
+      {
+        providerId: "account:zai-start-plan",
+        models: [{ modelId: "Free", config: { enabled: true } }],
+      },
+      {
+        providerId: provider,
+        models: [
+          {
+            modelId: "GLM-Future",
+            config: {
+              enabled: true,
+              properties: { contextWindow: 1000000 },
+              optionSpecs: { maxOutputTokens: { max: 128000 } },
+            },
+          },
+          { modelId: "glm-future", config: { enabled: true } },
+          { modelId: "Disabled", config: { enabled: false } },
+          { modelId: "../bad-id", config: { enabled: true } },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(projectNativeZcodeModels(view, provider), [
+    { id: "glm-future", name: "GLM-Future", contextLength: 1000000, maxOutputTokens: 128000 },
+  ]);
+  const client = {
+    async call() {
+      return view;
+    },
+  };
+  assert.deepEqual(
+    await waitForNativeZcodeSelection(
+      client,
+      "glm-future",
+      provider,
+      undefined,
+      0,
+      undefined,
+      true
+    ),
+    {
+      selection: { providerId: provider, modelId: "GLM-Future" },
+      nativeMaxTokens: 128000,
+    }
+  );
+  for (const id of ["free", "unpinned", "disabled"]) {
+    await assert.rejects(
+      waitForNativeZcodeSelection(client, id, provider, undefined, 0, undefined, true),
+      /not supported or not enabled/
+    );
+  }
+  await assert.rejects(
+    waitForNativeZcodeSelection(
+      {
+        async call() {
+          throw new Error("offline");
+        },
+      },
+      "glm-future",
+      provider,
+      undefined,
+      0,
+      undefined,
+      true
+    ),
+    /offline/
+  );
 });
 
 test("ZCode uses native model inference and returns an OpenAI chat completion", async () => {

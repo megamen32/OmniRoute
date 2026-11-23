@@ -26,7 +26,8 @@ import {
   NativeSessionError,
   type NativeZcodeAttachment,
 } from "./zcode/nativeSession.ts";
-import { nativeZcodeHosts } from "./zcode/nativeHostManager.ts";
+import { nativeZcodeHosts, zcodeNativeProfileCredentials } from "./zcode/nativeHostManager.ts";
+import { isZcodeNativeModelId, nativeZcodeAccountModels } from "./zcode/nativeModelCatalog.ts";
 
 import { normalizeZcodeResponseText } from "./zcode/responseText.ts";
 
@@ -94,8 +95,16 @@ type NativeModelEntry = { record: JsonRecord; providerId: string };
 function findNativeModelEntry(
   view: unknown,
   model: string,
-  providerId?: string
+  providerId?: string,
+  exactAccount = false
 ): NativeModelEntry | null {
+  if (exactAccount) {
+    if (!providerId) return null;
+    const record = nativeZcodeAccountModels(view, providerId).find(
+      (entry) => entry.modelId.toLowerCase() === model.toLowerCase()
+    );
+    return record ? { record, providerId } : null;
+  }
   const providers = asRecord(view).providers;
   // Preserve the app-server's Individual account then builtin profile fallback.
   const allowed = providerId
@@ -127,9 +136,10 @@ function findNativeModelEntry(
 export function resolveZcodeSelection(
   view: unknown,
   model: string,
-  providerId?: string
+  providerId?: string,
+  exactAccount = false
 ): ZcodeTurnSelection {
-  const found = findNativeModelEntry(view, model, providerId);
+  const found = findNativeModelEntry(view, model, providerId, exactAccount);
   if (!found) {
     throw new NativeSessionError(
       `ZCode Coding Plan model "${model}" is not supported or not enabled in the native provider registry.`,
@@ -157,9 +167,10 @@ export function resolveZcodeSelection(
 export function resolveZcodeMaxTokens(
   view: unknown,
   model: string,
-  providerId?: string
+  providerId?: string,
+  exactAccount = false
 ): number | undefined {
-  const found = findNativeModelEntry(view, model, providerId);
+  const found = findNativeModelEntry(view, model, providerId, exactAccount);
   if (!found) return undefined;
   const optionSpecs = asRecord(asRecord(found.record.config).optionSpecs);
   const tokensSpec = asRecord(optionSpecs.maxOutputTokens);
@@ -323,7 +334,10 @@ export function buildZcodeModelRequest(body: JsonRecord): JsonRecord {
   };
 }
 
-export function resolveZcodeModel(model: unknown): ZcodeModelResolution {
+export function resolveZcodeModel(
+  model: unknown,
+  allowNativeDiscovery = false
+): ZcodeModelResolution {
   const requested = typeof model === "string" ? model.trim() : "";
   if (!requested) return { ok: true, model: DEFAULT_ZCODE_MODEL };
   if (requested.startsWith("-")) {
@@ -334,6 +348,9 @@ export function resolveZcodeModel(model: unknown): ZcodeModelResolution {
   }
   const normalized = requested.startsWith("zcode/") ? requested.slice("zcode/".length) : requested;
   if (!ZCODE_MODEL_ALLOWLIST.has(normalized)) {
+    if (allowNativeDiscovery && isZcodeNativeModelId(normalized)) {
+      return { ok: true, model: normalized.toLowerCase() };
+    }
     return {
       ok: false,
       error: `Unknown ZCode model \"${requested}\". Supported models: ${[...ZCODE_MODEL_ALLOWLIST].join(", ")}.`,
@@ -486,7 +503,8 @@ export async function waitForNativeZcodeSelection(
   providerId?: string,
   signal?: AbortSignal | null,
   startupTimeoutMs = 10_000,
-  fallbackMaxOutputTokens?: number
+  fallbackMaxOutputTokens?: number,
+  exactAccount = false
 ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
   const fallbackProviderId = providerId || ZCODE_FALLBACK_PROVIDER_ID;
   const readyDeadline = Date.now() + startupTimeoutMs;
@@ -494,7 +512,8 @@ export async function waitForNativeZcodeSelection(
     let registry: unknown;
     try {
       registry = await withAbort(client.call("model-selection", "getView", []), signal);
-    } catch {
+    } catch (error) {
+      if (exactAccount) throw error;
       return {
         selection: { providerId: fallbackProviderId, modelId: model },
         nativeMaxTokens: fallbackMaxOutputTokens,
@@ -502,12 +521,14 @@ export async function waitForNativeZcodeSelection(
     }
     try {
       return {
-        selection: resolveZcodeSelection(registry, model, providerId),
+        selection: resolveZcodeSelection(registry, model, providerId, exactAccount),
         nativeMaxTokens:
-          fallbackMaxOutputTokens ?? resolveZcodeMaxTokens(registry, model, providerId),
+          fallbackMaxOutputTokens ??
+          resolveZcodeMaxTokens(registry, model, providerId, exactAccount),
       };
     } catch (error) {
       if (Date.now() >= readyDeadline) {
+        if (exactAccount) throw error;
         return {
           selection: { providerId: fallbackProviderId, modelId: model },
           nativeMaxTokens: fallbackMaxOutputTokens,
@@ -588,15 +609,20 @@ export class ZcodeExecutor extends BaseExecutor {
     return null;
   }
   async execute(input: ExecuteInput): Promise<ExecutorExecuteResult> {
-    const resolution = resolveZcodeModel(input.model);
-    if (!resolution.ok)
-      return errorResponse(400, "error" in resolution ? resolution.error : "Invalid ZCode model");
     const transport = (
       process.env.ZCODE_TRANSPORT ||
       (input.credentials.authType === "oauth" ? "native-host" : "app-server")
     )
       .trim()
       .toLowerCase();
+    const individual = this.options.provider?.endsWith("individual") === true;
+    const oauth = asRecord(input.credentials).authType === "oauth";
+    const resolution = resolveZcodeModel(
+      input.model,
+      transport === "native-host" && individual && oauth
+    );
+    if (!resolution.ok)
+      return errorResponse(400, "error" in resolution ? resolution.error : "Invalid ZCode model");
     if (!["gateway", "app-server", "native-host"].includes(transport))
       return errorResponse(400, "Invalid ZCODE_TRANSPORT");
     let request: JsonRecord;
@@ -606,7 +632,6 @@ export class ZcodeExecutor extends BaseExecutor {
       return errorResponse(400, sanitizeErrorMessage(errorText(error)));
     }
     if (transport === "native-host") {
-      const individual = this.options.provider?.endsWith("individual") === true;
       if (
         individual &&
         (request.messages as JsonRecord[]).some((message) => typeof message.content !== "string")
@@ -691,22 +716,14 @@ export class ZcodeExecutor extends BaseExecutor {
         // The suffix selects only the local runtime profile. Billing and the
         // coding-session caller scope keep the original connection identity.
         const originalConnectionId = input.credentials.connectionId;
-        const oauth = asRecord(input.credentials).authType === "oauth";
-        const credentials =
-          oauth && originalConnectionId
-            ? {
-                ...input.credentials,
-                connectionId: `${originalConnectionId}:${individual ? "plain-individual" : "plain-start"}`,
-              }
-            : input.credentials;
+        const plan = individual ? "individual-coding-plan" : "start-plan";
+        const credentials = oauth
+          ? zcodeNativeProfileCredentials(input.credentials, plan)
+          : input.credentials;
         let serverRoot: string;
         if (oauth)
           serverRoot = await waitNative(() =>
-            nativeZcodeHosts.ensure(
-              credentials,
-              input.onCredentialsRefreshed,
-              individual ? "individual-coding-plan" : "start-plan"
-            )
+            nativeZcodeHosts.ensure(credentials, input.onCredentialsRefreshed, plan)
           );
         else {
           if (
@@ -737,8 +754,10 @@ export class ZcodeExecutor extends BaseExecutor {
             nativeClient,
             resolution.model,
             family === "bigmodel" ? providerId.replace("zai", "bigmodel") : providerId,
-            input.signal,
-            this.startupTimeoutMs
+            controller.signal,
+            this.startupTimeoutMs,
+            undefined,
+            !ZCODE_MODEL_ALLOWLIST.has(resolution.model)
           )
         );
         const selection = selected.selection;

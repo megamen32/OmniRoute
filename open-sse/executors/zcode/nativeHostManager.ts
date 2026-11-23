@@ -10,6 +10,15 @@ import { exchangeZaiBusinessToken, isLegacyZaiOAuthToken } from "./oauthGrant.ts
 
 export type NativePlanKind = "start-plan" | "individual-coding-plan";
 
+export function zcodeNativeProfileCredentials(
+  credentials: ProviderCredentials,
+  plan: NativePlanKind
+): ProviderCredentials {
+  if (!credentials.connectionId) return credentials;
+  const suffix = plan === "individual-coding-plan" ? "plain-individual" : "plain-start";
+  return { ...credentials, connectionId: `${credentials.connectionId}:${suffix}` };
+}
+
 type NativeAccount = {
   connectionId: string;
   family: "zai" | "bigmodel";

@@ -30,6 +30,7 @@ import {
   getProviderValidationGuard,
 } from "@/shared/network/outboundUrlGuardPolicy";
 import { errorResponse, sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
+import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import {
   applyDiscoveryDegradation,
   fromCopilotDiscoveryFailure,
@@ -192,6 +193,47 @@ export async function GET(
       typeof connection?.provider === "string" && connection.provider.trim().length > 0
         ? connection.provider
         : null;
+    if (searchParams.get("catalog") === "zcode-individual") {
+      const auth = await requireManagementAuth(request, { alwaysRequireAuth: true });
+      if (auth) return auth;
+      if (
+        !connection ||
+        connectionProvider !== "zcode" ||
+        connection.authType !== "oauth" ||
+        !connection.isActive
+      ) {
+        return errorResponse(404, "Active ZCode OAuth connection not found");
+      }
+      if (await isConnectionUnavailableToAuxiliaryActivity(id)) {
+        return errorResponse(409, "Model discovery deferred for managed connection");
+      }
+      const stale = buildStaleEncryptionKeyResponse(connection);
+      if (stale) return stale;
+      try {
+        const { readNativeZcodeIndividualCatalog } =
+          await import("@omniroute/open-sse/executors/zcode/nativeModelCatalog.ts");
+        const catalog = await readNativeZcodeIndividualCatalog({
+          connectionId: id,
+          accessToken:
+            typeof connection.accessToken === "string" ? connection.accessToken : undefined,
+          refreshToken:
+            typeof connection.refreshToken === "string" ? connection.refreshToken : undefined,
+          idToken: typeof connection.idToken === "string" ? connection.idToken : undefined,
+          providerSpecificData: asRecord(connection.providerSpecificData),
+        });
+        if (catalog.models.length === 0) {
+          return errorResponse(503, "ZCode Individual catalog is unavailable");
+        }
+        return NextResponse.json(
+          { ...catalog, connectionId: id },
+          {
+            headers: { "Cache-Control": "no-store" },
+          }
+        );
+      } catch {
+        return errorResponse(503, "ZCode Individual catalog is unavailable");
+      }
+    }
     const noAuthProviderId =
       (NOAUTH_PROVIDERS as Record<string, { noAuth?: boolean }>)[id]?.noAuth === true
         ? id
