@@ -111,7 +111,10 @@ import { getAdobeModels } from "./adobeFireflyDiscovery";
 import { getSyncedAvailableModels, getCustomModels, getModelIsHidden } from "@/lib/db/models";
 import { isConnectionUnavailableToAuxiliaryActivity } from "@/lib/exclusiveLeaseIsolation";
 import { AUTHZ_HEADER_PEER_LOCALITY } from "@/server/authz/headers";
-import { isModelSyncLocalSpawnDenied } from "@/shared/services/modelSyncScheduler";
+import {
+  isModelSyncInternalRequest,
+  isModelSyncLocalSpawnDenied,
+} from "@/shared/services/modelSyncScheduler";
 import { fetchCursorAgentModels } from "@/lib/providerModels/cursorAgent";
 import { fetchCursorAvailableModels } from "@/lib/providerModels/cursorAvailableModels";
 import { ensureCursorAutoCatalogEntry } from "@/lib/providerModels/cursorAutoCatalog";
@@ -193,6 +196,22 @@ export async function GET(
       typeof connection?.provider === "string" && connection.provider.trim().length > 0
         ? connection.provider
         : null;
+    const readZcodeIndividualCatalog = async () => {
+      const { readNativeZcodeIndividualCatalog } =
+        await import("@omniroute/open-sse/executors/zcode/nativeModelCatalog.ts");
+      return readNativeZcodeIndividualCatalog({
+        connectionId: id,
+        accessToken:
+          typeof connection?.accessToken === "string" ? connection.accessToken : undefined,
+        refreshToken:
+          typeof connection?.refreshToken === "string" ? connection.refreshToken : undefined,
+        idToken: typeof connection?.idToken === "string" ? connection.idToken : undefined,
+        providerSpecificData:
+          connection?.providerSpecificData && typeof connection.providerSpecificData === "object"
+            ? (connection.providerSpecificData as Record<string, unknown>)
+            : {},
+      });
+    };
     if (searchParams.get("catalog") === "zcode-individual") {
       const auth = await requireManagementAuth(request, { alwaysRequireAuth: true });
       if (auth) return auth;
@@ -210,17 +229,7 @@ export async function GET(
       const stale = buildStaleEncryptionKeyResponse(connection);
       if (stale) return stale;
       try {
-        const { readNativeZcodeIndividualCatalog } =
-          await import("@omniroute/open-sse/executors/zcode/nativeModelCatalog.ts");
-        const catalog = await readNativeZcodeIndividualCatalog({
-          connectionId: id,
-          accessToken:
-            typeof connection.accessToken === "string" ? connection.accessToken : undefined,
-          refreshToken:
-            typeof connection.refreshToken === "string" ? connection.refreshToken : undefined,
-          idToken: typeof connection.idToken === "string" ? connection.idToken : undefined,
-          providerSpecificData: asRecord(connection.providerSpecificData),
-        });
+        const catalog = await readZcodeIndividualCatalog();
         if (catalog.models.length === 0) {
           return errorResponse(503, "ZCode Individual catalog is unavailable");
         }
@@ -229,6 +238,46 @@ export async function GET(
           {
             headers: { "Cache-Control": "no-store" },
           }
+        );
+      } catch {
+        return errorResponse(503, "ZCode Individual catalog is unavailable");
+      }
+    }
+
+    // ZCode has no public OpenAI-compatible /models endpoint. Feed its native
+    // account catalog through the same GET -> POST /sync-models path used by
+    // every other live provider. The scheduler owns when this is called, while
+    // the selected OAuth connection owns which account and tariff are queried.
+    if (
+      refresh &&
+      connectionProvider === "zcode" &&
+      connection?.authType === "oauth" &&
+      connection.isActive &&
+      isModelSyncInternalRequest(request)
+    ) {
+      if (await isConnectionUnavailableToAuxiliaryActivity(id)) {
+        return errorResponse(409, "Model discovery deferred for managed connection");
+      }
+      const stale = buildStaleEncryptionKeyResponse(connection);
+      if (stale) return stale;
+      try {
+        const catalog = await readZcodeIndividualCatalog();
+        const models = catalog.models
+          .filter((model) => !chatOnly || model.id.length > 0)
+          .map((model) => ({
+            id: model.id,
+            name: model.name,
+            inputTokenLimit: model.contextLength,
+            contextWindow: model.contextLength,
+            outputTokenLimit: model.maxOutputTokens,
+            supportedEndpoints: ["chat"],
+            supportsTools: true,
+          }));
+        if (models.length === 0)
+          return errorResponse(503, "ZCode Individual catalog is unavailable");
+        return NextResponse.json(
+          { provider: "zcode", connectionId: id, models, source: "upstream" },
+          { headers: { "Cache-Control": "no-store" } }
         );
       } catch {
         return errorResponse(503, "ZCode Individual catalog is unavailable");

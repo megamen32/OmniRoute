@@ -15,6 +15,7 @@ export const ACCOUNT_LIVE_PROVIDER_IDS = [
   "cursor",
   "cu",
   "grok-cli",
+  "zcode",
 ] as const;
 
 const ACCOUNT_LIVE = new Set<string>(ACCOUNT_LIVE_PROVIDER_IDS);

@@ -9,9 +9,9 @@ export default {
   id: "omniroute-zcode-discovery",
   async setup(ctx) {
     const options = ctx.options ?? {};
-    const data = options.manifest ?? join(homedir(), ".omniroute/zcode-opencode-catalog.json");
     const keyPath = options.keyFile ?? join(homedir(), ".config/llm-keys/opencode-100.key");
-    const settings = { baseURL: options.baseURL ?? "https://omniroute.bezrabotnyi.com/v1" };
+    const baseURL = options.baseURL ?? "https://omniroute.bezrabotnyi.com/v1";
+    const settings = { baseURL };
     const info = {
       id: providerID,
       activation: "enabled",
@@ -23,16 +23,24 @@ export default {
     let published;
     let models = [];
     async function readCatalog() {
-      const snapshot = await readFile(data, "utf8").catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-        return "[]";
+      const key = (await readFile(keyPath, "utf8")).trim();
+      const response = await fetch(`${baseURL.replace(/\/+$/, "")}/models`, {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(options.fetchTimeoutMs ?? 15000),
       });
+      if (!response.ok) throw new Error(`catalog HTTP ${response.status}`);
+      const payload = await response.json();
+      const entries = Array.isArray(payload?.data)
+        ? payload.data.filter(
+            (model) => typeof model?.id === "string" && model.id.startsWith("zcode-native/")
+          )
+        : [];
+      const snapshot = JSON.stringify(entries);
       if (snapshot === published) return snapshot;
-      const entries = JSON.parse(snapshot);
-      models = entries.map(({ id, name, limit }) => ({
+      models = entries.map(({ id, name, context_length: context, max_output_tokens: output }) => ({
         id,
         modelID: id,
-        name,
+        name: name || id,
         providerID,
         package: providerPackage,
         settings,
@@ -42,7 +50,7 @@ export default {
         cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
         status: "active",
         enabled: true,
-        limit: { context: 0, output: 0, ...limit },
+        limit: { context: context || 0, output: output || 0 },
       }));
       return snapshot;
     }
@@ -55,16 +63,16 @@ export default {
       try {
         const snapshot = await readCatalog();
         if (stopped || snapshot === published) return;
-        if (reload) await ctx.provider.reload();
         published = snapshot;
+        if (reload) await ctx.provider.reload();
       } catch (error) {
-        console.warn("[zcode-catalog] refresh failed:", error.code ?? error.name);
+        console.warn("[zcode-catalog] OmniRoute catalog refresh failed:", error.code ?? error.name);
       } finally {
         refreshing = false;
       }
     }
 
-    const base = new URL(settings.baseURL);
+    const base = new URL(baseURL);
     const auth = await ctx.session.hook(
       "http.request",
       async ({ request, sessionID }) => {
@@ -74,7 +82,7 @@ export default {
           target.pathname === base.pathname + "/chat/completions"
         ) {
           const key = (await readFile(keyPath, "utf8")).trim();
-          if (!key) throw new Error("ZCode gateway key is empty");
+          if (!key) throw new Error("OmniRoute gateway key is empty");
           request.headers.set("Authorization", "Bearer " + key);
           request.headers.set("x-opencode-session", sessionID);
         }
@@ -86,7 +94,9 @@ export default {
       editor.add({ info, models });
     });
 
-    const timer = setInterval(() => void refresh(true), options.intervalMs ?? 20_000);
+    // OmniRoute performs upstream discovery on its standard six-hour scheduler.
+    // This loop only rereads the already-built /v1/models catalog in OpenCode.
+    const timer = setInterval(() => void refresh(true), options.intervalMs ?? 6 * 60 * 60 * 1000);
     timer.unref?.();
     return async () => {
       stopped = true;

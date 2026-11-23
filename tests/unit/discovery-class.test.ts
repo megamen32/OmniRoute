@@ -19,10 +19,11 @@ const L1 = [
   "cursor",
   "cu",
   "grok-cli",
+  "zcode",
 ] as const;
 
 test("test 1: L1 ids are account-live", () => {
-  assert.equal(ACCOUNT_LIVE_PROVIDER_IDS.length, 10);
+  assert.equal(ACCOUNT_LIVE_PROVIDER_IDS.length, 11);
   for (const id of L1) {
     assert.equal(getDiscoveryClass(id), "account-live", id);
   }

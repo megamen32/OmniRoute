@@ -41,6 +41,7 @@ import {
   pruneStaleComboModelRefs,
 } from "@/lib/combos/staleModelPrune";
 import { logAuditEvent } from "@/lib/compliance/index";
+import { syncZcodeNativeCombos } from "@/lib/providerModels/zcodeNativeComboSync";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -663,6 +664,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       })
     );
 
+    const zcodeCombos =
+      logProvider === "zcode"
+        ? await syncZcodeNativeCombos(id, fetchedModels)
+        : { added: [], conflicts: [] };
+
     const effectiveAvailableModels = resolveEffectiveAvailableModels(
       freeFilterEmpty,
       discoveredModels,
@@ -834,6 +840,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       importedCount,
       updatedCount,
       importedChanges,
+      ...(logProvider === "zcode" ? { zcodeCombos } : {}),
       logged: shouldLog,
       models: persistedModels,
       importedModels,
