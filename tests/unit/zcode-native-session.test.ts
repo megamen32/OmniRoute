@@ -411,3 +411,102 @@ for (const statusCode of [429, 503]) {
     }
   });
 }
+
+test("Start emits only current tool-turn reasoning, once per projected response", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-tool-reasoning-"));
+  const expected = ["first\n\nsecond", undefined, undefined, undefined, "last"];
+  let round = 0;
+  let relay: { url: string; headers: { name: string; value: string }[] };
+  let chain: Promise<void> | undefined;
+  const bridge = new NativeZcodeSessionBridge({
+    workspaceRoot: root,
+    pollMs: 2,
+    timeoutMs: 4000,
+    clientFactory: () => ({
+      async start() {},
+      async close() {},
+      async call(_channel, method, args) {
+        if (method === "saveProject") return { id: "test-project" };
+        if (method === "createSession") {
+          relay = (args[0] as { mcpServers: [typeof relay] }).mcpServers[0];
+          return { session: { sessionId: "test-session" } };
+        }
+        if (method === "sendPrompt") {
+          chain = (async () => {
+            const headers = Object.fromEntries(relay.headers.map((h) => [h.name, h.value]));
+            const rpc = (method: string, params = {}) =>
+              fetch(relay.url, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ jsonrpc: "2.0", id: round + 1, method, params }),
+              }).then((r) => r.json());
+            await rpc("tools/list");
+            for (; round < expected.length; round++)
+              await rpc("tools/call", { name: "tool_0", arguments: { round } });
+          })();
+          void chain.catch(() => {});
+        }
+        if (method === "readSession") {
+          const done = round === expected.length;
+          const active = round === 4;
+          const text = ["first", "duplicate", "outdated", "", "last"][round];
+          const info = {
+            messageId: ["one", "one", "old", "empty", "five", "final"][round],
+            time: { created: round === 2 ? 1 : Date.now() },
+            semantics: { kind: "assistant_response" },
+            finish: done ? "stop" : active ? undefined : "tool-calls",
+          };
+          const parts = [
+            ...(text ? [{ type: "reasoning", text }] : []),
+            ...(round === 0 ? [{ type: "reasoning", text: "second" }] : []),
+            ...(active ? [{ type: "tool", callId: "current" }] : []),
+            ...(done ? [{ type: "text", text: "done" }] : []),
+          ];
+          return {
+            session: { status: done ? "idle" : "running" },
+            projection: {
+              activeToolCalls: active ? [{ toolCallId: "current", status: "running" }] : [],
+            },
+            messages: [{ info, parts }],
+          };
+        }
+        return {};
+      },
+    }),
+  });
+  const messages: Record<string, unknown>[] = [{ role: "user", content: "Use echo" }];
+  const request = {
+    scope: "test",
+    messages,
+    selection: { providerId: "account:zai-start-plan", modelId: "test" },
+    tools: [{ name: "echo", inputSchema: { type: "object" } }],
+  };
+  try {
+    for (const [index, value] of expected.entries()) {
+      const result = await bridge.execute({ ...request, messages: [...messages] });
+      assert.equal(result.finishReason, "tool-calls");
+      assert.equal(result.reasoning, value, `round ${index}`);
+      const [call] = result.toolCalls as { id: string; name: string; input: object }[];
+      assert.deepEqual(call.input, { round: index });
+      messages.push(
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: call.id,
+              type: "function",
+              function: { name: call.name, arguments: JSON.stringify(call.input) },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: call.id, content: "ok" }
+      );
+    }
+    assert.equal((await bridge.execute(request)).text, "done");
+    await chain;
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -60,14 +60,21 @@ type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : {};
 const list = (value: unknown): RecordValue[] => (Array.isArray(value) ? value.map(record) : []);
-const assistantUsage = (snapshot: unknown): RecordValue => {
-  const messages = list(record(snapshot).messages);
-  const response = messages
-    .filter(
-      (message) => record(record(record(message).info).semantics).kind === "assistant_response"
-    )
+function lastAssistantResponse(snapshot: unknown): RecordValue | undefined {
+  return list(record(snapshot).messages)
+    .filter((message) => record(record(message.info).semantics).kind === "assistant_response")
     .at(-1);
-  const info = record(record(response).info);
+}
+
+function assistantReasoning(response: RecordValue | undefined): string {
+  return list(response?.parts)
+    .filter((part) => part.type === "reasoning" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
+const assistantUsage = (response?: RecordValue): RecordValue => {
+  const info = record(response?.info);
   const tokens = record(info.tokens);
   const cache = record(tokens.cache);
   return {
@@ -206,6 +213,7 @@ type Run = {
   pending: PendingTool[];
   toolsListed: boolean;
   reportedUsage: Record<string, number>;
+  lastResponseId?: string;
   relay: Server;
   busy: boolean;
   expires?: ReturnType<typeof setTimeout>;
@@ -267,6 +275,7 @@ export class NativeZcodeSessionBridge {
     input: Parameters<NativeZcodeSessionBridge["execute"]>[0],
     turn: Turn
   ): Promise<RecordValue> {
+    const turnStartedAt = Date.now();
     const results = input.messages.filter((m) => m.role === "tool");
     const ids = results.map((m) => String(m.tool_call_id || ""));
     if (ids.some((id) => this.recovering.has(id)))
@@ -393,10 +402,12 @@ export class NativeZcodeSessionBridge {
             () => statistics.abort(new Error("ZCode usage snapshot timed out")),
             Math.max(1, statisticsTurn.deadline - Date.now())
           );
-          let usage = assistantUsage(undefined);
+          let usage = assistantUsage();
+          let reasoning = "";
+          let responseId = "";
           try {
             try {
-              usage = assistantUsage(
+              const snapshot = record(
                 await call(
                   run.client,
                   "zcode-agent",
@@ -405,6 +416,30 @@ export class NativeZcodeSessionBridge {
                   statisticsTurn
                 )
               );
+              const response = lastAssistantResponse(snapshot);
+              usage = assistantUsage(response);
+              const info = record(response?.info);
+              responseId = typeof info.messageId === "string" ? info.messageId : "";
+              const created = record(info.time).created;
+              // A resumed session can still project an earlier reply while a tool is suspended.
+              const fresh =
+                typeof created === "number"
+                  ? created >= turnStartedAt
+                  : run.lastResponseId === undefined;
+              const current = fresh && responseId !== run.lastResponseId;
+              const activeIds = new Set(
+                list(record(snapshot.projection).activeToolCalls)
+                  .filter((tool) => tool.status === "running" || tool.status === "pending")
+                  .map((tool) => tool.toolCallId)
+              );
+              const hasActiveTool = list(response?.parts).some(
+                (part) =>
+                  part.type === "tool" &&
+                  typeof part.callId === "string" &&
+                  activeIds.has(part.callId)
+              );
+              const belongsToTool = activeIds.size ? hasActiveTool : info.finish === "tool-calls";
+              if (current && belongsToTool) reasoning = assistantReasoning(response);
             } catch {
               // A stalled message projection must not hold the caller tool.
             }
@@ -454,6 +489,7 @@ export class NativeZcodeSessionBridge {
             clearTimeout(statisticsTimer);
           }
           if (input.signal?.aborted) throw new NativeSessionError("ZCode request cancelled", 499);
+          run.lastResponseId = responseId || run.lastResponseId || "";
           for (const key of Object.keys(run.reportedUsage))
             run.reportedUsage[key] += Number(usage[key] ?? 0);
           run.history = [
@@ -461,6 +497,7 @@ export class NativeZcodeSessionBridge {
             {
               role: "assistant",
               content: "",
+              ...(reasoning ? { reasoning_content: reasoning } : {}),
               tool_calls: calls.map((call) => ({
                 id: call.id,
                 type: "function",
@@ -478,6 +515,7 @@ export class NativeZcodeSessionBridge {
           run.expires.unref();
           return {
             text: "",
+            ...(reasoning ? { reasoning } : {}),
             finishReason: "tool-calls",
             toolCalls: calls,
             usage,
@@ -521,10 +559,7 @@ export class NativeZcodeSessionBridge {
             throw new NativeSessionError("ZCode account needs a new login", 401);
           throw new NativeSessionError("ZCode native session failed");
         }
-        const messages = list(snapshot.messages);
-        const response = messages
-          .filter((message) => record(record(message.info).semantics).kind === "assistant_response")
-          .at(-1);
+        const response = lastAssistantResponse(snapshot);
         if (response && session.status === "idle" && record(response.info).finish === "stop") {
           if (input.tools.length && !run.toolsListed) {
             throw new NativeSessionError("ZCode caller tools did not connect", 503);
@@ -533,10 +568,7 @@ export class NativeZcodeSessionBridge {
             .filter((part) => part.type === "text")
             .map((part) => String(part.text ?? ""))
             .join("");
-          const reasoning = list(response.parts)
-            .filter((part) => part.type === "reasoning")
-            .map((part) => String(part.text ?? ""))
-            .join("\n\n");
+          const reasoning = assistantReasoning(response);
           const tokens = record(record(response.info).tokens);
           // The model has completed; cleanup cannot replace its answer.
           await this.dispose(run).catch(() => undefined);
