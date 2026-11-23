@@ -311,6 +311,7 @@ test("ZCode prefers the Individual Plan account and falls back only to the built
 test("ZCode accepts GLM Coding Plan models and rejects unsafe/unknown ids", async () => {
   const { resolveZcodeModel } = await loadZcodeExecutor();
   assert.deepEqual(resolveZcodeModel("glm-5.2"), { ok: true, model: "glm-5.2" });
+  assert.deepEqual(resolveZcodeModel("glm-5.4"), { ok: true, model: "glm-5.4" });
   assert.equal(resolveZcodeModel("glm-5.2-high").ok, false);
   assert.equal(resolveZcodeModel("glm-5.3-low").ok, false);
   assert.equal(resolveZcodeModel("-unexpected").ok, false);
