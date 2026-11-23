@@ -115,6 +115,40 @@ export function normalizeReasoningRouteId(value: unknown): string {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
 
+export function isNativeMiniMaxM27Route(provider: unknown, model: unknown): boolean {
+  const providerId = normalizeReasoningRouteId(provider);
+  return (
+    (providerId === "minimax" || providerId === "minimax-cn") &&
+    /^minimax-m2\.7(?:-highspeed)?$/.test(normalizeReasoningRouteId(model))
+  );
+}
+
+export function skipThinkPreambleWhitespace(text: string): string {
+  // An indented Markdown code block is visible text.
+  return text.replace(/^(?:[ \t]*\r?\n)* {0,3}/, "");
+}
+
+export function extractLeadingThinkingFromContent(text: string): {
+  content: string;
+  thinking: string | null;
+} {
+  const candidate = skipThinkPreambleWhitespace(text);
+  if (!candidate.startsWith("<think>")) return { content: text, thinking: null };
+  const end = candidate.indexOf("</think>", "<think>".length);
+  return {
+    content: end < 0 ? "" : candidate.slice(end + "</think>".length),
+    thinking: candidate.slice("<think>".length, end < 0 ? undefined : end).trim() || null,
+  };
+}
+
+export function mergeTextualReasoning(
+  structured: string | null | undefined,
+  tagged: string
+): string {
+  if (!structured) return tagged;
+  return structured.trim() === tagged.trim() ? structured : `${structured}\n\n${tagged}`;
+}
+
 export function isAntigravityReasoningRoute(providerId: string, modelId: string): boolean {
   return (
     providerId.includes("antigravity") ||
@@ -127,6 +161,7 @@ export function isAntigravityReasoningRoute(providerId: string, modelId: string)
 export function isTextualReasoningTagNativeRoute(providerId: string, modelId: string): boolean {
   const routeId = `${providerId}/${modelId}`;
   return (
+    isNativeMiniMaxM27Route(providerId, modelId) ||
     /deepseek[-_/]?r1\b/.test(routeId) ||
     /r1[-_/]?distill\b/.test(routeId) ||
     /(?:^|[/:_-])qwq(?:[/._:-]|$)/.test(routeId) ||

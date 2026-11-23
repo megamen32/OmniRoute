@@ -27,6 +27,7 @@ import {
 import {
   sanitizeOpenAIResponse,
   sanitizeResponsesApiResponse,
+  isNativeMiniMaxM27Route,
   shouldParseTextualReasoningTags,
 } from "../responseSanitizer.ts";
 import { isStripReasoningRequested } from "./headers.ts";
@@ -354,7 +355,9 @@ export function translateNonStreamingClientResponse(
     const stripReasoning = isStripReasoningRequested(clientHeaders ?? null);
     translatedResponse = sanitizeOpenAIResponse(translatedResponse, {
       stripReasoning,
-      parseTextualReasoningTags: shouldParseTextualReasoningTags(provider, model),
+      parseTextualReasoningTags: isNativeMiniMaxM27Route(provider, model)
+        ? "leading"
+        : shouldParseTextualReasoningTags(provider, model),
     });
   }
 
