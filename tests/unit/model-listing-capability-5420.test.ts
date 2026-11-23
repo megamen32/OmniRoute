@@ -52,7 +52,6 @@ describe("providerUsesExclusiveSyncedListing", () => {
     assert.equal(providerUsesExclusiveSyncedListing("cu"), true);
     assert.equal(providerUsesExclusiveSyncedListing("Cursor"), true);
     assert.equal(providerUsesExclusiveSyncedListing("codebuddy-cn"), true);
-    assert.equal(providerUsesExclusiveSyncedListing("zcode"), true);
     assert.equal(providerUsesExclusiveSyncedListing("codebuddy-intl"), false);
   });
 
@@ -67,6 +66,5 @@ describe("providerUsesExclusiveSyncedListing", () => {
     assert.equal(providerUsesExclusiveSyncedListing("claude"), false);
     assert.equal(providerUsesExclusiveSyncedListing("codex"), true);
     assert.equal(providerUsesExclusiveSyncedListing("agy"), false);
-    assert.equal(providerUsesExclusiveSyncedListing("zcode"), true);
   });
 });

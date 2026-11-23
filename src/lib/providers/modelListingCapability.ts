@@ -55,14 +55,7 @@ export function isDiscoveryImportedCustomSource(source: unknown): boolean {
  */
 export function providerUsesExclusiveSyncedListing(providerId: string): boolean {
   const id = providerId.trim().toLowerCase();
-  return (
-    id === "cursor" ||
-    id === "cu" ||
-    id === "codex" ||
-    id === "cx" ||
-    id === "codebuddy-cn" ||
-    id === "zcode"
-  );
+  return id === "cursor" || id === "cu" || id === "codex" || id === "cx" || id === "codebuddy-cn";
 }
 
 /**
