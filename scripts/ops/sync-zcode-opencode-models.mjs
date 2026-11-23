@@ -1,33 +1,40 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, parseEnv } from "node:util";
 
-const require = createRequire(join(process.cwd(), "package.json"));
-const jsonc = require("jsonc-parser");
-
-/** Keep the existing short aliases and a unique stable name for long provider IDs. */
 function comboName(id) {
-  const name = "opencode-" + id + "-native-api";
+  const name = "zcode-native/" + id;
   if (name.length <= 100) return name;
   return name.slice(0, 83) + "-" + createHash("sha256").update(id).digest("hex").slice(0, 16);
 }
 
 function modelEntry(model, alias) {
-  const entry = { modelID: alias, name: model.name + " · ZCode Individual" };
-  if (
-    Number.isSafeInteger(model.contextLength) &&
-    model.contextLength > 0 &&
-    Number.isSafeInteger(model.maxOutputTokens) &&
-    model.maxOutputTokens > 0
-  ) {
-    entry.limit = { context: model.contextLength, output: model.maxOutputTokens };
+  const limit = {};
+  if (Number.isSafeInteger(model.contextLength) && model.contextLength > 0)
+    limit.context = model.contextLength;
+  if (Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens > 0)
+    limit.output = model.maxOutputTokens;
+  return { id: alias, name: model.name + " · ZCode Individual", limit };
+}
+
+async function publishJson(path, value) {
+  const content = JSON.stringify(value, null, 2) + "\n";
+  const previous = await readFile(path, "utf8").catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  if (previous === content) return;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = path + "." + randomUUID();
+  try {
+    await writeFile(temp, content, { mode: 0o600, flag: "wx" });
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true });
   }
-  return entry;
 }
 
 async function listCombos(request) {
@@ -57,25 +64,15 @@ function matches(combo, target) {
   );
 }
 
-export async function syncZcodeModels({ connectionId, configFile, request }) {
+export async function syncZcodeModels({ connectionId, manifest, request }) {
   const catalog = await request(
     "/api/providers/" + encodeURIComponent(connectionId) + "/models?catalog=zcode-individual"
   );
   assert.equal(catalog.connectionId, connectionId);
-  assert(["zcode-individual", "zcode-cn-individual"].includes(catalog.provider));
+  assert.equal(catalog.provider, "zcode-individual", "Expected the international Max account");
   assert(Array.isArray(catalog.models) && catalog.models.length > 0, "ZCode catalog is empty");
-  const configPath = await realpath(configFile);
-  const original = await readFile(configPath, "utf8");
-  const errors = [];
-  const config = jsonc.parse(original, errors);
-  assert.deepEqual(errors, [], "Invalid OpenCode JSONC");
-  const models = config.providers?.omniroute?.models;
-  assert(
-    models && typeof models === "object" && !Array.isArray(models),
-    "OpenCode's OmniRoute provider is missing"
-  );
-  let updated = original;
-  let combos;
+  const combos = await listCombos(request);
+  const entries = [];
   const discovered = new Set();
   const added = [];
   const conflicts = [];
@@ -88,8 +85,6 @@ export async function syncZcodeModels({ connectionId, configFile, request }) {
     if (discovered.has(model.id)) continue;
     discovered.add(model.id);
     const alias = comboName(model.id);
-    if (Object.hasOwn(models, alias)) continue;
-    combos ??= await listCombos(request);
     const target = {
       kind: "model",
       providerId: catalog.provider,
@@ -119,35 +114,12 @@ export async function syncZcodeModels({ connectionId, configFile, request }) {
       assert.equal(combo.name, alias);
       assert(matches(combo, target), "OmniRoute did not persist the selected account/model");
       combos.set(alias, combo);
+      added.push(alias);
     }
-    const entry = modelEntry(model, alias);
-    updated = jsonc.applyEdits(
-      updated,
-      jsonc.modify(updated, ["providers", "omniroute", "models", alias], entry, {
-        formattingOptions: { insertSpaces: true, tabSize: 2 },
-      })
-    );
-    models[alias] = entry;
-    added.push(alias);
+    entries.push(modelEntry(model, alias));
   }
-  if (added.length) {
-    assert.deepEqual(jsonc.parse(updated), config, "OpenCode config did not round-trip");
-    const mode = (await lstat(configPath)).mode & 0o777;
-    const temporary = configPath + ".zcode-" + randomUUID();
-    try {
-      await writeFile(temporary, updated, { mode, flag: "wx" });
-      assert.equal(
-        await readFile(configPath, "utf8"),
-        original,
-        "OpenCode configuration changed during sync"
-      );
-      await rename(temporary, configPath);
-    } finally {
-      await unlink(temporary).catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-      });
-    }
-  }
+  entries.sort((left, right) => left.id.localeCompare(right.id));
+  await publishJson(manifest, entries);
   return {
     at: new Date().toISOString(),
     provider: catalog.provider,
@@ -162,7 +134,7 @@ async function main() {
   const { values } = parseArgs({
     options: {
       policy: { type: "string" },
-      config: { type: "string", default: join(homedir(), ".config/opencode/opencode.jsonc") },
+      manifest: { type: "string", default: join(data, "zcode-opencode-catalog.json") },
       port: { type: "string", default: "20128" },
       receipt: { type: "string" },
     },
@@ -197,13 +169,8 @@ async function main() {
     );
     return r.json();
   };
-  const result = await syncZcodeModels({ connectionId: max, configFile: values.config, request });
-  if (values.receipt) {
-    await mkdir(dirname(values.receipt), { recursive: true, mode: 0o700 });
-    const temp = values.receipt + "." + process.pid;
-    await writeFile(temp, JSON.stringify(result, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-    await rename(temp, values.receipt);
-  }
+  const result = await syncZcodeModels({ connectionId: max, manifest: values.manifest, request });
+  if (values.receipt) await publishJson(values.receipt, result);
   console.log(JSON.stringify(result));
 }
 
