@@ -15,7 +15,12 @@
  *   // content = "final answer..."
  */
 
-import { shouldParseTextualReasoningTags } from "../handlers/responseSanitizer/reasoning.ts";
+import {
+  isNativeMiniMaxM27Route,
+  mergeTextualReasoning,
+  shouldParseTextualReasoningTags,
+  skipThinkPreambleWhitespace,
+} from "../handlers/responseSanitizer/reasoning.ts";
 import { appendBoundedText, buildSyntheticChatChunk } from "./streamHelpers.ts";
 
 const THINK_OPEN = "<think>";
@@ -45,6 +50,7 @@ const THINK_OPEN_PARTIALS: readonly string[] = Array.from(
 export function initThinkState(isPassthroughMode: boolean, provider?: unknown, model?: string) {
   return {
     enabled: isPassthroughMode && shouldParseTextualReasoningTags(provider, model),
+    leadingOnly: isNativeMiniMaxM27Route(provider, model),
     insideThink: false,
     buffer: "",
     active: false,
@@ -151,6 +157,12 @@ export function processStreamingThinkDelta(delta, ctx) {
       reasoningDelta += ctx.buffer.slice(0, closeIdx);
       ctx.buffer = ctx.buffer.slice(closeIdx + THINK_CLOSE.length);
       ctx.insideThink = false;
+      if (ctx.leadingOnly) {
+        contentDelta += ctx.buffer;
+        ctx.buffer = "";
+        ctx.enabled = false;
+        break;
+      }
     } else {
       // Looking for opening tag
       const openIdx = ctx.buffer.indexOf(THINK_OPEN);
@@ -189,12 +201,39 @@ export function applyThinkTag(
   delta: { content: unknown; reasoning_content?: string }
 ): boolean {
   if (!ctx.enabled || typeof delta?.content !== "string") return false;
-  if (!ctx.active && !containsOrMayEndWithThinkOpenTag(delta.content)) return false;
+  let text = delta.content;
+  if (ctx.leadingOnly && !ctx.active) {
+    const candidate = ctx.buffer + text;
+    const preamble = skipThinkPreambleWhitespace(candidate);
+    if (
+      preamble.length < THINK_OPEN.length &&
+      THINK_OPEN.startsWith(preamble) &&
+      candidate.length < 256
+    ) {
+      ctx.buffer = candidate;
+      delta.content = "";
+      return true;
+    }
+    ctx.buffer = "";
+    if (!preamble.startsWith(THINK_OPEN)) {
+      ctx.enabled = false;
+      delta.content = candidate;
+      return candidate !== text;
+    }
+    ctx.insideThink = true;
+    text = preamble.slice(THINK_OPEN.length);
+  } else if (!ctx.active && !containsOrMayEndWithThinkOpenTag(text)) {
+    return false;
+  }
 
   ctx.active = true;
-  const { reasoningDelta, contentDelta } = processStreamingThinkDelta(delta.content, ctx);
+  const { reasoningDelta, contentDelta } = processStreamingThinkDelta(text, ctx);
   delta.content = contentDelta || "";
-  if (reasoningDelta) delta.reasoning_content = reasoningDelta;
+  if (reasoningDelta) {
+    delta.reasoning_content = ctx.leadingOnly
+      ? mergeTextualReasoning(delta.reasoning_content, reasoningDelta)
+      : reasoningDelta;
+  }
   return true;
 }
 
@@ -252,7 +291,7 @@ export function flushThink(
   content: string;
   addedLength: number;
 } | null {
-  if (!ctx.enabled || !ctx.active) return null;
+  if (!ctx.enabled || (!ctx.active && !ctx.buffer)) return null;
 
   const { reasoningDelta, contentDelta } = flushThinkBuffer(ctx);
   if (!reasoningDelta && !contentDelta) return null;

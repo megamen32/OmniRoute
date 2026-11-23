@@ -7,6 +7,8 @@ import { normalizeOpenAICompatibleFinishReason } from "../utils/finishReason.ts"
 import {
   collapseExcessiveNewlines,
   extractThinkingFromContent,
+  extractLeadingThinkingFromContent,
+  mergeTextualReasoning,
 } from "./responseSanitizer/reasoning.ts";
 import {
   applyCacheHitTokensToUsage,
@@ -23,6 +25,7 @@ import { findBalancedJsonEnd } from "./responseSanitizer/balancedJson.ts";
 import { normalizeResponsesContextUsage } from "../utils/normalizeResponsesContextUsage.ts";
 export {
   extractThinkingFromContent,
+  isNativeMiniMaxM27Route,
   shouldParseTextualReasoningTags,
 } from "./responseSanitizer/reasoning.ts";
 
@@ -48,7 +51,7 @@ const RESPONSES_EXTRA_TOP_LEVEL_FIELDS = [
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
-type ParseOptions = { parseTextualReasoningTags?: boolean };
+type ParseOptions = { parseTextualReasoningTags?: boolean | "leading" };
 
 export const OMIT_STREAMING_CHUNK_MARKER = "__omniroute_omit_streaming_chunk";
 
@@ -208,7 +211,7 @@ export interface SanitizeOpenAIResponseOptions {
    * can be user-requested visible content. Enable only for routes/models whose
    * upstream contract uses textual tags as the native reasoning channel.
    */
-  parseTextualReasoningTags?: boolean;
+  parseTextualReasoningTags?: ParseOptions["parseTextualReasoningTags"];
 }
 
 export function sanitizeOpenAIResponse(
@@ -226,7 +229,7 @@ export function sanitizeOpenAIResponse(
   const bodyRecord = toRecord(body);
   if (!bodyRecord) return body;
   const stripReasoning = options.stripReasoning === true;
-  const parseTextualReasoningTags = options.parseTextualReasoningTags === true;
+  const { parseTextualReasoningTags } = options;
 
   // Build sanitized response with only allowed top-level fields
   const sanitized: JsonRecord = {};
@@ -379,9 +382,11 @@ function sanitizeMessageContent(msgRecord: JsonRecord, options: ParseOptions = {
     );
     const nativeReasoning = getReadableReasoningValue(msgRecord);
     const { content, thinking } =
-      options.parseTextualReasoningTags === true && !nativeReasoning
-        ? extractThinkingFromContent(strippedContent)
-        : { content: strippedContent, thinking: null };
+      options.parseTextualReasoningTags === "leading"
+        ? extractLeadingThinkingFromContent(strippedContent)
+        : options.parseTextualReasoningTags === true && !nativeReasoning
+          ? extractThinkingFromContent(strippedContent)
+          : { content: strippedContent, thinking: null };
     const sanitized: JsonRecord = { content: collapseExcessiveNewlines(content) };
     if (thinking) sanitized.reasoning_content = thinking;
     return sanitized;
@@ -418,9 +423,19 @@ function sanitizeMessage(msg: unknown, options: ParseOptions = {}): unknown {
   if (msgRecord.role) sanitized.role = msgRecord.role;
   if (msgRecord.refusal !== undefined) sanitized.refusal = msgRecord.refusal;
 
-  Object.assign(sanitized, sanitizeMessageContent(msgRecord, options));
+  const normalized = sanitizeMessageContent(msgRecord, options);
+  Object.assign(sanitized, normalized);
 
   copyOpenAICompatibleReasoningFields(msgRecord, sanitized);
+  if (
+    options.parseTextualReasoningTags === "leading" &&
+    typeof normalized.reasoning_content === "string"
+  ) {
+    sanitized.reasoning_content = mergeTextualReasoning(
+      getReadableReasoningValue(msgRecord),
+      normalized.reasoning_content
+    );
+  }
   applyTextualToolCallSanitization(sanitized, msgRecord);
 
   if (msgRecord.tool_calls) {
