@@ -11,13 +11,25 @@ const GLM_EXECUTOR_EFFORT_ALIASES = new Set([
   "glm-5.2-max",
 ]);
 
-export const ZCODE_MODELS = GLM_SHARED_MODELS.filter(
-  (model) => !GLM_EXECUTOR_EFFORT_ALIASES.has(model.id)
-).map((model) => ({
-  ...model,
-  supportedThinkingEfforts: [],
-  supportsVision: Boolean(model.supportsVision),
-}));
+export const ZCODE_MODELS = [
+  ...GLM_SHARED_MODELS,
+  {
+    id: "glm-5.4",
+    name: "GLM 5.4",
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    toolCalling: true,
+    supportsReasoning: true,
+    // Image input on this transport is currently implemented for GLM-5.3 Flash.
+    supportsVision: false,
+  },
+]
+  .filter((model) => !GLM_EXECUTOR_EFFORT_ALIASES.has(model.id))
+  .map((model) => ({
+    ...model,
+    supportedThinkingEfforts: [],
+    supportsVision: Boolean(model.supportsVision),
+  }));
 
 /** Explicit Start profile: separate provider identity for routing and quota monitoring. */
 const startBase = {
