@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   zcodeIndividualProvider,
-  zcodeProvider,
+  ZCODE_MODELS,
   zcodeStartProvider,
 } from "../../open-sse/config/providers/registry/zcode/index.ts";
 import { getExecutor } from "../../open-sse/executors/index.ts";
@@ -11,24 +11,23 @@ import {
   providerAllowsOptionalApiKey,
 } from "../../src/shared/constants/providers.ts";
 
-test("ZCode provider registry exposes a local no-auth GLM Coding Plan backend", () => {
-  assert.equal(zcodeProvider.id, "zcode");
-  assert.equal(zcodeProvider.alias, "zc");
-  assert.equal(zcodeProvider.executor, "zcode");
-  assert.equal(zcodeProvider.format, "openai");
-  assert.equal(zcodeProvider.baseUrl, "zcode://app-server/stdio");
-  assert.equal(zcodeProvider.authType, "none");
-  assert.equal(zcodeProvider.authHeader, "none");
+test("ZCode registry retains model metadata for OAuth plan providers", () => {
+  for (const provider of [zcodeStartProvider, zcodeIndividualProvider]) {
+    assert.equal(provider.format, "openai");
+    assert.equal(provider.baseUrl, "zcode://app-server/stdio");
+    assert.equal(provider.authType, "oauth");
+    assert.equal(provider.authHeader, "none");
+  }
   assert.equal(
-    zcodeProvider.models.find((model) => model.id === "glm-5.3-flash")?.supportsVision,
+    ZCODE_MODELS.find((model) => model.id === "glm-5.3-flash")?.supportsVision,
     true
   );
   assert.equal(
-    Boolean(zcodeProvider.models.find((model) => model.id === "glm-5.3")?.supportsVision),
+    Boolean(ZCODE_MODELS.find((model) => model.id === "glm-5.3")?.supportsVision),
     false
   );
   assert.equal(
-    zcodeProvider.models.some((model) => model.id === "glm-5.2"),
+    ZCODE_MODELS.some((model) => model.id === "glm-5.2"),
     true
   );
   for (const alias of [
@@ -41,21 +40,21 @@ test("ZCode provider registry exposes a local no-auth GLM Coding Plan backend", 
     "glm-5.2-max",
   ]) {
     assert.equal(
-      zcodeProvider.models.some((model) => model.id === alias),
+      ZCODE_MODELS.some((model) => model.id === alias),
       false,
       alias
     );
   }
   assert.deepEqual(
-    zcodeProvider.models.find((model) => model.id === "glm-5.3")?.supportedThinkingEfforts,
+    ZCODE_MODELS.find((model) => model.id === "glm-5.3")?.supportedThinkingEfforts,
     ["low", "medium", "max"]
   );
   assert.deepEqual(
-    zcodeProvider.models.find((model) => model.id === "glm-5.3-flash")?.supportedThinkingEfforts,
+    ZCODE_MODELS.find((model) => model.id === "glm-5.3-flash")?.supportedThinkingEfforts,
     ["low", "medium", "max"]
   );
   assert.deepEqual(
-    zcodeProvider.models.find((model) => model.id === "glm-5.2")?.supportedThinkingEfforts,
+    ZCODE_MODELS.find((model) => model.id === "glm-5.2")?.supportedThinkingEfforts,
     []
   );
 });
@@ -92,7 +91,7 @@ test("ZCode Start and Individual are separate catalog routes for combo quota tra
   assert.equal(
     zcodeStartProvider.models.find((model) => model.id === "glm-5.3-flash")
       ?.supportedThinkingEfforts,
-    zcodeProvider.models.find((model) => model.id === "glm-5.3-flash")?.supportedThinkingEfforts
+    ZCODE_MODELS.find((model) => model.id === "glm-5.3-flash")?.supportedThinkingEfforts
   );
   assert.equal(NOAUTH_PROVIDERS["zcode-start"].noAuth, true);
   assert.equal(NOAUTH_PROVIDERS["zcode-individual"].noAuth, true);
