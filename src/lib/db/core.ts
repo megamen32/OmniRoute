@@ -46,6 +46,7 @@ import { isAutomatedTestProcess } from "@/shared/utils/testProcess";
 import { isDbHealthcheckStartupDeferredEnabled } from "@/shared/utils/featureFlags";
 import { parseModelAccessMode } from "./apiKeys/modelAccessMode";
 import { getExistingDbInstance as getDb, setDbInstance as setDb } from "./singleton";
+import { getServerLifecyclePhase } from "../serverLifecycle";
 import type { WalCheckpointMode } from "./walMaintenance";
 import {
   startWalMaintenance,
@@ -990,6 +991,17 @@ export function runManagedDbHealthCheck(options?: ManagedHealthCheckOptions) {
 export function getDbInstance(): SqliteDatabase {
   const existing = getDb();
   if (existing) return existing;
+
+  // A shutdown closes the database and then keeps running for a moment. A
+  // lingering callback (a batch flush, a scheduler tick) would otherwise
+  // re-create the connection here, which re-ran the whole startup path —
+  // migrations check, cache size, health check — on a multi-GB database
+  // while the instance was already stopping. That kept the process alive
+  // until systemd killed it after TimeoutStopUSec, leaving the port closed
+  // for the whole window. During shutdown the database stays closed.
+  if (getServerLifecyclePhase() === "stopping") {
+    throw new Error("Database is closed during shutdown");
+  }
 
   if (isCloud || isBuildPhase) {
     if (isBuildPhase) {
