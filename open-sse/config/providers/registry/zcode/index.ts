@@ -15,7 +15,6 @@ export const ZCODE_MODELS = GLM_SHARED_MODELS.filter(
   (model) => !GLM_EXECUTOR_EFFORT_ALIASES.has(model.id)
 ).map((model) => ({
   ...model,
-  supportedThinkingEfforts: [],
   supportsVision: Boolean(model.supportsVision),
 }));
 

@@ -30,6 +30,7 @@ import { nativeZcodeHosts, zcodeNativeProfileCredentials } from "./zcode/nativeH
 import { isZcodeNativeModelId, nativeZcodeAccountModels } from "./zcode/nativeModelCatalog.ts";
 
 import { normalizeZcodeResponseText } from "./zcode/responseText.ts";
+import { normalizeEffort } from "@/shared/reasoning/effortStandardization";
 
 const nativeBridges = new Map<string, NativeZcodeSessionBridge>();
 
@@ -90,6 +91,23 @@ export interface ZcodeTurnSelection {
   options?: { reasoningLevel?: string };
 }
 
+function requestedZcodeReasoningLevel(body: unknown): string | undefined {
+  const record = asRecord(body);
+  const reasoning = asRecord(record.reasoning);
+  const outputConfig = asRecord(record.output_config);
+  for (const value of [
+    record.reasoning_effort,
+    reasoning.effort,
+    record.reasoningEffort,
+    record.effort,
+    outputConfig.effort,
+  ]) {
+    const effort = normalizeEffort(value);
+    if (effort) return effort === "none" ? "low" : effort;
+  }
+  return undefined;
+}
+
 type NativeModelEntry = { record: JsonRecord; providerId: string };
 
 function findNativeModelEntry(
@@ -137,7 +155,8 @@ export function resolveZcodeSelection(
   view: unknown,
   model: string,
   providerId?: string,
-  exactAccount = false
+  exactAccount = false,
+  requestedEffort?: string
 ): ZcodeTurnSelection {
   const found = findNativeModelEntry(view, model, providerId, exactAccount);
   if (!found) {
@@ -151,7 +170,18 @@ export function resolveZcodeSelection(
   const levels = Array.isArray(spec.values)
     ? spec.values.filter((value): value is string => typeof value === "string")
     : [];
-  const reasoningLevel = levels.includes("high") ? "high" : levels[0];
+  const available = new Map(levels.map((level) => [level.toLowerCase(), level]));
+  const normalizedRequested = normalizeEffort(requestedEffort);
+  const candidates = normalizedRequested
+    ? normalizedRequested === "none" || normalizedRequested === "low"
+      ? ["low", "medium", "high", "max"]
+      : normalizedRequested === "medium"
+        ? ["medium", "high", "max"]
+        : normalizedRequested === "high"
+          ? ["high", "max"]
+          : ["max", "high"]
+    : ["max", "high", "medium", "low"];
+  const reasoningLevel = candidates.map((level) => available.get(level)).find(Boolean) || levels[0];
   return {
     providerId: found.providerId,
     modelId: found.record.modelId as string,
@@ -504,7 +534,8 @@ export async function waitForNativeZcodeSelection(
   signal?: AbortSignal | null,
   startupTimeoutMs = 10_000,
   fallbackMaxOutputTokens?: number,
-  exactAccount = false
+  exactAccount = false,
+  requestedEffort?: string
 ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
   const fallbackProviderId = providerId || ZCODE_FALLBACK_PROVIDER_ID;
   const readyDeadline = Date.now() + startupTimeoutMs;
@@ -521,7 +552,13 @@ export async function waitForNativeZcodeSelection(
     }
     try {
       return {
-        selection: resolveZcodeSelection(registry, model, providerId, exactAccount),
+        selection: resolveZcodeSelection(
+          registry,
+          model,
+          providerId,
+          exactAccount,
+          requestedEffort
+        ),
         nativeMaxTokens:
           fallbackMaxOutputTokens ??
           resolveZcodeMaxTokens(registry, model, providerId, exactAccount),
@@ -757,7 +794,8 @@ export class ZcodeExecutor extends BaseExecutor {
             controller.signal,
             this.startupTimeoutMs,
             undefined,
-            !ZCODE_MODEL_ALLOWLIST.has(resolution.model)
+            !ZCODE_MODEL_ALLOWLIST.has(resolution.model),
+            requestedZcodeReasoningLevel(input.body)
           )
         );
         const selection = selected.selection;
@@ -941,7 +979,8 @@ export class ZcodeExecutor extends BaseExecutor {
       const { selection, nativeMaxTokens } = await this.waitForSelection(
         client,
         resolution.model,
-        input.signal
+        input.signal,
+        requestedZcodeReasoningLevel(input.body)
       );
       input.log?.info?.("ZCODE", `native model request model=${resolution.model}`);
       boundMaxOutputTokens(request, nativeMaxTokens);
@@ -1052,7 +1091,8 @@ export class ZcodeExecutor extends BaseExecutor {
   private async waitForSelection(
     client: ZcodeClientLike,
     model: string,
-    signal?: AbortSignal | null
+    signal?: AbortSignal | null,
+    requestedEffort?: string
   ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
     const providerId = this.options.providerId || process.env.ZCODE_PROVIDER_ID;
     // Start and Individual hosts share the same hydration race. Keep the
@@ -1063,7 +1103,9 @@ export class ZcodeExecutor extends BaseExecutor {
       providerId,
       signal,
       this.options.startupTimeoutMs,
-      fallbackMaxTokens
+      fallbackMaxTokens,
+      false,
+      requestedEffort
     );
   }
   private workingDirectory(): string {
