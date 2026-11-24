@@ -29,6 +29,8 @@ import {
   clearConnectionErrorIfUnchanged,
 } from "@/lib/db/providers";
 import { getDbInstance } from "@/lib/db/core";
+import { getProviderLimitsCache } from "@/lib/db/providerLimits";
+import { evaluateZcodeTariffQuota } from "./zcodeTariffQuota.ts";
 import { getRecentEgressIpForConnection, EGRESS_IP_LOOKUP_WINDOW_MS } from "@/lib/db/proxyLogs";
 import { validateApiKey, type ApiKeyLookupOptions } from "@/lib/db/apiKeys";
 import {
@@ -1637,7 +1639,20 @@ export async function getProviderCredentials(
 
     if (!bypassQuotaPolicy) {
       policyEligibleConnections = peakHourEligibleConnections.filter((connection) => {
-        const evaluation = evaluateQuotaLimitPolicy(provider, connection, requestedModel);
+        const tariffPolicy = ZCODE_ACCOUNT_PROVIDER_IDS.has(provider) && connection.authType === "oauth"
+          ? resolveResilienceSettings(settings).quotaPreflight
+          : null;
+        const tariffEvaluation = tariffPolicy
+          ? evaluateZcodeTariffQuota(
+              provider, connection.authType, getProviderLimitsCache(connection.id),
+              shouldApplyQuotaCutoff(provider, connection, tariffPolicy, requestedModel),
+              (window) => resolveMinRemainingPercent(provider, connection, tariffPolicy, window),
+              Date.now(), Math.max(300_000, 3_000 * (Number(settings?.autoRefreshProviderQuotaInterval) || 180))
+            )
+          : null;
+        const evaluation = tariffEvaluation?.blocked
+          ? tariffEvaluation
+          : evaluateQuotaLimitPolicy(provider, connection, requestedModel);
         quotaResults.set(connection.id, { blocked: evaluation.blocked, exhausted: false });
         if (!evaluation.blocked) return true;
 

@@ -95,7 +95,7 @@ type ManagedConnection = JsonRecord & {
 };
 type ManagedUsageGroup = {
   plan: "start" | "individual";
-  status: "available" | "unknown";
+  status: "available" | "no_plan" | "unknown";
   observedAt: string | null;
   quotas: Record<string, UsageQuota>;
 };
@@ -205,6 +205,15 @@ export async function getManagedZcodeUsage(
           ])
         );
         if (
+          raw.authenticated === true &&
+          raw.unavailableReason === "no_plan" &&
+          asRecord(raw.provider).id === providerId &&
+          typeof raw.generatedAt === "number" &&
+          Number.isFinite(new Date(raw.generatedAt).getTime())
+        ) {
+          group.status = "no_plan";
+          group.observedAt = new Date(raw.generatedAt).toISOString();
+        } else if (
           raw.authenticated === true &&
           !raw.unavailableReason &&
           asRecord(raw.provider).id === providerId

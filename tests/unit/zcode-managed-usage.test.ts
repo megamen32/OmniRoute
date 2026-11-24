@@ -280,3 +280,25 @@ test("default quota path reuses shared host manager without closing it", async (
   assert.equal(calls[0].accessToken, "business-shared");
   assert.ok(result.quotaGroups.every((group) => group.status === "available"));
 });
+
+
+test("native no_plan is a timestamped negative entitlement, not unknown", async () => {
+  const result = await getManagedZcodeUsage(makeAccount("none", "zai"), {
+    ensureHost: async () => "managed",
+    clientFactory: () => ({
+      async start() {},
+      async call(_channel, _method, args) {
+        const request = args[0] as { accountAccess: { mode: string } };
+        if (request.accountAccess.mode === "start-plan")
+          return { authenticated: true, provider: { id: "account:zai-start-plan" },
+            unavailableReason: "no_plan", generatedAt: 1794074350439 };
+        return snapshot("zai", "individual", 100);
+      },
+      async close() {},
+    }),
+  });
+  assert.equal(result.quotaGroups[0].status, "no_plan");
+  assert.ok(result.quotaGroups[0].observedAt);
+  assert.equal(result.quotaGroups[1].status, "available");
+  assert.equal(toProviderLimitsCacheEntry(result, "test").quotaGroups?.[0].status, "no_plan");
+});
