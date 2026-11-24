@@ -8,6 +8,7 @@ import { createBetterSqliteAdapter } from "../../src/lib/db/adapters/betterSqlit
 import {
   createDbHealthCoordinator,
   runDbHealthInChild,
+  DEFAULT_DB_HEALTH_WORKER_TIMEOUT_MS,
 } from "../../src/lib/db/healthCheckRunner.ts";
 import type { DbHealthCheckResult } from "../../src/lib/db/healthCheck.ts";
 
@@ -138,6 +139,50 @@ test("missing worker and timeout fail rather than running synchronously", async 
     );
     assert.equal(fs.existsSync(job.filePath), false);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("worker budget covers a multi-GB integrity scan instead of cutting it off", async () => {
+  // The deployed database is several GB and the instance is capped at 50 MB/s,
+  // so PRAGMA quick_check needs minutes. A 120 s budget killed every scan
+  // before it finished and the health check failed on every start.
+  assert.ok(
+    DEFAULT_DB_HEALTH_WORKER_TIMEOUT_MS >= 900_000,
+    "default worker budget must allow a multi-GB integrity scan"
+  );
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "db-health-budget-"));
+  const hang = path.join(dir, "hang.mjs");
+  fs.writeFileSync(hang, "setInterval(() => {}, 1000);\n");
+  const job = {
+    filePath: path.join(dir, "absent.sqlite"),
+    autoRepair: false,
+    skipIntegrityCheck: false,
+    backupDir: dir,
+    pagerCorruption: null,
+  };
+  const previous = process.env.OMNIROUTE_DB_HEALTHCHECK_TIMEOUT_MS;
+  try {
+    // An explicit small budget still fails fast — the override must remain usable.
+    process.env.OMNIROUTE_DB_HEALTHCHECK_TIMEOUT_MS = "100";
+    await assert.rejects(
+      runDbHealthInChild(job, { workerFile: hang, execArgv: [] }),
+      /timed out/
+    );
+
+    // Without an override the default budget applies, so a slow but healthy
+    // scan is not mistaken for a stuck worker.
+    delete process.env.OMNIROUTE_DB_HEALTHCHECK_TIMEOUT_MS;
+    const started = Date.now();
+    await assert.rejects(
+      runDbHealthInChild(job, { workerFile: path.join(dir, "missing.mjs"), execArgv: [] }),
+      /worker/
+    );
+    assert.ok(Date.now() - started < 60_000, "a missing worker must fail without waiting for the budget");
+  } finally {
+    if (previous === undefined) delete process.env.OMNIROUTE_DB_HEALTHCHECK_TIMEOUT_MS;
+    else process.env.OMNIROUTE_DB_HEALTHCHECK_TIMEOUT_MS = previous;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

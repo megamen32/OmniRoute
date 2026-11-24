@@ -128,6 +128,32 @@ function isHealthResult(value: unknown): value is DbHealthCheckResult {
   );
 }
 
+/**
+ * Budget for the isolated health-check worker.
+ *
+ * The worker runs `PRAGMA quick_check` over the whole database file. On the
+ * deployed multi-GB database that scan needs several minutes: it is bound by
+ * storage bandwidth (the instance is capped at 50 MB/s), so a fixed 120 s
+ * budget killed every scan before it could finish, and the health check then
+ * failed on every start. The default below leaves room for that scan while
+ * still bounding a stuck worker.
+ */
+export const DEFAULT_DB_HEALTH_WORKER_TIMEOUT_MS = 900_000;
+
+/** Upper bound for the worker budget; a scan beyond it is treated as stuck. */
+const MAX_DB_HEALTH_WORKER_TIMEOUT_MS = 3_600_000;
+
+function resolveDbHealthWorkerTimeoutMs(): number {
+  const raw = process.env.OMNIROUTE_DB_HEALTHCHECK_TIMEOUT_MS;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(Math.trunc(parsed), MAX_DB_HEALTH_WORKER_TIMEOUT_MS);
+    }
+  }
+  return DEFAULT_DB_HEALTH_WORKER_TIMEOUT_MS;
+}
+
 export async function runDbHealthInChild(
   job: DbHealthJob,
   options: {
@@ -157,7 +183,7 @@ export async function runDbHealthInChild(
     const timer = setTimeout(() => {
       failure = new Error("Database health worker timed out");
       child.kill("SIGKILL");
-    }, options.timeoutMs ?? 120_000);
+    }, options.timeoutMs ?? resolveDbHealthWorkerTimeoutMs());
     child.on("message", (message: unknown) => {
       if (isHealthResult(message) && message.autoRepair === job.autoRepair) result = message;
       else failure = new Error("Database health worker failed");
