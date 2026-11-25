@@ -1,5 +1,6 @@
 /** Check native, account- and tariff-scoped quota observations before dispatch.
- * Unknown/stale is not zero; with preflight enabled it is not eligible.
+ * Start remains fail-closed on unknown quota. Individual remains dispatchable
+ * until a fresh observation proves no plan or an exhausted window.
  */
 export function evaluateZcodeTariffQuota(
   provider: string,
@@ -20,24 +21,30 @@ export function evaluateZcodeTariffQuota(
   const group = cache?.quotaGroups?.find((item) => item.plan === plan);
   const observed = typeof group?.observedAt === "string" ? Date.parse(group.observedAt) : NaN;
   const fresh = Number.isFinite(observed) && observed <= now + 30_000 && now - observed <= maxAgeMs;
+  const allowUnknownIndividual = plan === "individual";
   const deny = (reason: string, resetAt: string | null = null) => ({
-    blocked: true, reasons: [`zcode:${plan}:${reason}`], resetAt,
+    blocked: true,
+    reasons: [`zcode:${plan}:${reason}`],
+    resetAt,
   });
-  if (fresh && group?.status === "no_plan") return deny("no_plan");
+  const unknown = () =>
+    allowUnknownIndividual ? { blocked: false, reasons: [], resetAt: null } : deny("unknown");
+  if (fresh && group?.status === "no_plan" && plan === "start") return deny("no_plan");
   if (!enabled) return null;
-  if (!fresh || group?.status !== "available") return deny("unknown");
-  const quotas = group.quotas as Record<string, { remainingPercentage?: unknown; resetAt?: unknown }> | undefined;
+  if (!fresh || group?.status !== "available") return unknown();
+  const quotas = group.quotas as
+    Record<string, { remainingPercentage?: unknown; resetAt?: unknown }> | undefined;
   const windows = Object.entries(quotas || {});
-  if (!windows.length) return deny("unknown");
+  if (!windows.length) return unknown();
   const required = plan === "start" ? ["tokens"] : ["session", "weekly"];
-  if (!required.every((key) => Object.hasOwn(quotas || {}, key))) return deny("unknown");
+  if (!required.every((key) => Object.hasOwn(quotas || {}, key))) return unknown();
   for (const [name, quota] of windows) {
     const percent = quota?.remainingPercentage;
     const reset = typeof quota?.resetAt === "string" ? quota.resetAt : null;
     const resetMs = reset ? Date.parse(reset) : NaN;
-    if (Number.isFinite(resetMs) && resetMs <= now) return deny("unknown");
+    if (Number.isFinite(resetMs) && resetMs <= now) return unknown();
     if (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100)
-      return deny("unknown");
+      return unknown();
     if (percent <= 0 || percent <= minRemaining(name))
       return deny(`quota_${name}`, Number.isFinite(resetMs) ? reset : null);
   }
