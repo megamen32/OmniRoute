@@ -165,7 +165,9 @@ const NON_RETRIABLE = new Set([400, 401, 403, 404]);
  * not the request, so the keyed failover still has a chance of answering it.
  */
 function isFailoverStatus(primary: SearchProviderConfig, status: number | undefined): boolean {
-  return primary.primaryWhenConfigured === true || !NON_RETRIABLE.has(status || 0);
+  return primary.primaryWhenConfigured === true ||
+    (primary.id === "tinyfish-search" && status !== 400) ||
+    !NON_RETRIABLE.has(status || 0);
 }
 
 // ── Input Sanitization ──────────────────────────────────────────────────
@@ -709,6 +711,22 @@ function buildYouComRequest(
   };
 }
 
+// The stored TinyFish Fetch credential also authorizes Search. Keep its
+// destination fixed to the official API; no caller URL can receive the key.
+function buildTinyfishRequest(
+  config: SearchProviderConfig,
+  params: SearchRequestParams
+): { url: string; init: RequestInit } {
+  const qp = new URLSearchParams({ query: params.query, domain_type: params.searchType === "news" ? "news" : "web" });
+  if (params.country) qp.set("location", params.country.toUpperCase());
+  if (params.language) qp.set("language", params.language);
+  if (params.maxResults) qp.set("num_results", String(Math.min(10, params.maxResults)));
+  if (params.offset) qp.set("page", String(Math.min(10, Math.floor(params.offset / Math.max(1, params.maxResults)))));
+  return { url: config.baseUrl + "?" + qp, init: {
+    method: "GET", headers: { Accept: "application/json", ...(params.token ? { "X-API-Key": params.token } : {}) }
+  }};
+}
+
 function buildSearxngRequest(
   config: SearchProviderConfig,
   params: SearchRequestParams
@@ -780,6 +798,7 @@ const requestBuilders: Record<string, SearchRequestBuilder> = {
   "linkup-search": buildLinkupRequest,
   "searchapi-search": buildSearchApiRequest,
   "youcom-search": buildYouComRequest,
+  "tinyfish-search": buildTinyfishRequest,
   "searxng-search": buildSearxngRequest,
   "ollama-search": buildOllamaRequest,
   "jina-search": buildJinaSearchRequest,
@@ -1104,6 +1123,22 @@ function normalizeYouComResponse(
   return { results, totalResults: results.length };
 }
 
+function normalizeTinyfishResponse(data: any): { results: SearchResult[]; totalResults: number | null } {
+  const now = new Date().toISOString();
+  const items = (Array.isArray(data?.results) ? data.results : []).filter((item: any) => {
+    try { const url = new URL(item.url); return ["https:", "http:"].includes(url.protocol) && !!url.hostname; }
+    catch { return false; }
+  });
+  const results = items.map((item: any, idx: number) => makeResult("tinyfish-search", {
+    title: typeof item.title === "string" ? item.title : "",
+    url: item.url,
+    snippet: typeof item.snippet === "string" ? item.snippet : "",
+    published_at: typeof item.date === "string" ? item.date : undefined,
+    source_type: typeof item.site_name === "string" ? item.site_name : undefined,
+  }, idx, now));
+  return { results, totalResults: results.length };
+}
+
 function normalizeSearxngResponse(
   data: any,
   _query: string,
@@ -1414,6 +1449,7 @@ const responseNormalizers: Record<string, SearchResponseNormalizer> = {
   "linkup-search": normalizeLinkupResponse,
   "searchapi-search": normalizeSearchApiResponse,
   "youcom-search": normalizeYouComResponse,
+  "tinyfish-search": normalizeTinyfishResponse,
   "searxng-search": normalizeSearxngResponse,
   "ollama-search": normalizeOllamaResponse,
   "jina-search": normalizeJinaSearchResponse,

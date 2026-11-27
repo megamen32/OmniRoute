@@ -250,7 +250,7 @@ async function postHandler(request: Request, context: unknown) {
     // Auto-select: walk the same admitted, cost-ranked candidates executeWebSearch uses
     // (a configured SearXNG included), so /v1/search and the web_search tool agree even
     // when two providers tie on cost. selectProvider's pick is only a seed for errors.
-    const sortedIds = autoSearchCandidates(body.search_type)
+    const sortedIds = autoSearchCandidates(body.search_type, settings?.searchProviderOrder)
       .filter((provider) => !isProviderBlockedByIdOrAlias(provider.id, blockedProviders))
       .map((p) => p.id);
 

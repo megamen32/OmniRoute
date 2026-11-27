@@ -594,6 +594,7 @@ export const updateSettingsSchema = z.object({
   // The floor matches the handler's minimum; the ceiling stops a typo from
   // holding a worker for hours.
   searchTimeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+  searchProviderOrder: z.array(z.string().max(60)).max(30).optional(),
   // Per-provider timeout overrides in ms, keyed by search provider id.
   searchProviderTimeoutsMs: z
     .record(z.string().max(60), z.number().int().min(1).max(120_000))

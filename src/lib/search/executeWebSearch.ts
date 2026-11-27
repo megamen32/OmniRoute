@@ -79,8 +79,10 @@ async function resolveSearchCredentials(providerId: string) {
 /** The blockedProviders policy /v1/search applies to everything auto-select may pick. */
 async function loadAutoSelectPolicy() {
   const settings = await getSettings().catch(() => null);
-  return (provider: SearchProviderConfig) =>
-    !isProviderBlockedByIdOrAlias(provider.id, settings?.blockedProviders);
+  return {
+    isAllowed: (provider: SearchProviderConfig) => !isProviderBlockedByIdOrAlias(provider.id, settings?.blockedProviders),
+    order: settings?.searchProviderOrder,
+  };
 }
 
 function buildDomainFilter(filters?: {
@@ -202,8 +204,8 @@ export async function executeWebSearch(
     // credentials. Fallback-only free providers are a last resort, so a
     // configured paid provider is never skipped just because a cheaper
     // no-credentials provider appears first in the cost sort (issue #11524).
-    const isAllowed = await loadAutoSelectPolicy();
-    const candidateProviders = autoSearchCandidates(searchType).filter(isAllowed);
+    const { isAllowed, order } = await loadAutoSelectPolicy();
+    const candidateProviders = autoSearchCandidates(searchType, order).filter(isAllowed);
 
     for (const candidate of candidateProviders) {
       const candidateCredentials = await resolveSearchCredentials(candidate.id);

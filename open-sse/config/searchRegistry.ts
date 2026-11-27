@@ -293,6 +293,21 @@ export const SEARCH_PROVIDERS: Record<string, SearchProviderConfig> = {
     cacheTTLMs: 5 * 60 * 1000,
   },
 
+  "tinyfish-search": {
+    id: "tinyfish-search",
+    name: "TinyFish Search",
+    baseUrl: "https://api.search.tinyfish.ai",
+    method: "GET",
+    authType: "apikey",
+    authHeader: "X-API-Key",
+    costPerQuery: 0,
+    freeMonthlyQuota: 0,
+    searchTypes: ["web", "news"],
+    defaultMaxResults: 5,
+    maxMaxResults: 10,
+    timeoutMs: 8_000,
+    cacheTTLMs: 3 * 60 * 1000,
+  },
   "searxng-search": {
     id: "searxng-search",
     name: "SearXNG Search",
@@ -505,6 +520,7 @@ export const SEARCH_PROVIDERS: Record<string, SearchProviderConfig> = {
  * from a related provider (e.g., perplexity-search uses the same API key as perplexity chat).
  */
 export const SEARCH_CREDENTIAL_FALLBACKS: Record<string, string | string[]> = {
+  "tinyfish-search": "tinyfish",
   "perplexity-search": "perplexity",
   "ollama-search": "ollama-cloud",
   "zai-search": "zai",
@@ -526,6 +542,7 @@ export function getSearchCredentialFallbacks(providerId: string): string[] {
  * catalog treat jina-ai as a search-only card (searchTypes → "web").
  */
 export const SEARCH_PROVIDER_ALIASES: Record<string, string> = {
+  tinyfish: "tinyfish-search",
   "jina-ai": "jina-search",
   jina: "jina-search",
   brave: "brave-search",
@@ -644,14 +661,16 @@ function isRemoteCleartextUrl(raw: string): boolean {
  * plus fallback-only providers that may become primary once configured. Callers must
  * confirm the latter with {@link isOperatorConfiguredPrimary} after resolving credentials.
  */
-export function autoSearchCandidates(searchType: string): SearchProviderConfig[] {
+export function autoSearchCandidates(searchType: string, preferredOrder?: unknown): SearchProviderConfig[] {
+  const order = Array.isArray(preferredOrder) ? preferredOrder.filter((id): id is string => typeof id === "string") : [];
+  const rank = (id: string) => { const index = order.indexOf(id); return index < 0 ? Number.MAX_SAFE_INTEGER : index; };
   return Object.values(SEARCH_PROVIDERS)
     .filter(
       (provider) =>
         (!provider.fallbackOnly || provider.primaryWhenConfigured === true) &&
         supportsSearchType(provider, searchType)
     )
-    .sort((a, b) => a.costPerQuery - b.costPerQuery);
+    .sort((a, b) => rank(a.id) - rank(b.id) || a.costPerQuery - b.costPerQuery);
 }
 
 /** Credentials admit this candidate for auto-select (see {@link autoSearchCandidates}). */
