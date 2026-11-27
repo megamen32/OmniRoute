@@ -1,4 +1,5 @@
 import { handleSearch } from "@omniroute/open-sse/handlers/search.ts";
+import { searchKeyLockModel } from "@omniroute/open-sse/handlers/search/borrowedKeyLock.ts";
 import {
   getProviderCredentialsWithQuotaPreflight,
   extractApiKey,
@@ -15,6 +16,7 @@ import {
   getSearchCredentialFallbacks,
   autoSearchCandidates,
   admitsAutoCandidate,
+  isPreferredSearchProvider,
 } from "@omniroute/open-sse/config/searchRegistry.ts";
 import { buildErrorBody, errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
@@ -104,9 +106,12 @@ async function resolveSearchCredentials(
 
   for (const fallbackId of getSearchCredentialFallbacks(providerId)) {
     const fallbackCredentials = withoutKeyScopeBlocked(
-      await getProviderCredentialsWithQuotaPreflight(fallbackId, null, allowedConnections).catch(
-        () => null
-      )
+      await getProviderCredentialsWithQuotaPreflight(
+        fallbackId,
+        null,
+        allowedConnections,
+        searchKeyLockModel(providerId)
+      ).catch(() => null)
     );
     if (fallbackCredentials && !isAllRateLimitedCredentials(fallbackCredentials)) {
       return fallbackCredentials;
@@ -225,6 +230,7 @@ async function postHandler(request: Request, context: unknown) {
   let credentials: Record<string, any> | null = null;
   let alternateProviderId: string | undefined;
   let alternateCredentials: Record<string, any> | null = null;
+  const alternateProviders: Array<{ provider: string; credentials: Record<string, unknown> }> = [];
   let firstRateLimitedCredentials: {
     providerId: string;
     credentials: RateLimitedCredentials;
@@ -263,7 +269,7 @@ async function postHandler(request: Request, context: unknown) {
         firstRateLimitedCredentials ??= { providerId: pid, credentials: altCreds };
         continue;
       }
-      if (altConfig && admitsAutoCandidate(altConfig, altCreds)) {
+      if (altConfig && admitsAutoCandidate(altConfig, altCreds, settings?.searchProviderOrder)) {
         providerConfig = altConfig;
         credentials = altCreds;
         break;
@@ -321,15 +327,21 @@ async function postHandler(request: Request, context: unknown) {
     const otherIds = sortedIds.filter((id) => id !== providerConfig.id);
 
     for (const pid of otherIds) {
+      if (alternateProviderId && !isPreferredSearchProvider(pid, settings?.searchProviderOrder))
+        continue;
       const altConfig = getSearchProvider(pid);
       const creds = altConfig
         ? await resolveSearchExecutionCredentials(altConfig, allowedConnections)
         : null;
       if (isAllRateLimitedCredentials(creds)) continue;
-      if (altConfig && admitsAutoCandidate(altConfig, creds)) {
-        alternateProviderId = pid;
-        alternateCredentials = creds;
-        break;
+      if (altConfig && admitsAutoCandidate(altConfig, creds, settings?.searchProviderOrder)) {
+        if (!alternateProviderId) {
+          alternateProviderId = pid;
+          alternateCredentials = creds;
+        } else {
+          alternateProviders.push({ provider: pid, credentials: creds! });
+        }
+        if (!isPreferredSearchProvider(pid, settings?.searchProviderOrder)) break;
       }
     }
 
@@ -341,6 +353,7 @@ async function postHandler(request: Request, context: unknown) {
         if (!provider.fallbackOnly || provider.id === providerConfig.id) continue;
         if (isUnconfiguredLoopbackSearchProvider(provider)) continue;
         if (!supportsSearchType(provider, body.search_type)) continue;
+        if (isProviderBlockedByIdOrAlias(provider.id, blockedProviders)) continue;
         const fallbackCreds = await resolveSearchExecutionCredentials(provider, allowedConnections);
         if (fallbackCreds && !isAllRateLimitedCredentials(fallbackCreds)) {
           alternateProviderId = provider.id;
@@ -395,6 +408,7 @@ async function postHandler(request: Request, context: unknown) {
         credentials,
         alternateProvider: alternateProviderId,
         alternateCredentials,
+        alternateProviders,
         log,
         connectionId: credentials?.connectionId || undefined,
         apiKeyId: policy.apiKeyInfo?.id || undefined,

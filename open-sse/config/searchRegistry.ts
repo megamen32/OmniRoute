@@ -293,6 +293,22 @@ export const SEARCH_PROVIDERS: Record<string, SearchProviderConfig> = {
     cacheTTLMs: 5 * 60 * 1000,
   },
 
+  "keenable-search": {
+    id: "keenable-search",
+    name: "Keenable Search",
+    baseUrl: "https://api.keenable.ai/v1/search",
+    method: "POST",
+    authType: "none",
+    authHeader: "none",
+    costPerQuery: 0,
+    freeMonthlyQuota: 0,
+    searchTypes: ["web"],
+    defaultMaxResults: 5,
+    maxMaxResults: 50,
+    timeoutMs: 10_000,
+    cacheTTLMs: 5 * 60 * 1000,
+    fallbackOnly: true,
+  },
   "tinyfish-search": {
     id: "tinyfish-search",
     name: "TinyFish Search",
@@ -542,6 +558,7 @@ export function getSearchCredentialFallbacks(providerId: string): string[] {
  * catalog treat jina-ai as a search-only card (searchTypes → "web").
  */
 export const SEARCH_PROVIDER_ALIASES: Record<string, string> = {
+  keenable: "keenable-search",
   tinyfish: "tinyfish-search",
   "jina-ai": "jina-search",
   jina: "jina-search",
@@ -661,22 +678,51 @@ function isRemoteCleartextUrl(raw: string): boolean {
  * plus fallback-only providers that may become primary once configured. Callers must
  * confirm the latter with {@link isOperatorConfiguredPrimary} after resolving credentials.
  */
-export function autoSearchCandidates(searchType: string, preferredOrder?: unknown): SearchProviderConfig[] {
-  const order = Array.isArray(preferredOrder) ? preferredOrder.filter((id): id is string => typeof id === "string") : [];
-  const rank = (id: string) => { const index = order.indexOf(id); return index < 0 ? Number.MAX_SAFE_INTEGER : index; };
+export function isPreferredSearchProvider(providerId: string, preferredOrder: unknown): boolean {
+  return (
+    Array.isArray(preferredOrder) &&
+    preferredOrder.some(
+      (id) => typeof id === "string" && resolveSearchProviderId(id) === providerId
+    )
+  );
+}
+
+export function autoSearchCandidates(
+  searchType: string,
+  preferredOrder?: unknown
+): SearchProviderConfig[] {
+  const order = Array.isArray(preferredOrder)
+    ? preferredOrder
+        .filter((id): id is string => typeof id === "string")
+        .map(resolveSearchProviderId)
+    : [];
+  const rank = (id: string) => {
+    const index = order.indexOf(id);
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+  };
   return Object.values(SEARCH_PROVIDERS)
     .filter(
       (provider) =>
-        (!provider.fallbackOnly || provider.primaryWhenConfigured === true) &&
+        !provider.disabled &&
+        (!provider.fallbackOnly ||
+          provider.primaryWhenConfigured === true ||
+          order.includes(provider.id)) &&
         supportsSearchType(provider, searchType)
     )
     .sort((a, b) => rank(a.id) - rank(b.id) || a.costPerQuery - b.costPerQuery);
 }
 
-/** Credentials admit this candidate for auto-select (see {@link autoSearchCandidates}). */
-export function admitsAutoCandidate(provider: SearchProviderConfig, credentials: unknown): boolean {
-  if (!credentials) return false;
-  return !provider.fallbackOnly || isOperatorConfiguredPrimary(provider, credentials);
+/** An explicit operator preference promotes a keyless fallback without changing catalog defaults. */
+export function admitsAutoCandidate(
+  provider: SearchProviderConfig,
+  credentials: unknown,
+  preferredOrder?: unknown
+): boolean {
+  if (!credentials || provider.disabled) return false;
+  if (!provider.fallbackOnly) return true;
+  // A self-hosted provider still needs its safe, non-placeholder stored URL.
+  if (provider.primaryWhenConfigured) return isOperatorConfiguredPrimary(provider, credentials);
+  return isPreferredSearchProvider(provider.id, preferredOrder);
 }
 
 export function getSearchProvider(providerId: string): SearchProviderConfig | null {

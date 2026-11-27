@@ -1,6 +1,13 @@
 import { getSettings } from "@/lib/db/settings";
+import { getApiKeyById } from "@/lib/db/apiKeys";
+import {
+  keyAdmitsKeylessProviders,
+  resolveKeyConnectionScope,
+  withoutKeyScopeBlocked,
+} from "@/sse/services/keyConnectionScope";
 import { isProviderBlockedByIdOrAlias } from "@/shared/utils/noAuthProviders";
 import { getProviderCredentials } from "@/sse/services/auth";
+import { searchKeyLockModel } from "@omniroute/open-sse/handlers/search/borrowedKeyLock.ts";
 import { isCredentialDiagnosticSentinel } from "@/sse/services/credentialSentinel";
 import { recordSearchUsageCost } from "@omniroute/open-sse/handlers/search/reportedCost.ts";
 import * as defaultLog from "@/sse/utils/logger";
@@ -15,6 +22,7 @@ import {
   type SearchProviderConfig,
   autoSearchCandidates,
   admitsAutoCandidate,
+  isPreferredSearchProvider,
 } from "@omniroute/open-sse/config/searchRegistry.ts";
 import { handleSearch, type SearchResponse } from "@omniroute/open-sse/handlers/search.ts";
 import {
@@ -66,13 +74,23 @@ export class WebSearchExecutionError extends Error {
   }
 }
 
-async function resolveSearchCredentials(providerId: string) {
-  const creds = await getProviderCredentials(providerId).catch(() => null);
+async function resolveSearchCredentials(providerId: string, allowedConnections: string[] | null) {
+  const creds = withoutKeyScopeBlocked(
+    await getProviderCredentials(providerId, null, allowedConnections).catch(() => null)
+  );
   if (creds && !isCredentialDiagnosticSentinel(creds)) return creds;
   for (const fallbackId of getSearchCredentialFallbacks(providerId)) {
-    const fallback = await getProviderCredentials(fallbackId).catch(() => null);
+    const fallback = await getProviderCredentials(
+      fallbackId,
+      null,
+      allowedConnections,
+      searchKeyLockModel(providerId)
+    ).catch(() => null);
     if (fallback && !isCredentialDiagnosticSentinel(fallback)) return fallback;
   }
+  // Keenable's registry URL supports anonymous calls; a stored unusable key is not silently bypassed.
+  if (providerId === "keenable-search" && !creds && keyAdmitsKeylessProviders(allowedConnections))
+    return {};
   return null;
 }
 
@@ -80,8 +98,14 @@ async function resolveSearchCredentials(providerId: string) {
 async function loadAutoSelectPolicy() {
   const settings = await getSettings().catch(() => null);
   return {
-    isAllowed: (provider: SearchProviderConfig) => !isProviderBlockedByIdOrAlias(provider.id, settings?.blockedProviders),
+    isAllowed: (provider: SearchProviderConfig) =>
+      !isProviderBlockedByIdOrAlias(provider.id, settings?.blockedProviders),
     order: settings?.searchProviderOrder,
+    timeoutMs: typeof settings?.searchTimeoutMs === "number" ? settings.searchTimeoutMs : undefined,
+    providerTimeoutsMs:
+      settings?.searchProviderTimeoutsMs && typeof settings.searchProviderTimeoutsMs === "object"
+        ? (settings.searchProviderTimeoutsMs as Record<string, number>)
+        : undefined,
   };
 }
 
@@ -139,6 +163,21 @@ export async function executeWebSearch(
 ): Promise<ExecuteWebSearchResult> {
   assertValidSearchInput(input);
 
+  // Hosted search executes on behalf of the same authenticated key as chat.
+  // Reuse the direct search route's connection/quota boundary for every lookup.
+  const apiKeyInfo = input.apiKeyId ? await getApiKeyById(input.apiKeyId) : null;
+  if (input.apiKeyId && !apiKeyInfo) {
+    throw new WebSearchExecutionError("API key is no longer available for search", 403);
+  }
+  const scope = await resolveKeyConnectionScope(apiKeyInfo);
+  if (scope.rejection) {
+    throw new WebSearchExecutionError(
+      "No eligible connections matched the requested routing constraints",
+      scope.rejection.status
+    );
+  }
+  const { allowedConnections } = scope;
+
   const log = input.log || defaultLog;
   if (input.provider === "x_search") input.provider = "x-search";
   if (input.provider === "xquik" || input.provider === "xquik_search") {
@@ -149,11 +188,18 @@ export async function executeWebSearch(
   }
   if (input.provider === "x-search" || input.provider === "xquik-search") input.search_type = "x";
   const searchType = input.search_type || "web";
+  const autoSelectPolicy = await loadAutoSelectPolicy();
 
   if (input.provider) {
     const explicitProvider = resolveSearchProvider(input.provider);
     if (!explicitProvider) {
       throw new WebSearchExecutionError(`Unknown search provider: ${input.provider}`, 400);
+    }
+    if (!autoSelectPolicy.isAllowed(explicitProvider)) {
+      throw new WebSearchExecutionError(
+        "Search provider " + input.provider + " is blocked by security policy",
+        403
+      );
     }
     if (!supportsSearchType(explicitProvider, searchType)) {
       throw new WebSearchExecutionError(
@@ -178,18 +224,19 @@ export async function executeWebSearch(
   let credentials: Record<string, any> | null = null;
   let alternateProviderId: string | undefined;
   let alternateCredentials: Record<string, any> | null = null;
+  const alternateProviders: Array<{ provider: string; credentials: Record<string, unknown> }> = [];
 
   if (input.provider) {
-    credentials = await resolveSearchCredentials(providerConfig.id);
+    credentials = await resolveSearchCredentials(providerConfig.id, allowedConnections);
     if (
       !credentials &&
       providerConfig.authType === "none" &&
+      keyAdmitsKeylessProviders(allowedConnections) &&
       typeof input.provider_options?.baseUrl === "string" &&
       input.provider_options.baseUrl.trim().length > 0
     ) {
-      credentials = {
-        providerSpecificData: { baseUrl: input.provider_options.baseUrl.trim() },
-      };
+      // Caller input must not be promoted to trusted stored connection data.
+      credentials = {};
     }
     if (!credentials) {
       throw new WebSearchExecutionError(
@@ -204,12 +251,12 @@ export async function executeWebSearch(
     // credentials. Fallback-only free providers are a last resort, so a
     // configured paid provider is never skipped just because a cheaper
     // no-credentials provider appears first in the cost sort (issue #11524).
-    const { isAllowed, order } = await loadAutoSelectPolicy();
+    const { isAllowed, order } = autoSelectPolicy;
     const candidateProviders = autoSearchCandidates(searchType, order).filter(isAllowed);
 
     for (const candidate of candidateProviders) {
-      const candidateCredentials = await resolveSearchCredentials(candidate.id);
-      if (admitsAutoCandidate(candidate, candidateCredentials)) {
+      const candidateCredentials = await resolveSearchCredentials(candidate.id, allowedConnections);
+      if (admitsAutoCandidate(candidate, candidateCredentials, order)) {
         providerConfig = candidate;
         credentials = candidateCredentials;
         break;
@@ -227,10 +274,14 @@ export async function executeWebSearch(
       for (const fallbackProvider of fallbackProviders) {
         providerConfig = fallbackProvider;
         if (fallbackProvider.id === "duckduckgo-free") {
+          if (!keyAdmitsKeylessProviders(allowedConnections)) continue;
           credentials = {};
           break;
         }
-        const fallbackCredentials = await resolveSearchCredentials(fallbackProvider.id);
+        const fallbackCredentials = await resolveSearchCredentials(
+          fallbackProvider.id,
+          allowedConnections
+        );
         if (fallbackCredentials) {
           credentials = fallbackCredentials;
           break;
@@ -254,12 +305,17 @@ export async function executeWebSearch(
       .filter((providerId) => providerId !== providerConfig!.id);
 
     for (const providerId of otherIds) {
+      if (alternateProviderId && !isPreferredSearchProvider(providerId, order)) continue;
       const altConfig = getSearchProvider(providerId);
-      const altCreds = await resolveSearchCredentials(providerId);
-      if (altConfig && admitsAutoCandidate(altConfig, altCreds)) {
-        alternateProviderId = providerId;
-        alternateCredentials = altCreds;
-        break;
+      const altCreds = await resolveSearchCredentials(providerId, allowedConnections);
+      if (altConfig && admitsAutoCandidate(altConfig, altCreds, order)) {
+        if (!alternateProviderId) {
+          alternateProviderId = providerId;
+          alternateCredentials = altCreds;
+        } else {
+          alternateProviders.push({ provider: providerId, credentials: { ...altCreds } });
+        }
+        if (!isPreferredSearchProvider(providerId, order)) break;
       }
     }
   }
@@ -276,6 +332,9 @@ export async function executeWebSearch(
       filters: input.filters,
       offset: input.offset,
       time_range: input.time_range,
+      content: input.content,
+      provider_options: input.provider_options,
+      connection_scope: allowedConnections ? [...allowedConnections].sort() : undefined,
     }
   );
   const ttl = providerConfig.cacheTTLMs ?? SEARCH_CACHE_DEFAULT_TTL_MS;
@@ -297,9 +356,12 @@ export async function executeWebSearch(
       credentials,
       alternateProvider: alternateProviderId,
       alternateCredentials,
+      alternateProviders,
       log,
       connectionId: credentials?.connectionId || undefined,
       apiKeyId: input.apiKeyId || undefined,
+      timeoutMs: autoSelectPolicy.timeoutMs,
+      providerTimeoutsMs: autoSelectPolicy.providerTimeoutsMs,
     });
 
     if (!result.success || !result.data) {

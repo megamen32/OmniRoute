@@ -39,6 +39,8 @@ import * as xquikSearch from "./search/xquikSearch.ts";
 import * as anysearchSearch from "./search/anysearchSearch.ts";
 import * as kimiSearch from "./search/kimiSearch.ts";
 import * as parallelSearch from "./search/parallelSearch.ts";
+import * as keenableSearch from "./search/keenableSearch.ts";
+import * as tinyfishSearch from "./search/tinyfishSearch.ts";
 import { freeWebSearch } from "../services/freeWebSearch.ts";
 import { saveCallLog } from "@/lib/usageDb";
 import { safeOutboundFetch } from "@/shared/network/safeOutboundFetch";
@@ -122,6 +124,8 @@ interface SearchHandlerOptions {
   providerOptions?: Record<string, unknown>;
   credentials: Record<string, any>;
   alternateProvider?: string;
+  /** Additional operator-ordered, already-authorized failover connections. */
+  alternateProviders?: Array<{ provider: string; credentials: Record<string, unknown> }>;
   alternateCredentials?: Record<string, any> | null;
   log?: any;
   /** Connection ID (proxy resolution + call-log attribution) and API key ID (per-key proxy). */
@@ -165,9 +169,11 @@ const NON_RETRIABLE = new Set([400, 401, 403, 404]);
  * not the request, so the keyed failover still has a chance of answering it.
  */
 function isFailoverStatus(primary: SearchProviderConfig, status: number | undefined): boolean {
-  return primary.primaryWhenConfigured === true ||
-    (primary.id === "tinyfish-search" && status !== 400) ||
-    !NON_RETRIABLE.has(status || 0);
+  return (
+    primary.primaryWhenConfigured === true ||
+    (["tinyfish-search", "keenable-search"].includes(primary.id) && status !== 400) ||
+    !NON_RETRIABLE.has(status || 0)
+  );
 }
 
 // ── Input Sanitization ──────────────────────────────────────────────────
@@ -711,22 +717,6 @@ function buildYouComRequest(
   };
 }
 
-// The stored TinyFish Fetch credential also authorizes Search. Keep its
-// destination fixed to the official API; no caller URL can receive the key.
-function buildTinyfishRequest(
-  config: SearchProviderConfig,
-  params: SearchRequestParams
-): { url: string; init: RequestInit } {
-  const qp = new URLSearchParams({ query: params.query, domain_type: params.searchType === "news" ? "news" : "web" });
-  if (params.country) qp.set("location", params.country.toUpperCase());
-  if (params.language) qp.set("language", params.language);
-  if (params.maxResults) qp.set("num_results", String(Math.min(10, params.maxResults)));
-  if (params.offset) qp.set("page", String(Math.min(10, Math.floor(params.offset / Math.max(1, params.maxResults)))));
-  return { url: config.baseUrl + "?" + qp, init: {
-    method: "GET", headers: { Accept: "application/json", ...(params.token ? { "X-API-Key": params.token } : {}) }
-  }};
-}
-
 function buildSearxngRequest(
   config: SearchProviderConfig,
   params: SearchRequestParams
@@ -798,7 +788,8 @@ const requestBuilders: Record<string, SearchRequestBuilder> = {
   "linkup-search": buildLinkupRequest,
   "searchapi-search": buildSearchApiRequest,
   "youcom-search": buildYouComRequest,
-  "tinyfish-search": buildTinyfishRequest,
+  "tinyfish-search": tinyfishSearch.buildTinyfishSearchRequest,
+  "keenable-search": keenableSearch.buildKeenableSearchRequest,
   "searxng-search": buildSearxngRequest,
   "ollama-search": buildOllamaRequest,
   "jina-search": buildJinaSearchRequest,
@@ -1123,22 +1114,6 @@ function normalizeYouComResponse(
   return { results, totalResults: results.length };
 }
 
-function normalizeTinyfishResponse(data: any): { results: SearchResult[]; totalResults: number | null } {
-  const now = new Date().toISOString();
-  const items = (Array.isArray(data?.results) ? data.results : []).filter((item: any) => {
-    try { const url = new URL(item.url); return ["https:", "http:"].includes(url.protocol) && !!url.hostname; }
-    catch { return false; }
-  });
-  const results = items.map((item: any, idx: number) => makeResult("tinyfish-search", {
-    title: typeof item.title === "string" ? item.title : "",
-    url: item.url,
-    snippet: typeof item.snippet === "string" ? item.snippet : "",
-    published_at: typeof item.date === "string" ? item.date : undefined,
-    source_type: typeof item.site_name === "string" ? item.site_name : undefined,
-  }, idx, now));
-  return { results, totalResults: results.length };
-}
-
 function normalizeSearxngResponse(
   data: any,
   _query: string,
@@ -1449,7 +1424,8 @@ const responseNormalizers: Record<string, SearchResponseNormalizer> = {
   "linkup-search": normalizeLinkupResponse,
   "searchapi-search": normalizeSearchApiResponse,
   "youcom-search": normalizeYouComResponse,
-  "tinyfish-search": normalizeTinyfishResponse,
+  "tinyfish-search": (data) => tinyfishSearch.normalizeTinyfishSearchResponse(data, makeResult),
+  "keenable-search": (data) => keenableSearch.normalizeKeenableSearchResponse(data, makeResult),
   "searxng-search": normalizeSearxngResponse,
   "ollama-search": normalizeOllamaResponse,
   "jina-search": normalizeJinaSearchResponse,
@@ -1534,6 +1510,7 @@ export async function handleSearch(options: SearchHandlerOptions): Promise<Searc
     credentials,
     alternateProvider,
     alternateCredentials,
+    alternateProviders,
     log,
     connectionId,
     apiKeyId,
@@ -1570,8 +1547,18 @@ export async function handleSearch(options: SearchHandlerOptions): Promise<Searc
     };
   }
 
-  // 3. Get alternate config for failover (pre-resolved by route)
-  const alternateConfig = alternateProvider ? getSearchProvider(alternateProvider) : null;
+  // All alternates are resolved under the caller policy before entering the handler.
+  const seenProviders = new Set([providerId]);
+  const alternates = [
+    ...(alternateProvider && alternateCredentials
+      ? [{ provider: alternateProvider, credentials: alternateCredentials }]
+      : []),
+    ...(alternateProviders ?? []),
+  ].filter((candidate) => {
+    if (seenProviders.has(candidate.provider)) return false;
+    seenProviders.add(candidate.provider);
+    return true;
+  });
 
   const requestParams = {
     query: cleanQuery,
@@ -1593,103 +1580,56 @@ export async function handleSearch(options: SearchHandlerOptions): Promise<Searc
     }
   }
 
-  // 4. Try primary provider (skip catalog-default SearXNG localhost:8888,
-  // unless a request/connection override resolves it to a real URL).
-  const primaryEffectiveBaseUrl = resolveSearchBaseUrl(primaryConfig, {
-    ...requestParams,
-    providerSpecificData:
-      credentials?.providerSpecificData && typeof credentials.providerSpecificData === "object"
-        ? credentials.providerSpecificData
-        : undefined,
-  });
-  if (
-    isUnconfiguredLoopbackSearchProvider({ ...primaryConfig, baseUrl: primaryEffectiveBaseUrl })
-  ) {
-    if (log) {
-      log.warn(
-        "SEARCH",
-        "skipping catalog-default searxng-search at http://localhost:8888/search; set a real SearXNG URL"
-      );
+  let result: SearchHandlerResult = {
+    success: false,
+    status: 503,
+    error: "No usable search provider",
+  };
+  const attempts = [{ provider: providerId, credentials }, ...alternates];
+  for (const [index, attempt] of attempts.entries()) {
+    if (Date.now() - startTime >= globalTimeoutMs) break;
+    let config = index === 0 ? primaryConfig : getSearchProvider(attempt.provider);
+    if (!config || config.disabled || !config.searchTypes.includes(searchType)) continue;
+    const override = clampSearchTimeoutMs(providerTimeoutsMs?.[config.id], 0, 1);
+    if (override) config = { ...config, timeoutMs: override };
+    const effectiveBaseUrl = resolveSearchBaseUrl(config, {
+      ...requestParams,
+      providerSpecificData: attempt.credentials?.providerSpecificData,
+    });
+    if (isUnconfiguredLoopbackSearchProvider({ ...config, baseUrl: effectiveBaseUrl })) {
+      result = {
+        success: false,
+        status: 503,
+        error:
+          "SearXNG is still on the catalog default http://localhost:8888/search. Configure a real SearXNG URL or disable the provider.",
+      };
+      continue;
     }
-    const alternateEffectiveBaseUrl = alternateConfig
-      ? resolveSearchBaseUrl(alternateConfig, {
-          ...requestParams,
-          providerSpecificData:
-            alternateCredentials?.providerSpecificData &&
-            typeof alternateCredentials.providerSpecificData === "object"
-              ? alternateCredentials.providerSpecificData
-              : undefined,
-        })
-      : "";
-    if (
-      alternateConfig &&
-      alternateCredentials &&
-      !isUnconfiguredLoopbackSearchProvider({
-        ...alternateConfig,
-        baseUrl: alternateEffectiveBaseUrl,
-      })
-    ) {
-      return tryProvider(
-        alternateConfig,
-        requestParams,
-        alternateCredentials,
-        startTime,
-        log,
-        alternateCredentials?.connectionId,
-        apiKeyId,
-        globalTimeoutMs
-      );
-    }
-    return {
-      success: false,
-      status: 503,
-      error:
-        "SearXNG is still on the catalog default http://localhost:8888/search. Configure a real SearXNG URL or disable the provider.",
-    };
-  }
-
-  const result = await tryProvider(
-    primaryConfig,
-    requestParams,
-    credentials,
-    startTime,
-    log,
-    connectionId,
-    apiKeyId,
-    globalTimeoutMs
-  );
-
-  if (result.success) return result;
-
-  // 5. Failover to alternate (only for retriable errors and auto-select mode)
-  if (
-    alternateConfig &&
-    alternateCredentials &&
-    isFailoverStatus(primaryConfig, result.status) &&
-    Date.now() - startTime < globalTimeoutMs
-  ) {
-    if (log) {
-      log.warn(
-        "SEARCH",
-        `${primaryConfig.id} failed (${result.status}), trying ${alternateConfig.id}`
-      );
-    }
-
-    // Resolve alternate connection proxy independently so primary context never leaks
-    const fallbackResult = await tryProvider(
-      alternateConfig,
+    result = await tryProvider(
+      config,
       requestParams,
-      alternateCredentials,
+      attempt.credentials,
       startTime,
       log,
-      alternateCredentials?.connectionId,
+      index === 0 ? connectionId : attempt.credentials.connectionId,
       apiKeyId,
       globalTimeoutMs
     );
-
-    if (fallbackResult.success) return fallbackResult;
+    if (result.success) {
+      if (result.data?.results.length || alternates.length === 0) return result;
+      // A successful transport with no usable sources must not end a configured failover chain.
+      result = {
+        success: false,
+        status: 502,
+        error: "Search provider " + config.id + " returned no usable sources",
+      };
+    }
+    if (!isFailoverStatus(config, result.status)) return result;
+    log?.warn?.(
+      "SEARCH",
+      config.id + " failed (" + result.status + "), trying the next configured provider"
+    );
   }
-
   return result;
 }
 
@@ -1880,6 +1820,8 @@ async function tryProvider(
     query,
     searchType,
     maxResults,
+    domainFilter: params.domainFilter,
+    resultOffset: config.id === "tinyfish-search" ? Math.max(0, params.offset ?? 0) % 10 : 0,
     startTime,
     connectionId,
     proxy,

@@ -13,6 +13,8 @@ import { sanitizeErrorMessage } from "../../utils/error.ts";
 import { formatSearchProviderFailure } from "./providerFailure.ts";
 import { fetchWithCheckedRedirects, isRegistryEndpoint } from "./redirectGuard.ts";
 import { HTTP_STATUS } from "../../config/constants.ts";
+import { lockBorrowedSearchKey } from "./borrowedKeyLock.ts";
+import { filterSearchResults } from "./resultFilters.ts";
 import { isSubscriptionQuotaText } from "../../services/quotaTextCooldowns.ts";
 import type { SearchProviderConfig } from "../../config/searchRegistry.ts";
 import type { SearchResult } from "../search.ts";
@@ -185,6 +187,8 @@ export interface ExecuteProviderFetchParams {
   query: string;
   searchType: string;
   maxResults: number;
+  domainFilter?: string[];
+  resultOffset?: number;
   startTime: number;
   connectionId?: string;
   proxy: unknown;
@@ -260,8 +264,14 @@ export async function executeProviderFetch(
       }
       if (connectionId && shouldCoolDownSearchConnection(response.status, errorText)) {
         try {
-          const { markAccountUnavailable } = await import("@/sse/services/auth.ts");
-          await markAccountUnavailable(connectionId, response.status, errorText, config.id, null);
+          const { getProviderConnectionById } = await import("@/lib/db/providers");
+          const owner = await getProviderConnectionById(connectionId);
+          if (owner?.provider === config.id) {
+            const { markAccountUnavailable } = await import("@/sse/services/auth.ts");
+            await markAccountUnavailable(connectionId, response.status, errorText, config.id, null);
+          } else {
+            lockBorrowedSearchKey(config.id, owner?.provider, connectionId, response.status);
+          }
         } catch {
           /* non-critical - background cooldown mark must not break search response */
         }
@@ -284,7 +294,14 @@ export async function executeProviderFetch(
 
     const data = await response.json();
     const normalized = normalize(config.id, data, query, searchType);
-    const results = normalized.results.slice(0, maxResults);
+    const filteredResults = filterSearchResults(
+      normalized.results,
+      ["keenable-search", "tinyfish-search", "searxng-search"].includes(config.id)
+        ? p.domainFilter
+        : undefined
+    );
+    const resultOffset = p.resultOffset ?? 0;
+    const results = filteredResults.slice(resultOffset, resultOffset + maxResults);
     const duration = Date.now() - startTime;
 
     logCall({
@@ -303,7 +320,7 @@ export async function executeProviderFetch(
       try {
         const { getProviderConnectionById } = await import("@/lib/db/providers");
         const current = await getProviderConnectionById(connectionId);
-        if (current) {
+        if (current?.provider === config.id) {
           const { clearAccountError } = await import("@/sse/services/auth.ts");
           await clearAccountError(connectionId, current as never);
         }
@@ -329,7 +346,10 @@ export async function executeProviderFetch(
         metrics: {
           response_time_ms: duration,
           upstream_latency_ms: duration,
-          total_results_available: normalized.totalResults,
+          total_results_available:
+            filteredResults.length === normalized.results.length
+              ? normalized.totalResults
+              : filteredResults.length,
         },
         errors: [],
       },

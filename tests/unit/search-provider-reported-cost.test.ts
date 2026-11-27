@@ -11,11 +11,13 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-search-reported-cost-"));
 process.env.DATA_DIR = TEST_DATA_DIR;
+process.env.API_KEY_SECRET = "search-reported-cost-test";
 process.env.DISABLE_SQLITE_AUTO_BACKUP = "true";
 
 // Dynamic imports: DATA_DIR must be set before the DB modules load (repo test pattern).
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
+const { createApiKey } = await import("../../src/lib/db/apiKeys.ts");
 const costLedger = await import("../../src/lib/db/costLedger.ts");
 const costRules = await import("../../src/domain/costRules.ts");
 const batchWriter = await import("../../src/lib/spend/batchWriter.ts");
@@ -48,9 +50,10 @@ test.after(async () => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-function nextApiKeyId() {
+async function nextApiKeyId() {
   keyCounter += 1;
-  return `key-reported-cost-${keyCounter}`;
+  const key = await createApiKey(`key-reported-cost-${keyCounter}`, "test-machine");
+  return key.id;
 }
 
 async function seedSearxng(providerSpecificData: Record<string, unknown>) {
@@ -124,7 +127,7 @@ function fetchDirect(
 
 test("opted-in operator baseUrl: reported cost is billed and lands in the ledger", async () => {
   await seedSearxng({ baseUrl: ADAPTER_BASE, trustReportedCost: true });
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   const seen: string[] = [];
   respondWith(
     200,
@@ -157,7 +160,7 @@ test("opted-in operator baseUrl: reported cost is billed and lands in the ledger
 test("caller provider_options.baseUrl never gets its reported cost trusted", async () => {
   // Opted in, but the operator never set a baseUrl: the caller names the host.
   await seedSearxng({ trustReportedCost: true });
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   const seen: string[] = [];
   respondWith(200, searxngBody({ search_cost_usd: 42, request_id: "req-caller" }), seen);
 
@@ -177,7 +180,7 @@ test("caller provider_options.baseUrl never gets its reported cost trusted", asy
 });
 
 test("without the opt-in a reported cost is ignored and costPerQuery is billed", async () => {
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   respondWith(200, { results: [], usage: { search_cost_usd: 0.5, request_id: "req-no-opt" } });
 
   const result = await fetchDirect(
@@ -221,7 +224,7 @@ test("invalid reported values fall back to costPerQuery", async () => {
 
 test("a request id is charged once even when reported again", async () => {
   await seedSearxng({ baseUrl: ADAPTER_BASE, trustReportedCost: true });
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   respondWith(200, searxngBody({ search_cost_usd: 0.1, request_id: "req-dup" }));
 
   await executeWebSearch({ query: "dedupe query one", provider: "searxng-search", apiKeyId });
@@ -235,7 +238,7 @@ test("a request id is charged once even when reported again", async () => {
 
 test("a cache hit records no cost", async () => {
   await seedSearxng({ baseUrl: ADAPTER_BASE, trustReportedCost: true });
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
@@ -263,7 +266,7 @@ test("a cache hit records no cost", async () => {
 
 test("an error response from a trusted endpoint still charges its reported cost", async () => {
   await seedSearxng({ baseUrl: ADAPTER_BASE, trustReportedCost: true });
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   respondWith(502, {
     error: "upstream model failed",
     usage: { search_cost_usd: 0.07, request_id: "req-err" },
@@ -284,7 +287,7 @@ test("an error response from a trusted endpoint still charges its reported cost"
 
 test("an error response without the opt-in charges nothing", async () => {
   await seedSearxng({ baseUrl: ADAPTER_BASE });
-  const apiKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
   respondWith(502, { usage: { search_cost_usd: 0.07, request_id: "req-err-no-opt" } });
 
   await assert.rejects(
@@ -306,8 +309,8 @@ test("per-key daily/weekly USD quotas count reported and static search spend, ch
     isActive: true,
     testStatus: "active",
   });
-  const apiKeyId = nextApiKeyId();
-  const otherKeyId = nextApiKeyId();
+  const apiKeyId = await nextApiKeyId();
+  const otherKeyId = await nextApiKeyId();
   const staticCost = SEARCH_PROVIDERS["tavily-search"].costPerQuery;
 
   globalThis.fetch = async (url) =>

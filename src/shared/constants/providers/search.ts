@@ -114,6 +114,18 @@ export const SEARCH_PROVIDERS = {
     authHint: "Bearer API key from the Nimble dashboard",
     serviceKinds: ["webSearch", "webFetch"],
   },
+  "keenable-search": {
+    id: "keenable-search",
+    alias: "keenable",
+    name: "Keenable Search",
+    icon: "travel_explore",
+    color: "#005CFF",
+    textIcon: "KE",
+    website: "https://keenable.ai",
+    hasFree: true,
+    authHint: "API key optional; keyless search uses the shared per-IP quota",
+    serviceKinds: ["webSearch"],
+  },
   "parallel-search": {
     id: "parallel-search",
     alias: "parallel",

@@ -4,6 +4,11 @@
 import { SAFE_OUTBOUND_FETCH_PRESETS, safeOutboundFetch } from "@/shared/network/safeOutboundFetch";
 import { getProviderOutboundGuard } from "@/shared/network/outboundUrlGuardPolicy";
 import { withCustomUserAgent } from "./headers";
+import {
+  KEENABLE_API_BASE,
+  KEENABLE_APP_TITLE,
+  KEENABLE_TITLE_HEADER,
+} from "@omniroute/open-sse/config/keenable.ts";
 import { toValidationErrorResult, validationWrite } from "./transport";
 import {
   NIMBLE_CLIENT_SOURCE,
@@ -144,6 +149,18 @@ export const SEARCH_VALIDATOR_CONFIGS: Record<
   // Deliberately incomplete body (no search_queries/objective) so the probe never runs a
   // real search: an accepted key answers with a request-validation 4xx (< 500 → valid),
   // a rejected key with 401/403. validateSearchProvider never follows redirects.
+  "keenable-search": (apiKey) => ({
+    url: KEENABLE_API_BASE + "/v1/search",
+    init: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey,
+        [KEENABLE_TITLE_HEADER]: KEENABLE_APP_TITLE,
+      },
+      body: JSON.stringify({ query: "test", max_results: 1 }),
+    },
+  }),
   "parallel-search": (apiKey) => ({
     url: "https://api.parallel.ai/v1/search",
     init: {

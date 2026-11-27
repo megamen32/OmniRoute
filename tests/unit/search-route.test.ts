@@ -52,7 +52,7 @@ test("v1 search GET lists all search providers", async () => {
 
   assert.equal(response.status, 200);
   assert.equal(body.object, "list");
-  assert.equal(body.data.length, 23);
+  assert.equal(body.data.length, 24);
   assert.deepEqual(ids, [
     "serper-search",
     "brave-search",
@@ -66,6 +66,7 @@ test("v1 search GET lists all search providers", async () => {
     "linkup-search",
     "searchapi-search",
     "youcom-search",
+    "keenable-search",
     "tinyfish-search",
     "searxng-search",
     "ollama-search",
