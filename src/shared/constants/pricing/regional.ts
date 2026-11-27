@@ -15,6 +15,7 @@ const ZCODE_FREE_RATE = {
   cache_creation: 0,
 };
 const ZCODE_FREE_MODEL_IDS = [
+  "glm-5.4",
   "glm-5.3-flash",
   "glm-5.3",
   "glm-5.3-max",
