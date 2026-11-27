@@ -24,16 +24,19 @@ import type {
 import { bufferedResponsesFailure } from "./bufferedResponsesFailure.ts";
 import { translateNonStreamingClientResponse } from "./nonStreamingClientTranslate.ts";
 import { parseNonStreamingResponseBody, isJsonRecord } from "./nonStreamingResponseParse.ts";
-import {
-  NonStreamingResponseTooLargeError,
-  readResponseTextWithinCap,
-} from "./nonStreamingResponseBody.ts";
+import { NonStreamingResponseTooLargeError } from "./nonStreamingResponseBody.ts";
 import { restoreNonStreamingToolNames } from "./passthroughToolNames.ts";
+import { inheritCodexResponseFence } from "../../services/codexAccount/fences.ts";
 import { extractUsageFromResponse } from "../usageExtractor.ts";
+import { cacheCreationFields } from "../../utils/cacheWriteUsage.ts";
 import { sanitizeUsagePayloadForRequest } from "../../utils/usageTracking.ts";
-import { createErrorResult, formatProviderError } from "../../utils/error.ts";
+import { readBuyerCostMicro } from "../../utils/buyerCostMicro.ts";
+import { createErrorResult, formatProviderError, readErrorBodyText } from "../../utils/error.ts";
 import { isLocalStreamLifecycleError } from "@/shared/utils/circuitBreaker";
-import { ANTIGRAVITY_PRE_RESPONSE_TIMEOUT_CODE } from "../../config/constants.ts";
+import {
+  ANTIGRAVITY_PRE_RESPONSE_TIMEOUT_CODE,
+  REQUEST_SCOPED_UPSTREAM_TIMEOUT_CODE,
+} from "../../config/constants.ts";
 import { unwrapClinepassEnvelope } from "../../utils/clinepassEnvelope.ts";
 import { unwrapClineNonStreamingEnvelope } from "./clineResponseEnvelope.ts";
 import {
@@ -126,6 +129,7 @@ export interface ProviderLegInput {
 function buildReceipt(
   input: ProviderLegInput,
   params: {
+    buyerCostMicro?: number | null;
     httpStatus: number;
     errorType: string | null;
     usage: ProviderLegUsage | null;
@@ -139,6 +143,7 @@ function buildReceipt(
 ): ProviderLegReceipt {
   return {
     index: input.phase === "initial" ? 0 : 1,
+    buyerCostMicro: params.buyerCostMicro ?? null,
     connectionId: params.connectionId,
     provider: input.provider ?? "unknown",
     model: params.model,
@@ -160,12 +165,16 @@ function extractUsage(
   responseBody: Record<string, unknown>,
   provider: string
 ): ProviderLegUsage | null {
-  const raw = extractUsageFromResponse(responseBody, provider);
+  return summarizeUsage(extractUsageFromResponse(responseBody, provider));
+}
+
+function summarizeUsage(raw: unknown): ProviderLegUsage | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const pt = typeof r.prompt_tokens === "number" ? r.prompt_tokens : 0;
   const ct = typeof r.completion_tokens === "number" ? r.completion_tokens : 0;
   return {
+    ...cacheCreationFields(raw),
     prompt_tokens: pt,
     completion_tokens: ct,
     total_tokens: typeof r.total_tokens === "number" ? r.total_tokens : pt + ct,
@@ -278,8 +287,13 @@ function finishOk(
     requestUrl?: string;
   }
 ): NonStreamingProviderLegResult {
+  const buyerCostMicro = readBuyerCostMicro(params.responseBody);
   const failed = bufferedResponsesFailure(input, params, { legError, extractUsage, buildReceipt });
-  if (failed) return failed;
+  if (failed) {
+    failed.buyerCostMicro = buyerCostMicro;
+    failed.receipt.buyerCostMicro = buyerCostMicro ?? null;
+    return failed;
+  }
   // F-02: restore + sanitize + translate is the only success tail.
   // Fallback/retry must not skip this with responseToolNameMap: null.
   const restoreClaudeNames = params.sourceFormat === "claude" && params.targetFormat === "claude";
@@ -296,7 +310,12 @@ function finishOk(
     params.transformedBody || params.requestBody,
     params.responsePayloadFormat
   );
-  const usage = extractUsage(body, params.provider);
+  // Full provider usage, read BEFORE translateNonStreamingClientResponse rewrites the
+  // body for the client (applyClientUsageBuffer folds in the #8331 context buffer and
+  // can swap in an estimate). Billing needs this object, not the token-only summary:
+  // it also carries provider-reported cost/credit fields and the estimate marker.
+  const billingUsage = extractUsageFromResponse(body, params.provider);
+  const usage = summarizeUsage(billingUsage);
   const clientTranslate = translateNonStreamingClientResponse({
     responseBody: body,
     responsePayloadFormat: params.responsePayloadFormat,
@@ -327,6 +346,7 @@ function finishOk(
     connectionId: params.connectionId,
   });
   const receipt = buildReceipt(input, {
+    buyerCostMicro,
     httpStatus: 200,
     errorType: null,
     usage,
@@ -344,6 +364,8 @@ function finishOk(
     providerBody: body,
     providerRequest: input.translatedBody ?? {},
     usage,
+    billingUsage,
+    buyerCostMicro,
     responsePayloadFormat: params.responsePayloadFormat,
     looksLikeSSE: params.looksLikeSSE,
     connectionId: params.connectionId,
@@ -470,20 +492,26 @@ export async function runNonStreamingProviderLeg(
           connectionId: outcome.connectionId || connectionId,
           model: outcome.model || currentModel,
         });
+        const sanitized = legError(
+          outcome.result.status,
+          formatted,
+          undefined,
+          // Keep the upstream retry hint on the sanitized response.
+          outcome.result.response ? parseRetryAfterMs(outcome.result.response) : null,
+          outcome.result.errorCode,
+          outcome.result.errorType,
+          { passthrough: input.sourceFormat === "claude" }
+        );
+        // The sanitized response still answers for the attempt's Codex owner: failure writes
+        // keyed on it must use that attempt's fence, not the invocation's original one.
+        if (outcome.result.response && sanitized.response) {
+          inheritCodexResponseFence(outcome.result.response, sanitized.response);
+        }
         return {
           kind: "error",
           upstreamHttpSelection,
           result: {
-            ...legError(
-              outcome.result.status,
-              formatted,
-              undefined,
-              // Keep the upstream retry hint on the sanitized response.
-              outcome.result.response ? parseRetryAfterMs(outcome.result.response) : null,
-              outcome.result.errorCode,
-              outcome.result.errorType,
-              { passthrough: input.sourceFormat === "claude" }
-            ),
+            ...sanitized,
             // Never relay the raw upstream Response (body, Set-Cookie, other headers) to the
             // client: legError() above built the sanitized one. Upstream headers stay on
             // `upstreamHeaders` for server-side classification only.
@@ -544,15 +572,25 @@ export async function runNonStreamingProviderLeg(
     // The old non-streaming path reduced every TimeoutError to a bare 504.
     // Preserve only the explicit Antigravity pre-response marker, not arbitrary
     // upstream 504s: the outer account router needs the original failure type.
+    const requestScopedTimeout =
+      failureStatus === 504 &&
+      !!error &&
+      typeof error === "object" &&
+      (error as { code?: unknown }).code === REQUEST_SCOPED_UPSTREAM_TIMEOUT_CODE;
     const preResponseTimeout =
-      provider === "antigravity" &&
+      (provider === "antigravity" || provider === "agy") &&
       failureStatus === 504 &&
       !!error &&
       typeof error === "object" &&
       (error as { code?: unknown }).code === ANTIGRAVITY_PRE_RESPONSE_TIMEOUT_CODE;
+    const timeoutType = requestScopedTimeout
+      ? "request_timeout"
+      : preResponseTimeout
+        ? "upstream_timeout"
+        : undefined;
     const receipt = buildReceipt(input, {
       httpStatus: failureStatus,
-      errorType: preResponseTimeout ? "upstream_timeout" : null,
+      errorType: timeoutType ?? null,
       usage: null,
       termination: "provider_error",
       latencyMs: Date.now() - startMs,
@@ -566,8 +604,12 @@ export async function runNonStreamingProviderLeg(
       failureMessage,
       error,
       null,
-      preResponseTimeout ? ANTIGRAVITY_PRE_RESPONSE_TIMEOUT_CODE : undefined,
-      preResponseTimeout ? "upstream_timeout" : undefined
+      requestScopedTimeout
+        ? REQUEST_SCOPED_UPSTREAM_TIMEOUT_CODE
+        : preResponseTimeout
+          ? ANTIGRAVITY_PRE_RESPONSE_TIMEOUT_CODE
+          : undefined,
+      timeoutType
     );
     return {
       kind: "error",
@@ -625,7 +667,7 @@ export async function runNonStreamingProviderLeg(
     let parsedErrorBody: Record<string, unknown> = {};
 
     try {
-      const errorBodyText = await readResponseTextWithinCap(providerResponse);
+      const errorBodyText = await readErrorBodyText(providerResponse);
       try {
         parsedErrorBody = JSON.parse(errorBodyText) as Record<string, unknown>;
       } catch {
@@ -818,7 +860,9 @@ export async function runNonStreamingProviderLeg(
     } catch {
       // usage extraction from error body is best-effort
     }
+    const buyerCostMicro = readBuyerCostMicro(parsedErrorBody);
     const receipt = buildReceipt(input, {
+      buyerCostMicro,
       httpStatus: statusCode,
       errorType: upstreamErrorCode ?? null,
       usage,
@@ -846,6 +890,7 @@ export async function runNonStreamingProviderLeg(
       upstreamHttpSelection,
       result: errorResult as ChatCoreErrorResult,
       upstreamDiagnostic: executorResult.upstreamDiagnostic,
+      buyerCostMicro,
       receipt,
       usage,
     };
@@ -863,8 +908,9 @@ export async function runNonStreamingProviderLeg(
   });
 
   if (parsed.kind === "invalid_sse") {
+    const sseStatus = parsed.status ?? 502;
     const receipt = buildReceipt(input, {
-      httpStatus: 502,
+      httpStatus: sseStatus,
       errorType: "invalid_sse_payload",
       usage: null,
       termination: "provider_error",
@@ -875,7 +921,7 @@ export async function runNonStreamingProviderLeg(
       model: currentModel,
     });
     const errorResult = legError(
-      502,
+      sseStatus,
       parsed.message,
       new Error(parsed.message),
       null,
@@ -1048,6 +1094,7 @@ export async function runNonStreamingProviderLeg(
       trustedEmptyTurn: hasTrustedEmptyTurn(executorResult.response),
     })
   ) {
+    const buyerCostMicro = readBuyerCostMicro(responseBody);
     const errMsg = "Provider returned empty content";
     if (allowModelFallback) {
       const triedModels = new Set<string>([currentModel]);
@@ -1122,8 +1169,10 @@ export async function runNonStreamingProviderLeg(
                 ? "invalid_sse_payload"
                 : "invalid_json_payload";
             const parseMessage = fallbackParsed.message;
+            const parseStatus =
+              (fallbackParsed.kind === "invalid_sse" && fallbackParsed.status) || 502;
             const receipt = buildReceipt(input, {
-              httpStatus: 502,
+              httpStatus: parseStatus,
               errorType: parseCode,
               usage: null,
               termination: "provider_error",
@@ -1134,7 +1183,7 @@ export async function runNonStreamingProviderLeg(
               model: nextModel,
             });
             const errorResult = legError(
-              502,
+              parseStatus,
               parseMessage,
               new Error(parseMessage),
               null,
@@ -1149,7 +1198,15 @@ export async function runNonStreamingProviderLeg(
               usage: null,
             };
           } else {
+            let buyerCostMicro: number | null | undefined;
+            try {
+              const fallbackBody = JSON.parse(await readErrorBodyText(fallbackResult.response));
+              buyerCostMicro = readBuyerCostMicro(fallbackBody);
+            } catch {
+              // An unreadable fallback body has no known charge; never reuse the original's.
+            }
             const receipt = buildReceipt(input, {
+              buyerCostMicro,
               httpStatus: 502,
               errorType: "empty_content",
               usage: null,
@@ -1165,12 +1222,14 @@ export async function runNonStreamingProviderLeg(
               kind: "error",
               upstreamHttpSelection,
               result: errorResult as ChatCoreErrorResult,
+              buyerCostMicro,
               receipt,
               usage: null,
             };
           }
         } catch {
           const receipt = buildReceipt(input, {
+            buyerCostMicro,
             httpStatus: 502,
             errorType: "empty_content",
             usage: null,
@@ -1186,12 +1245,14 @@ export async function runNonStreamingProviderLeg(
             kind: "error",
             upstreamHttpSelection,
             result: errorResult as ChatCoreErrorResult,
+            buyerCostMicro,
             receipt,
             usage: null,
           };
         }
       } else {
         const receipt = buildReceipt(input, {
+          buyerCostMicro,
           httpStatus: 502,
           errorType: "empty_content",
           usage: null,
@@ -1207,12 +1268,14 @@ export async function runNonStreamingProviderLeg(
           kind: "error",
           upstreamHttpSelection,
           result: errorResult as ChatCoreErrorResult,
+          buyerCostMicro,
           receipt,
           usage: null,
         };
       }
     } else {
       const receipt = buildReceipt(input, {
+        buyerCostMicro,
         httpStatus: 502,
         errorType: "empty_content",
         usage: null,
@@ -1228,6 +1291,7 @@ export async function runNonStreamingProviderLeg(
         kind: "error",
         upstreamHttpSelection,
         result: errorResult as ChatCoreErrorResult,
+        buyerCostMicro,
         receipt,
         usage: null,
       };

@@ -33,6 +33,7 @@ import {
 
 import { maybeSyncClaudeExtraUsageState } from "../chatCore/telemetryHelpers.ts";
 import { recordFinalInputCalibration } from "./contextEstimation.ts";
+import { isEmptyUsage, isEstimatedUsage } from "../../utils/usageTracking.ts";
 
 export {
   shouldUseNativeCodexPassthrough,
@@ -52,6 +53,7 @@ import { buildPostCallGuardrailContext } from "../chatCore/postCallGuardrailCont
 import { buildNonStreamingResponseHeaders } from "../chatCore/nonStreamingResponseHeaders.ts";
 import { maybeWrapForcedNonStreamingResponsesJson } from "../chatCore/responsesJsonToSse.ts";
 import { runProviderExecutionPipeline } from "../chatCore/providerExecutionPipeline.ts";
+import { admitQuotaShareRotation } from "../chatCore/quotaSharePreHook.ts";
 import {
   createRequestFamilyFallback,
   modelAfterFamilyFallback,
@@ -62,6 +64,10 @@ import { finalizeToolLoopError } from "../chatCore/nonStreamingFinalization.ts";
 import { markCodexScopeRateLimited } from "../chatCore/codexFailover.ts";
 import { deleteSessionAccountAffinityBestEffort } from "@/lib/db/sessionAccountAffinity";
 import { writeTerminalStatus } from "@/shared/utils/terminalStatus";
+import {
+  runWithCodexResponseFence,
+  inheritCodexResponseFence,
+} from "../../services/codexAccount/fences.ts";
 import { MEMORY_BUILTIN_TOOL_NAMES } from "@/lib/skills/memoryBuiltins";
 
 import { storeSemanticCacheResponse } from "../chatCore/semanticCacheStore.ts";
@@ -70,8 +76,12 @@ import {
   toAntigravityDiagnosticPayload,
 } from "../../executors/antigravityUpstreamError.ts";
 import { routingFinishReason } from "../chatCore/routingFinishReason.ts";
+import { resolveSessionTurn } from "./agentContext.ts";
 import { hasTrustedEmptyTurn, inheritEmptyTurnPolicy } from "../../utils/emptyTurnPolicy.ts";
-import { getProviderCredentials } from "@/sse/services/auth";
+import {
+  getProviderCredentials,
+  getProviderCredentialsWithQuotaPreflight,
+} from "@/sse/services/auth";
 import { extractFacts } from "@/lib/memory/extraction";
 // The leaf body is unchanged from the barrel, so its closed-over values keep
 // the barrel's types. This alias only exists so the deps bag type-checks.
@@ -108,6 +118,7 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
     effectiveModel,
     effectiveServiceTier: _effectiveServiceTier,
     emitRequestGamificationEvent,
+    agentContext,
     endpointPath,
     executeProviderRequest,
     executeRefreshCredentials,
@@ -200,12 +211,14 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
     isResponsesEndpoint,
     preserveCacheControl,
     reasoningCacheScope,
+    antigravitySessionKey,
     requestToolIdentityMap,
     stream,
     toolNameMap,
     tokensCompressed,
     traceEnabled,
     videoBridgeObserved,
+    piiTokensMinted,
   } = deps;
   let upstreamHttpSelection: HttpAttemptSelection | null = null;
   const familyFallback = createRequestFamilyFallback(provider, {
@@ -268,7 +281,15 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
             assertManagedLeaseFence(id);
           },
           getProviderCredentials,
+          getProviderCredentialsWithQuotaPreflight,
           allowedConnections: deps.allowedConnections ?? null,
+          admitRotation: (nextConnectionId) =>
+            admitQuotaShareRotation({
+              apiKeyInfo,
+              connectionId: nextConnectionId,
+              provider,
+              model,
+            }),
         },
         wire: {
           body: translatedBody as Record<string, unknown>,
@@ -393,14 +414,16 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       const errHeaders = err?.upstreamHeaders || err?.response?.headers;
       const errUpstreamBody = err?.upstreamErrorBody;
       if (err) {
-        await applyProviderFailureClassification({
-          statusCode: err.status,
-          message: errMessage,
-          headers: errHeaders,
-          upstreamErrorBody: errUpstreamBody,
-          retryAfterMs: err.retryAfterMs ?? null,
-          targetModel: currentModel,
-        });
+        await runWithCodexResponseFence(err.response, () =>
+          applyProviderFailureClassification({
+            statusCode: err.status,
+            message: errMessage,
+            headers: errHeaders,
+            upstreamErrorBody: errUpstreamBody,
+            retryAfterMs: err.retryAfterMs ?? null,
+            targetModel: currentModel,
+          })
+        );
       }
 
       const captured = providerRequestCapture.latest?.() ?? null;
@@ -438,6 +461,7 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       persistAttemptLogs({
         upstreamHttpSelection,
         status: err.status,
+        buyerCostMicro: legResult.buyerCostMicro,
         error: err.error || "Provider request failed",
         providerRequest: finalBody || translatedBody,
         providerResponse: persistedProviderErrorBody,
@@ -554,6 +578,7 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
             signatureNamespace: connectionId,
             copilotClient: copilotCompatibleReasoning,
             reasoningCacheScope,
+            antigravitySessionKey,
             onReasoningReplayHistory: (messages) => {
               reasoningReplayHistory = messages;
             },
@@ -687,7 +712,7 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
     );
     effectiveServiceTier = resolveReportedServiceTier(responseBody) ?? effectiveServiceTier;
     if (onRequestSuccess) {
-      await onRequestSuccess();
+      await runWithCodexResponseFence(providerResponse, () => onRequestSuccess(), true);
     }
     const successConnectionId = getCurrentConnectionId();
     await maybeSyncClaudeExtraUsageState({
@@ -696,7 +721,16 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       providerSpecificData: credentials?.providerSpecificData,
       log,
     });
-    const usage = toolLoopUsage ?? extractUsageFromResponse(responseBody, provider);
+    // Bill the provider leg's own usage: it was extracted from the body BEFORE
+    // translateNonStreamingClientResponse mutated it (applyClientUsageBuffer adds
+    // the #8331 client context buffer and can replace usage with an estimate).
+    // Re-extracting here would bill the buffer/estimate as real provider usage.
+    // `billingUsage` (not the token-only `usage` summary) keeps the provider-reported
+    // cost/credit fields. After a server-owned tool loop the initial leg's value is
+    // stale, so only the loop's cumulative usage or a re-extraction applies there.
+    const legBillingUsage = toolLoopRan ? null : okLeg.billingUsage;
+    let usage =
+      toolLoopUsage ?? legBillingUsage ?? extractUsageFromResponse(responseBody, provider);
     recordFinalInputCalibration(
       body,
       provider,
@@ -724,6 +758,12 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
         if (promptTokens > 0) incrementTokenUsage(model, promptTokens);
       }
     }
+    // A 2xx with no usable usage gets an estimate on the client body
+    // (applyClientUsageBuffer). Bill and log that same estimate, as the stream path does,
+    // so usage_history, per-key limits and the call log agree with what the client saw.
+    if (isEmptyUsage(usage) && isEstimatedUsage(translatedResponse?.usage)) {
+      usage = translatedResponse.usage;
+    }
     recordContextEditingTelemetryHook({
       contextEditingEnabled,
       provider,
@@ -750,23 +790,14 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       comboStrategy,
       endpoint: endpointPath,
       cpaAuthIndex: readCpaAuthIndex(providerResponse),
-    });
-
-    // #12150 P1b surface 3 (fix round 1): a video-bridge-observed request's
-    // request- AND response-derived text both carry the full transcript (the
-    // flattened description on the request side, the model's own reply on
-    // the response side) — neither may populate durable Memory. See
-    // runMemoryExtractionGate for the shared gate + extraction wiring, unit
-    // tested directly in tests/unit/video-bridge-memory-suppression.test.ts.
-    runMemoryExtractionGate({
-      memoryOwnerId,
-      memorySettings,
-      videoBridgeObserved,
-      pipelineSessionId,
-      requestBody: body as Record<string, unknown>,
-      responseBody: memoryExtractionResponse as Record<string, unknown> | null,
-      extractFacts,
-      log,
+      agentContext,
+      sessionTurn: resolveSessionTurn({
+        clientRawRequest,
+        body,
+        responses: [okLeg.response],
+        agentContext,
+        apiKeyInfo,
+      }),
     });
 
     const customSkillExecutionEnabled =
@@ -832,6 +863,7 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
         upstreamHttpSelection,
         status: HTTP_STATUS.BAD_REQUEST,
         tokens: usage,
+        buyerCostMicro: okLeg.buyerCostMicro,
         responseBody,
         providerRequest: finalBody || translatedBody,
         providerResponse: looksLikeSSE
@@ -938,6 +970,7 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
         error: malformedDiagnostic,
         upstreamHttpSelection,
         tokens: usage,
+        buyerCostMicro: okLeg.buyerCostMicro,
         responseBody: sanitizedMalformedResponse,
         providerRequest: finalBody || translatedBody,
         providerResponse: sanitizedMalformedProviderResponse,
@@ -1000,6 +1033,26 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       };
     }
 
+    // Durable Memory only learns from a reply the client receives: a guardrail-blocked (400) or
+    // malformed (502) reply returned above never reaches this point.
+    // #12150 P1b surface 3 (fix round 1): a video-bridge-observed request's
+    // request- AND response-derived text both carry the full transcript (the
+    // flattened description on the request side, the model's own reply on
+    // the response side) — neither may populate durable Memory. See
+    // runMemoryExtractionGate for the shared gate + extraction wiring, unit
+    // tested directly in tests/unit/video-bridge-memory-suppression.test.ts.
+    runMemoryExtractionGate({
+      memoryOwnerId,
+      memorySettings,
+      videoBridgeObserved,
+      piiTokensMinted,
+      pipelineSessionId,
+      requestBody: body as Record<string, unknown>,
+      responseBody: memoryExtractionResponse as Record<string, unknown> | null,
+      extractFacts,
+      log,
+    });
+
     // ── Phase 9.1: Cache store (non-streaming, temp=0) ──
     storeSemanticCacheResponse({
       enabled: semanticCacheEnabled,
@@ -1014,17 +1067,20 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
       usage,
       log,
       videoTranscriptSensitive: videoBridgeObserved,
+      piiTokensMinted,
     });
 
     // ── Phase 9.2: Save for idempotency ──
     // Reuse the key resolved by checkIdempotencyCache() above (single derivation per
-    // request). (#3821-review LEDGER-6)
-    await saveIdempotency(idempotencyKey, translatedResponse, 200);
+    // request). (#3821-review LEDGER-6) A replay of a reversible-vault response would hand
+    // back tokens that no later request can resolve, so none is stored.
+    if (!piiTokensMinted) await saveIdempotency(idempotencyKey, translatedResponse, 200);
     reqLogger.logConvertedResponse(translatedResponse);
     persistAttemptLogs({
       upstreamHttpSelection,
       status: 200,
       tokens: usage,
+      buyerCostMicro: okLeg.buyerCostMicro,
       responseBody,
       providerRequest: finalBody || translatedBody,
       providerResponse: looksLikeSSE
@@ -1144,13 +1200,16 @@ export async function runNonStreamingResponse(deps: NonStreamingDeps) {
     return {
       response: {
         success: true,
-        response: inheritEmptyTurnPolicy(
+        response: inheritCodexResponseFence(
           providerResponse,
-          maybeWrapForcedNonStreamingResponsesJson({
-            clientRequestedResponsesStream,
-            body: translatedResponse,
-            headers: responseHeaders,
-          })
+          inheritEmptyTurnPolicy(
+            providerResponse,
+            maybeWrapForcedNonStreamingResponsesJson({
+              clientRequestedResponsesStream,
+              body: translatedResponse,
+              headers: responseHeaders,
+            })
+          )
         ),
       },
       carry: {

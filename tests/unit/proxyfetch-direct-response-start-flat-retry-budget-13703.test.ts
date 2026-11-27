@@ -9,14 +9,23 @@
 //
 // This probe verifies that the replay-safe retry uses the larger caller-side
 // deadline by measuring when each attempt is aborted.
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
+import { setImmediate } from "node:timers/promises";
 import { proxyFetch } from "../../open-sse/utils/proxyFetch.ts";
 
 function withFastTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  const previousTimeout = process.env.OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS;
+  const previousNoProxy = process.env.NO_PROXY;
   process.env.OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS = String(ms);
+  // Only the synthetic host uses the injected direct transport. Keep the
+  // runner's proxy configuration for every other destination.
+  process.env.NO_PROXY = [previousNoProxy, "slow-ttfb.example"].filter(Boolean).join(",");
   return fn().finally(() => {
-    delete process.env.OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS;
+    if (previousTimeout === undefined) delete process.env.OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS;
+    else process.env.OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS = previousTimeout;
+    if (previousNoProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = previousNoProxy;
   });
 }
 
@@ -25,10 +34,6 @@ test("#13703 fresh-socket GET retry gets the remaining caller budget", async () 
   const LARGER_CALLER_DEADLINE_MS = 2_000;
   const callerDeadline = new AbortController();
   const callerDeadlineReason = new Error("caller deadline");
-  const callerDeadlineTimer = setTimeout(
-    () => callerDeadline.abort(callerDeadlineReason),
-    LARGER_CALLER_DEADLINE_MS
-  );
 
   const attemptStarts: number[] = [];
   const attemptAbortedAfter: number[] = [];
@@ -54,18 +59,40 @@ test("#13703 fresh-socket GET retry gets the remaining caller budget", async () 
   const mockNative = async (): Promise<Response> =>
     new Response("native-should-not-fire", { status: 200 });
 
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const callerDeadlineTimer = setTimeout(
+    () => callerDeadline.abort(callerDeadlineReason),
+    LARGER_CALLER_DEADLINE_MS
+  );
   try {
-    await assert.rejects(
-      withFastTimeout(FLAT_TIMEOUT_MS, () =>
-        proxyFetch(
-          "https://slow-ttfb.example/resource",
-          { method: "GET", signal: callerDeadline.signal },
-          { undiciFetch: mockUndici, nativeFetch: mockNative }
-        )
+    const request = withFastTimeout(FLAT_TIMEOUT_MS, () =>
+      proxyFetch(
+        "https://slow-ttfb.example/resource",
+        { method: "GET", signal: callerDeadline.signal },
+        { undiciFetch: mockUndici, nativeFetch: mockNative }
       )
     );
+    let settled = false;
+    const markSettled = () => {
+      settled = true;
+    };
+    void request.then(markSettled, markSettled);
+
+    await setImmediate();
+    for (
+      let elapsed = 0;
+      !settled && elapsed < LARGER_CALLER_DEADLINE_MS;
+      elapsed += FLAT_TIMEOUT_MS
+    ) {
+      mock.timers.tick(Math.min(FLAT_TIMEOUT_MS, LARGER_CALLER_DEADLINE_MS - elapsed));
+      // Let the abort and retry microtasks run before moving the clock again.
+      await setImmediate();
+    }
+    assert.ok(settled, "proxyFetch must settle by the caller deadline");
+    await assert.rejects(request);
   } finally {
     clearTimeout(callerDeadlineTimer);
+    mock.timers.reset();
   }
 
   assert.equal(attemptStarts.length, 2, "pooled attempt + fresh-socket retry must both fire");

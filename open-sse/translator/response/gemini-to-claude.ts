@@ -11,6 +11,7 @@ import {
   storeGeminiThoughtSignature,
 } from "../../services/geminiThoughtSignatureStore.ts";
 import { splitMarkdownBoundary } from "../helpers/markdownBoundary.ts";
+import { stripGeminiPlaceholderArgs } from "../helpers/geminiPlaceholderArgs.ts";
 import {
   buildClaudeWebSearchBlockEvents,
   toClaudeWebSearchResults,
@@ -48,6 +49,31 @@ function flushMarkdownBuffer(state, results) {
 }
 
 /**
+ * Release an unterminated <tool_call>/<invoke> tail held in the XML buffer as a text delta. At
+ * finish no later chunk can complete it, so it was prose (or a MAX_TOKENS cut mid-call) after
+ * all: same release the openai-to-claude finish path performs.
+ */
+function flushXmlInvokeBuffer(state, results) {
+  const held = state._xmlInvokeBuffer;
+  if (!held) return;
+  state._xmlInvokeBuffer = "";
+  if (state.openTextBlockIdx === null) {
+    const idx = state.contentBlockIndex++;
+    state.openTextBlockIdx = idx;
+    results.push({
+      type: "content_block_start",
+      index: idx,
+      content_block: { type: "text", text: "" },
+    });
+  }
+  results.push({
+    type: "content_block_delta",
+    index: state.openTextBlockIdx,
+    delta: { type: "text_delta", text: held },
+  });
+}
+
+/**
  * Extract the web hits out of Gemini Google Search grounding metadata. Gemini
  * exposes them as `groundingChunks[].web` (snake_case `grounding_chunks` on some
  * upstreams); normalization into Anthropic `web_search_result` entries is shared
@@ -79,8 +105,10 @@ function emitGroundingWebSearch(candidate, state, results) {
   const webResults = toClaudeWebSearchResults(collectGroundingWebItems(grounding));
   if (webResults.length === 0) return;
 
-  // Close the open text/thinking block first so the search pair gets fresh indices.
+  // Close the open text/thinking block first so the search pair gets fresh indices. On the
+  // finish chunk the held XML tail is part of that answer text and goes out before the pair.
   flushMarkdownBuffer(state, results);
+  if (candidate.finishReason) flushXmlInvokeBuffer(state, results);
   if (state.openTextBlockIdx !== null) {
     results.push({ type: "content_block_stop", index: state.openTextBlockIdx });
     state.openTextBlockIdx = null;
@@ -115,6 +143,9 @@ export function geminiToClaudeResponse(chunk, state) {
   // Handle Antigravity wrapper
   const response = chunk.response || chunk;
   if (!response || !response.candidates?.[0]) return null;
+  // message_stop closed the stream; a later chunk (for example a trailing usage chunk that
+  // repeats finishReason) must not add events after it.
+  if (state.claudeFinishEmitted) return null;
 
   const results = [];
   const candidate = response.candidates[0];
@@ -174,7 +205,7 @@ export function geminiToClaudeResponse(chunk, state) {
         results.push({
           type: "content_block_start",
           index: idx,
-          content_block: { type: "thinking", thinking: "" },
+          content_block: { type: "thinking", thinking: "", signature: "" },
         });
         results.push({
           type: "content_block_delta",
@@ -239,7 +270,9 @@ export function geminiToClaudeResponse(chunk, state) {
           },
         });
 
-        const argsStr = JSON.stringify(fc.args || {});
+        const argsStr = JSON.stringify(
+          stripGeminiPlaceholderArgs(restoredToolName, fc.args || {}, state.clientTools)
+        );
         results.push({
           type: "content_block_delta",
           index: idx,
@@ -440,6 +473,8 @@ export function geminiToClaudeResponse(chunk, state) {
   if (candidate.finishReason) {
     // Close any still-open text block before finishing
     flushMarkdownBuffer(state, results);
+    // An unterminated <tool_call>/<invoke> tail was prose after all; release it as text.
+    flushXmlInvokeBuffer(state, results);
     if (state.openTextBlockIdx !== null) {
       results.push({ type: "content_block_stop", index: state.openTextBlockIdx });
       state.openTextBlockIdx = null;
@@ -467,6 +502,7 @@ export function geminiToClaudeResponse(chunk, state) {
       usage: state.usage || { input_tokens: 0, output_tokens: 0 },
     });
     results.push({ type: "message_stop" });
+    state.claudeFinishEmitted = true;
   }
 
   return results.length > 0 ? results : null;

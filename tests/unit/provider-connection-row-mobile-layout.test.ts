@@ -164,10 +164,11 @@ test("model card: icon + full name on top, copy pinned top-right, details below"
   const row = read(`${providerComponents}/ModelRow.tsx`);
   assert.match(row, /relative flex h-full w-full min-w-0 flex-col gap-1\.5/);
   assert.match(row, /<code className="min-w-0 break-all pt-px font-mono/);
-  assert.match(row, /<div className="flex min-w-0 items-center gap-2 pl-6">/);
+  assert.match(row, /<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pl-6">/);
   assert.match(
     read(`${providerComponents}/ModelCompatPopover.tsx`),
     /<span className="hidden sm:inline">\{t\("compatButtonLabel"\)\}<\/span>/
   );
-  assert.match(row, /absolute right-2 top-2 rounded p-0\.5/);
+  // The copy button is the kit 24px icon size, pinned to the card corner.
+  assert.match(row, /size="icon-2xs"[\s\S]{0,200}?className="absolute right-2 top-2"/);
 });

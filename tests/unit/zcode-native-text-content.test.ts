@@ -30,7 +30,7 @@ function captureNativeRequest(t: TestContext) {
         return {
           providers: [
             {
-              providerId: "account:zai-start-plan",
+              providerId: "account:zai-individual-coding-plan",
               models: [{ modelId: "GLM-5.3-Flash", config: {} }],
             },
           ],
@@ -45,7 +45,7 @@ function captureNativeRequest(t: TestContext) {
   return {
     calls,
     async execute(body: Record<string, unknown>) {
-      const result = await new ZcodeExecutor().execute({
+      const result = await new ZcodeExecutor({ provider: "zcode-individual" }).execute({
         model: "glm-5.3-flash",
         body,
         stream: false,
@@ -56,7 +56,7 @@ function captureNativeRequest(t: TestContext) {
   };
 }
 
-test("native ZCode accepts ordered Responses text parts without mutating caller messages", async (t) => {
+test("native Individual ZCode accepts ordered Responses text parts without mutating caller messages", async (t) => {
   const fixture = captureNativeRequest(t);
   const messages = [
     { role: "developer", content: [{ type: "text", text: "Keep instructions." }] },
@@ -79,7 +79,7 @@ test("native ZCode accepts ordered Responses text parts without mutating caller 
   assert.deepEqual(messages, original);
 });
 
-test("native ZCode text normalization preserves caller tool calls, results and schemas", async (t) => {
+test("native Individual ZCode text normalization preserves caller tool calls, results and schemas", async (t) => {
   const fixture = captureNativeRequest(t);
   const toolCall = {
     id: "call_zcn_typed_content",
@@ -125,7 +125,7 @@ test("native ZCode text normalization preserves caller tool calls, results and s
   assert.deepEqual(messages, original);
 });
 
-test("native ZCode rejects mixed media and malformed text instead of silently dropping parts", async (t) => {
+test("native Individual ZCode rejects mixed media and malformed text instead of silently dropping parts", async (t) => {
   const fixture = captureNativeRequest(t);
   const imageUrl =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK0cAAAAASUVORK5CYII=";

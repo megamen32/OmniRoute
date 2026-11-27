@@ -106,6 +106,28 @@ export async function ensureDbReadyForBoot(
 
 export { isBackgroundServicesDisabled };
 
+/**
+ * The batch rate-limit E2E server needs the batch polling worker, but must not
+ * enable the broad collection of production background schedulers just to get
+ * it. This is deliberately narrower than the normal startup path: it is only
+ * available to the development custom server under the existing explicit E2E
+ * open-bootstrap mode, with a second test-harness-only opt-in.
+ */
+export function shouldStartE2EBatchProcessor(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    isBackgroundServicesDisabled(env) &&
+    env.NODE_ENV === "development" &&
+    env.OMNIROUTE_E2E_BOOTSTRAP_MODE === "open" &&
+    env.OMNIROUTE_E2E_ENABLE_BATCH_PROCESSOR === "1"
+  );
+}
+
+async function startBatchProcessor(): Promise<void> {
+  const { initBatchProcessor } = await import("@omniroute/open-sse/services/batchProcessor");
+  initBatchProcessor();
+  console.log("[STARTUP] Batch processor started");
+}
+
 async function ensureSecrets(): Promise<void> {
   let getPersistedSecret = (_key: string): string | null => null;
   let persistSecret = (_key: string, _value: string): void => {};
@@ -494,6 +516,20 @@ export const OPTIONAL_BOOT_SUBSYSTEMS: ReadonlyArray<OptionalBootSubsystem> = [
           );
         }),
   },
+  // Host wake recovery: opt-in (OMNIROUTE_WAKE_RECOVERY=1). Flushes pooled upstream sockets once
+  // after the host resumes from sleep. Self-gated: the flag-off boot stays timer-free.
+  {
+    name: "wake-recovery",
+    start: () =>
+      import("@/lib/wakeRecovery")
+        .then((m) => {
+          if (m.startWakeRecovery()) console.log("[STARTUP] Wake recovery heartbeat started");
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn("[STARTUP] Wake recovery failed to start (non-fatal):", msg);
+        }),
+  },
 ];
 
 /**
@@ -572,11 +608,10 @@ export async function registerNodejs(): Promise<void> {
   // scoring for generic providers in the App Router production runtime.
   await registerQuotaFetchers();
 
-  // Readiness probes that keep local-CLI no-auth providers (devin-cli-agentic) out of
-  // the auto/* pools until confirmed (#15446). Unregistered probes fail closed.
+  // Register local CLI and browser runtime readiness before serving auto/* requests.
   const { registerNoAuthAutoRoutingReadiness } =
     await import("@/lib/providers/noAuthAutoRoutingReadiness");
-  registerNoAuthAutoRoutingReadiness();
+  await registerNoAuthAutoRoutingReadiness();
 
   // Guarantee the SQLite singleton — including a sql.js WASM pre-init when
   // both synchronous drivers (better-sqlite3, node:sqlite) are unavailable —
@@ -596,8 +631,13 @@ export async function registerNodejs(): Promise<void> {
     import("@/lib/env/runtimeEnv").then(({ enforceWebRuntimeEnv }) => enforceWebRuntimeEnv()),
     // Warn loudly at boot if STORAGE_ENCRYPTION_KEY is missing in production.
     // Do not exit: an empty key is the documented encryption-disabled contract.
-    import("@/lib/db/encryption").then(({ assertEncryptionKeyConfiguredForProduction }) =>
-      assertEncryptionKeyConfiguredForProduction()
+    import("@/lib/db/encryption").then(
+      async ({ assertEncryptionKeyConfiguredForProduction, probeStoredSecrets }) => {
+        assertEncryptionKeyConfiguredForProduction();
+        // One decrypt of a stored secret: a wrong key logs once here, not once per provider.
+        const { getDbInstance } = await import("@/lib/db/core");
+        probeStoredSecrets(getDbInstance());
+      }
     ),
     import("@/lib/usage/migrations"),
     import("@/lib/consoleInterceptor").then(({ initConsoleInterceptor }) =>
@@ -683,6 +723,11 @@ export async function registerNodejs(): Promise<void> {
   console.log("[STARTUP] Spend batch writer started");
   console.log("[STARTUP] Guardrail registry initialized");
   console.log("[STARTUP] Builtin skill handlers registered");
+  // Request-path gate (not a background service): with "auto-apply banked resets" off it
+  // defers to the per-account autoLimitReset toggle, so behavior is unchanged.
+  const { registerClaudeSessionResetPolicy } = await import("@/lib/usage/claudeSessionResetPolicy");
+  registerClaudeSessionResetPolicy();
+  console.log("[STARTUP] Claude session-reset policy gate registered");
   if (!isBackgroundServicesDisabled()) {
     startBackgroundRefresh();
     console.log("[STARTUP] Quota cache background refresh started");
@@ -694,9 +739,20 @@ export async function registerNodejs(): Promise<void> {
     const { startQuotaAutoPing } = await import("@/lib/services/quotaAutoPing");
     startQuotaAutoPing();
     console.log("[STARTUP] Quota auto-ping scheduler started (opt-in, no-op until enabled)");
+    const { startBankedResetAutoApply } = await import("@/lib/services/bankedResetAutoApply");
+    startBankedResetAutoApply();
+    console.log(
+      "[STARTUP] Banked-reset auto-apply scheduler started (opt-in, no-op until enabled)"
+    );
     const { startCodexWakeups } = await import("@/lib/services/codexWakeups");
     startCodexWakeups();
     console.log("[STARTUP] Codex wakeup scheduler started (no-op until a task is created)");
+    const { startCodexResetCreditAutospend } =
+      await import("@/lib/services/codexResetCreditAutospend");
+    startCodexResetCreditAutospend();
+    console.log(
+      "[STARTUP] Codex reset-credit auto-spend scheduler started (opt-in, no-op until enabled)"
+    );
     // Optional: cloud/model sync is skipped in headless mode (src/lib/system/headless.ts).
     if (!skipInHeadless("cloud-sync")) {
       const cloudSyncInitialized = await ensureCloudSyncInitialized();
@@ -704,9 +760,9 @@ export async function registerNodejs(): Promise<void> {
         `[STARTUP] Cloud/model sync background bootstrap ${cloudSyncInitialized ? "initialized" : "skipped"}`
       );
     }
-    const { initBatchProcessor } = await import("@omniroute/open-sse/services/batchProcessor");
-    initBatchProcessor();
-    console.log("[STARTUP] Batch processor started");
+    await startBatchProcessor();
+  } else if (shouldStartE2EBatchProcessor()) {
+    await startBatchProcessor();
   }
 
   try {

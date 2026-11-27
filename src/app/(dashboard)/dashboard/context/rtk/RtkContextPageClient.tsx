@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Alert } from "@omniroute/ui-kit/alert";
 import { PageHeader, SectionHeader } from "@omniroute/ui-kit/page-header";
-import { Collapsible, SegmentedControl } from "@/shared/components";
+import Collapsible from "@/shared/components/Collapsible";
+import SegmentedControl from "@/shared/components/SegmentedControl";
 import Button from "@/shared/components/Button";
 import Card from "@/shared/components/Card";
 import Checkbox from "@/shared/components/Checkbox";
@@ -433,15 +434,12 @@ export default function RtkContextPageClient() {
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
       <PageHeader
         compact
-        title={
-          <span className="flex items-center gap-3">
-            <Icon name="filter_alt" size={30} className="text-primary" />
-            {t("title")}
-          </span>
-        }
+        icon={<Icon name="filter_alt" className="text-primary" />}
+        title={t("title")}
         description={t("description")}
         actions={
           <SegmentedControl
+            semantics="radio"
             aria-label={t("viewMode")}
             value={viewMode}
             onChange={(v) => setViewMode(v as "simple" | "advanced")}
@@ -456,7 +454,7 @@ export default function RtkContextPageClient() {
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {statCards.map(([label, value]) => (
           <Card key={label} padding="sm">
-            <p className="text-xs uppercase text-text-muted">{label}</p>
+            <p className="ci-eyebrow">{label}</p>
             <p className="mt-1 text-xl font-semibold text-text-main">{value}</p>
           </Card>
         ))}
@@ -560,7 +558,8 @@ export default function RtkContextPageClient() {
               onChange={(event) => setSample(event.target.value)}
               placeholder={t("pasteOutput")}
               aria-label={t("filterTesting")}
-              className="h-72 w-full font-mono text-xs"
+              mono
+              className="h-72 w-full"
             />
           </Card>
           <Card padding="sm">
@@ -591,8 +590,10 @@ export default function RtkContextPageClient() {
       >
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {Object.entries(groupedFilters).map(([category, items]) => (
-            <div key={category} className="rounded-lg border border-border bg-bg p-3">
-              <h3 className="text-xs font-semibold capitalize text-text-main">{category}</h3>
+            <Card.Section key={category}>
+              <h3 className="ci-heading capitalize" data-size="xs">
+                {category}
+              </h3>
               <div className="mt-2 space-y-2">
                 {items.map((filter) => {
                   const enabled = config ? !config.disabledFilters.includes(filter.id) : true;
@@ -604,7 +605,7 @@ export default function RtkContextPageClient() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="text-xs font-medium text-text-main">{filter.name}</p>
-                          <p className="mt-0.5 text-[11px] text-text-muted">{filter.description}</p>
+                          <p className="mt-0.5 text-xs text-text-muted">{filter.description}</p>
                         </div>
                         <Checkbox
                           aria-label={filter.name}
@@ -618,7 +619,7 @@ export default function RtkContextPageClient() {
                   );
                 })}
               </div>
-            </div>
+            </Card.Section>
           ))}
         </div>
       </Collapsible>

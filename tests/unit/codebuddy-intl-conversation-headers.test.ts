@@ -1,8 +1,8 @@
 // The intl gateway's channel verification rejects requests without the
 // X-Conversation-* header family with HTTP 400 code 11128 "conversation id
-// missing". The official IDE sends a conversation id derived stably from the
-// session key plus fresh per-request/per-message ids, and mirrors the message
-// id on X-Request-ID.
+// missing". Captured shapes (CLI/2.175.0): `X-Conversation-ID` is a UUIDv7 with
+// dashes, while `X-Conversation-Request-ID` and `X-Conversation-Message-ID` are
+// bare 32-hex ids. The message id is mirrored on X-Request-ID.
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../../open-sse/executors/codebuddy-intl.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const HEX32_RE = /^[0-9a-f]{32}$/;
 
 test("CodeBuddyIntlExecutor sends the X-Conversation-* family", async (t) => {
   const exec = new CodeBuddyIntlExecutor();
@@ -21,13 +22,15 @@ test("CodeBuddyIntlExecutor sends the X-Conversation-* family", async (t) => {
       messages: [{ role: "user", content: "hi" }],
     });
     assert.match(h["X-Conversation-ID"], UUID_RE);
-    assert.match(h["X-Conversation-Request-ID"], UUID_RE);
-    assert.match(h["X-Conversation-Message-ID"], UUID_RE);
+    assert.match(h["X-Conversation-Request-ID"], HEX32_RE);
+    assert.match(h["X-Conversation-Message-ID"], HEX32_RE);
     assert.equal(h["X-Request-ID"], h["X-Conversation-Message-ID"]);
   });
 
-  await t.test("keeps the conversation id stable across retries of the same turn", () => {
-    const body = { messages: [{ role: "user", content: "same opening message" }] };
+  await t.test("keeps the conversation id stable across retries of the same session", () => {
+    // Only an explicit session key joins requests; the opening message text no longer
+    // does (unrelated chats starting with the same text must not share an id).
+    const body = { session_id: "sess-retry", messages: [{ role: "user", content: "same" }] };
     const a = exec.buildHeaders(creds, true, null, "m", null, body);
     const b = exec.buildHeaders(creds, true, null, "m", null, body);
     assert.equal(a["X-Conversation-ID"], b["X-Conversation-ID"]);
@@ -47,7 +50,7 @@ test("CodeBuddyIntlExecutor sends the X-Conversation-* family", async (t) => {
     assert.notEqual(a["X-Conversation-ID"], b["X-Conversation-ID"]);
   });
 
-  await t.test("supports typed-block user content for the derived key", () => {
+  await t.test("supports typed-block user content", () => {
     const h = exec.buildHeaders(creds, true, null, "m", null, {
       messages: [{ role: "user", content: [{ type: "text", text: "typed block" }] }],
     });
@@ -91,7 +94,7 @@ test("caller-supplied ids are preserved", async (t) => {
     assert.equal(out["X-Conversation-ID"], "11111111-1111-1111-1111-111111111111");
     assert.equal(out["X-Conversation-Message-ID"], "fixed-message-id");
     assert.equal(out["X-Request-ID"], "fixed-message-id");
-    assert.match(out["X-Conversation-Request-ID"], UUID_RE);
+    assert.match(out["X-Conversation-Request-ID"], HEX32_RE);
   });
 
   await t.test("treats blank values as absent", () => {

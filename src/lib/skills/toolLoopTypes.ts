@@ -18,6 +18,7 @@ export interface ProviderLegUsage {
 }
 
 export interface ProviderLegReceipt {
+  buyerCostMicro?: number | null;
   index: number;
   connectionId: string;
   provider: string;
@@ -58,6 +59,12 @@ export type NonStreamingProviderLegResult =
       providerBody: Record<string, unknown>;
       providerRequest: Record<string, unknown>;
       usage: ProviderLegUsage | null;
+      /**
+       * Full provider usage extracted before the client translate mutated the body
+       * (cost/credit fields, estimate marker included). Billing source of truth.
+       */
+      billingUsage?: Record<string, unknown> | null;
+      buyerCostMicro?: number | null;
       responsePayloadFormat: string;
       looksLikeSSE: boolean;
       connectionId: string;
@@ -69,6 +76,7 @@ export type NonStreamingProviderLegResult =
     }
   | {
       kind: "error";
+      buyerCostMicro?: number | null;
       upstreamHttpSelection?: HttpAttemptSelection | null;
       result: ChatCoreErrorResult;
       upstreamDiagnostic?: Record<string, unknown>;

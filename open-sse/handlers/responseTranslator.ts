@@ -1,8 +1,11 @@
 import {
   applyToolCallShimToBuffer,
   findToolCallSchema,
+  hasToolCallShim,
 } from "../translator/helpers/toolCallShim.ts";
 import { FORMATS } from "../translator/formats.ts";
+import { cacheCreationFields } from "../utils/cacheWriteUsage.ts";
+import { usableTokenCounter } from "../utils/usageEvidence.ts";
 import {
   buildGeminiThoughtSignatureKey,
   storeGeminiThoughtSignature,
@@ -26,9 +29,14 @@ import {
 import { restoreDeclaredToolName } from "../services/declaredToolCasing.ts";
 import { extractReplayableResponsesReasoningText } from "../services/reasoningInputPolicy.ts";
 import { sanitizeToolId } from "../translator/helpers/schemaCoercion.ts";
+import { stripGeminiPlaceholderArgs } from "../translator/helpers/geminiPlaceholderArgs.ts";
 import { stripEmptyOptionalToolArgs } from "../translator/response/openai-responses/pureHelpers.ts";
 import { toNumber as toFiniteNumber } from "../utils/numeric.ts";
-import { geminiExtraUsageCounts } from "../translator/response/geminiUsageMetadata.ts";
+import {
+  geminiCandidatesTokenCount,
+  geminiExtraUsageCounts,
+} from "../translator/response/geminiUsageMetadata.ts";
+import { firstReportedCounter } from "../utils/reportedCounter.ts";
 import {
   extractThinkingFromContent,
   shouldParseTextualReasoningTags,
@@ -355,6 +363,11 @@ export function translateNonStreamingResponse(
       );
       // `cache_write_tokens` is the alias emitted by the codex-chatgpt-web bridge
       // (input_tokens_details) and by OpenRouter/Devin Desktop (top level).
+      const reportedCachedInputTokens = firstReportedCounter(
+        inputTokensDetails.cached_tokens,
+        promptTokensDetails.cached_tokens,
+        usage.cache_read_input_tokens
+      );
       const cacheCreationInputTokens = firstPositiveNumber(
         inputTokensDetails.cache_creation_tokens,
         promptTokensDetails.cache_creation_tokens,
@@ -388,10 +401,14 @@ export function translateNonStreamingResponse(
           reasoning_tokens: reasoningTokens,
         };
       }
-      if (cachedInputTokens > 0 || cacheCreationInputTokens > 0) {
+      if (
+        reportedCachedInputTokens !== undefined ||
+        cachedInputTokens > 0 ||
+        cacheCreationInputTokens > 0
+      ) {
         (result.usage as JsonRecord).prompt_tokens_details = {};
         const promptDetails = (result.usage as JsonRecord).prompt_tokens_details as JsonRecord;
-        if (cachedInputTokens > 0) {
+        if (cachedInputTokens > 0 || reportedCachedInputTokens !== undefined) {
           promptDetails.cached_tokens = cachedInputTokens;
         }
         if (cacheCreationInputTokens > 0) {
@@ -511,7 +528,13 @@ export function translateNonStreamingResponse(
                       type: "function",
                       function: {
                         name: restoredName,
-                        arguments: JSON.stringify(normalizeToolCallArgs(fn.args || {})),
+                        arguments: JSON.stringify(
+                          stripGeminiPlaceholderArgs(
+                            restoredName,
+                            normalizeToolCallArgs(fn.args || {}),
+                            clientTools
+                          )
+                        ),
                       },
                     });
                   }
@@ -713,7 +736,7 @@ export function translateNonStreamingResponse(
           usageOut.completion_tokens_details = { reasoning_tokens: reasoningTokens };
         }
         if (cachedTokens > 0 || cacheCreationTokens > 0) {
-          const details: JsonRecord = {};
+          const details: JsonRecord = { ...cacheCreationFields(usage) };
           if (cachedTokens > 0) details.cached_tokens = cachedTokens;
           if (cacheCreationTokens > 0) {
             details.cache_creation_tokens = cacheCreationTokens;
@@ -721,7 +744,7 @@ export function translateNonStreamingResponse(
           }
           usageOut.prompt_tokens_details = details;
         }
-        result.usage = usageOut;
+        result.usage = { ...usageOut, ...cacheCreationFields(usage) };
       }
 
       intermediateOpenAI = result;
@@ -803,8 +826,14 @@ function parseToolUseInput(
   schema: ReturnType<typeof findToolCallSchema>
 ): Record<string, unknown> {
   const parsed = parseToolCallArguments(rawArguments);
-  if (name.toLowerCase() !== "read" || !schema) return parsed;
+  if (!schema || !hasToolCallShim(name, schema)) return parsed;
   return JSON.parse(applyToolCallShimToBuffer(name, JSON.stringify(parsed), schema));
+}
+
+// Keep accepting positive numeric strings from the legacy Chat cache fields,
+// but don't treat a numeric string zero as an explicitly reported counter.
+function legacyPositiveCacheRead(value: unknown): unknown {
+  return typeof value === "string" ? toFiniteNumber(value) || undefined : value;
 }
 
 /**
@@ -854,6 +883,7 @@ function convertOpenAINonStreamingToClaude(
     content.push({
       type: "thinking",
       thinking: reasoningText,
+      signature: "",
     });
   }
 
@@ -921,14 +951,15 @@ function convertOpenAINonStreamingToClaude(
   const promptTokens = toFiniteNumber(usageSrc.prompt_tokens, 0);
   const outputTokens = toFiniteNumber(usageSrc.completion_tokens, 0);
 
-  // Extract cache tokens from prompt_tokens_details (mirrors the streaming
-  // translator in open-sse/translator/response/openai-to-claude.ts lines 119-148).
   const promptDetails = toRecord(usageSrc.prompt_tokens_details);
-  const flatCachedTokens = toFiniteNumber(usageSrc.cached_tokens, 0);
-  const cachedTokens = Math.max(
-    0,
-    Math.min(promptTokens, toFiniteNumber(promptDetails.cached_tokens, flatCachedTokens))
-  );
+  const inputDetails = toRecord(usageSrc.input_tokens_details);
+  const reportedCacheReadTokens = [
+    legacyPositiveCacheRead(promptDetails.cached_tokens),
+    legacyPositiveCacheRead(usageSrc.cached_tokens),
+    inputDetails.cached_tokens,
+    usageSrc.cache_read_input_tokens,
+  ].find(usableTokenCounter);
+  const cachedTokens = Math.max(0, Math.min(promptTokens, reportedCacheReadTokens ?? 0));
   // Same rule as openai-to-claude.ts trackUsageFromChunk: a cache write reported outside the
   // prompt (cache_creation_in_prompt === false) is not part of prompt_tokens, so it is neither
   // bounded by it nor subtracted from it. A write inside the prompt cannot exceed the uncached part.
@@ -946,12 +977,13 @@ function convertOpenAINonStreamingToClaude(
   );
 
   const usage: JsonRecord = {
+    ...cacheCreationFields(usageSrc),
     input_tokens: inputTokens,
     output_tokens: outputTokens,
   };
 
-  // Add cache_read_input_tokens if present
-  if (cachedTokens > 0) {
+  // A reported zero is evidence of no cached input, not an unknown count.
+  if (reportedCacheReadTokens === 0 || cachedTokens > 0) {
     usage.cache_read_input_tokens = cachedTokens;
   }
 
@@ -1038,8 +1070,10 @@ function convertOpenAINonStreamingToGeminiFamily(openaiResponse: JsonRecord): Js
     OPENAI_TO_GEMINI_FINISH_REASON[toString(choice.finish_reason, "stop")] ?? "STOP";
 
   const usageSrc = toRecord(openaiResponse.usage);
-  const promptTokens = toFiniteNumber(usageSrc.prompt_tokens, 0);
-  const completionTokens = toFiniteNumber(usageSrc.completion_tokens, 0);
+  // Some OpenAI-compatible upstreams report the Responses names (input/output_tokens).
+  const promptTokens = toFiniteNumber(usageSrc.prompt_tokens ?? usageSrc.input_tokens, 0);
+  const completionTokens = toFiniteNumber(usageSrc.completion_tokens ?? usageSrc.output_tokens, 0);
+  const extraUsage = geminiExtraUsageCounts(usageSrc);
 
   const geminiResponse: JsonRecord = {
     response: {
@@ -1052,9 +1086,12 @@ function convertOpenAINonStreamingToGeminiFamily(openaiResponse: JsonRecord): Js
       ],
       usageMetadata: {
         promptTokenCount: promptTokens,
-        candidatesTokenCount: completionTokens,
+        candidatesTokenCount: geminiCandidatesTokenCount(
+          completionTokens,
+          extraUsage.thoughtsTokenCount
+        ),
         totalTokenCount: toFiniteNumber(usageSrc.total_tokens, promptTokens + completionTokens),
-        ...geminiExtraUsageCounts(usageSrc),
+        ...extraUsage,
       },
       modelVersion: toString(openaiResponse.model, "unknown"),
       responseId: toString(openaiResponse.id, `resp_${Date.now()}`),

@@ -7,15 +7,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { DEVICE_CODE_PROVIDERS } from "../../src/shared/constants/oauthDeviceCodeProviders.ts";
-import {
-  NOAUTH_PROVIDERS,
-  supportsDeviceCodeLogin,
-} from "../../src/shared/constants/providers.ts";
+import { NOAUTH_PROVIDERS, supportsDeviceCodeLogin } from "../../src/shared/constants/providers.ts";
 import { MINIMAX_CODE_CONFIG } from "../../src/lib/oauth/constants/oauth.ts";
 import { minimaxCode } from "../../src/lib/oauth/providers/minimax-code.ts";
 import { MINIMAX_CODE_DEVICE_GRANT } from "../../open-sse/config/minimaxCode.ts";
@@ -30,14 +28,29 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+// OAuthModal's DEVICE_CODE_PROVIDERS is a module-private const inside a
+// "use client" component, so read the Set literal from the source.
+function readModalDeviceCodeProviders(): Set<string> {
+  const modalSource = readFileSync(
+    fileURLToPath(new URL("../../src/shared/components/OAuthModal.tsx", import.meta.url)),
+    "utf8"
+  );
+  const match = modalSource.match(/const DEVICE_CODE_PROVIDERS = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(match, "DEVICE_CODE_PROVIDERS Set literal not found in OAuthModal.tsx");
+  return new Set([...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+}
+
 test("the dashboard device-code list contains minimax-code", () => {
-  assert.equal(DEVICE_CODE_PROVIDERS.has("minimax-code"), true);
+  assert.equal(readModalDeviceCodeProviders().has("minimax-code"), true);
   assert.equal(supportsDeviceCodeLogin("minimax-code"), true);
 });
 
 test("minimax-code stays a no-auth provider that only adds a device-code login", () => {
   assert.equal(NOAUTH_PROVIDERS["minimax-code"]?.noAuth, true);
-  assert.equal(NOAUTH_PROVIDERS["minimax-code"]?.isLocalCli, true);
+  // The provider talks to the managed gateway: it does not spawn a local CLI,
+  // so it is not a local-CLI provider.
+  const entry = NOAUTH_PROVIDERS["minimax-code"] as { isLocalCli?: boolean };
+  assert.equal(entry.isLocalCli, undefined);
 });
 
 test("the public client id comes from resolvePublicCred, never a literal", () => {
@@ -95,7 +108,8 @@ test("requestDeviceCode asks for an S256 device code and normalizes the answer",
 test("requestDeviceCode fails loudly when the account endpoint refuses", async () => {
   const config = {
     ...MINIMAX_CODE_CONFIG,
-    fetchImpl: (async () => jsonResponse({ error: "invalid_client" }, 400)) as unknown as typeof fetch,
+    fetchImpl: (async () =>
+      jsonResponse({ error: "invalid_client" }, 400)) as unknown as typeof fetch,
   };
   await assert.rejects(() => minimaxCode.requestDeviceCode(config, "challenge"));
 });
@@ -161,15 +175,20 @@ test("pollToken returns the token pair of an authorized grant", async () => {
   assert.equal(result.data.refresh_token, "refresh-token");
 });
 
-test("mapTokens maps the grant and reports whether the local profile was written", () => {
+test("mapTokens keeps the credential out of the connection row and reports the profile write", () => {
   const mapped = minimaxCode.mapTokens(
     { access_token: "access-token", refresh_token: "refresh-token", expires_in: 3600 },
     { profileSynced: true }
   );
-  assert.equal(mapped.accessToken, "access-token");
-  assert.equal(mapped.refreshToken, "refresh-token");
-  assert.equal(mapped.expiresIn, 3600);
-  assert.equal(mapped.tokenType, "Bearer");
+  // The credential lives only in the local MiniMax Code profile (postExchange
+  // writes it there). The connection row is the account entry: a copy of the
+  // tokens in provider_connections would go stale as soon as the CLI rotates
+  // them, and a generic refresher could spend the profile's refresh token.
+  assert.equal("accessToken" in mapped, false);
+  assert.equal("refreshToken" in mapped, false);
+  assert.equal("expiresIn" in mapped, false);
+  assert.equal(JSON.stringify(mapped).includes("access-token"), false);
+  assert.equal(JSON.stringify(mapped).includes("refresh-token"), false);
   assert.equal(mapped.providerSpecificData.profileSynced, true);
 
   const unsynced = minimaxCode.mapTokens({ access_token: "access-token" });

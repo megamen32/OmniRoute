@@ -167,7 +167,7 @@ test("dynamic provider target materializes the sticky connection", async () => {
   ];
   const messages = [{ role: "user", content: "dynamic account conversation" }];
   const hash = deriveMessageHash(messages)!;
-  recordStickyBinding(hash, "zcode-account-b", undefined, "zcode-start");
+  recordStickyBinding(hash, "zcode-account-b", undefined, "zcode-start/glm-5.3-flash", "zcode-start");
 
   const result = await applySessionStickiness(targets, messages);
 

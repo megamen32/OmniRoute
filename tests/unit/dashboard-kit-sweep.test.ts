@@ -105,7 +105,9 @@ test("every raw <button>/<input> left in the dashboard tree carries a `kit-excep
           unexplained.push(`${rel(f)}:${i + 1}`);
       });
   }
-  assert.ok(sites > 10, `found only ${sites} raw controls; the scan is broken`);
+  // The count only goes down (the FileTrigger adoption removed the hidden file inputs), so the
+  // floor is "the scan still sees one"; the next test checks the scan on fixed samples.
+  assert.ok(sites > 0, `found only ${sites} raw controls; the scan is broken`);
   assert.deepEqual(unexplained, []);
 });
 
@@ -203,8 +205,6 @@ test("the landing colour scan catches each literal form and ignores anchors and 
 test("no hand-rolled role=dialog outside the Modal adapter", () => {
   const hits = countBy(DASHBOARD, /role=["{']*dialog/g);
   delete hits["src/shared/components/Modal.tsx"]; // doc comment on the kit DialogContent
-  // In-container dialog kept on purpose: pinned tests use window Escape/backdrop (lote 6 #1).
-  delete hits["src/shared/components/RequestLoggerDetail.tsx"];
   assert.deepEqual(hits, {});
 });
 
@@ -232,7 +232,6 @@ test("animate-spin stays within its budget: new spinners use the Spinner adapter
 
 test("no raw <kbd> outside the kit Kbd", () => {
   const hits = countBy(APP, /<kbd\b/g);
-  delete hits["src/shared/components/CommandPalette.tsx"]; // moves with the kit Command palette
   assert.deepEqual(hits, {});
 });
 

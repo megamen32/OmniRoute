@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { MockAgent, setGlobalDispatcher } from "undici";
+import { settleConnectionFollowUpsAfterEachTest } from "../helpers/connectionFollowUps.ts";
+
+settleConnectionFollowUpsAfterEachTest();
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-binding-15970-"));
 Object.assign(process.env, {
@@ -23,9 +27,15 @@ const nodes = await import("../../src/lib/db/providers/nodes.ts");
 const connections = await import("../../src/lib/db/providers.ts");
 const { POST } = await import("../../src/app/api/providers/route.ts");
 const { makeManagementSessionRequest } = await import("../helpers/managementSession.ts");
-const fetchCalls: string[] = [];
+const { waitForConnectionFollowUps } =
+  await import("../../src/lib/providers/connectionFollowUps.ts");
+// POST starts credential probes in the background after returning 201. A probe
+// from a previous test must not be attributed to a later rejected POST.
+const requestFetchCalls = new AsyncLocalStorage<string[]>();
+const fetchCallsByResponse = new WeakMap<Response, string[]>();
+const fetchCallsByPost: string[][] = [];
 globalThis.fetch = async (input) => {
-  fetchCalls.push(String(input instanceof Request ? input.url : input));
+  requestFetchCalls.getStore()?.push(String(input instanceof Request ? input.url : input));
   return Response.json({ data: [], models: [] });
 };
 
@@ -33,7 +43,27 @@ test.beforeEach(() => {
   core.resetDbInstance();
   fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(dataDir, { recursive: true });
-  fetchCalls.length = 0;
+  fetchCallsByPost.length = 0;
+});
+test.afterEach(async (t) => {
+  const created = await connections.getProviderConnections();
+  for (const connection of created) {
+    // POST starts inactive and validates in the background. Its DNS lookup can
+    // outlive post()'s observation window, so do not reset the next test's fetch
+    // counter or database until this connection's validation has activated it.
+    // Unsupported probes (the Cloudflare fixture) also activate only on completion.
+    await t.waitFor(
+      async () => {
+        const validated = await connections.getProviderConnectionById(String(connection.id));
+        assert.equal(validated?.isActive, true, "background credential validation must finish");
+      },
+      { timeout: 5000, interval: 10 }
+    );
+  }
+  if (created.length > 0) {
+    const fetchCount = fetchCallsByPost.reduce((total, calls) => total + calls.length, 0);
+    assert.equal(fetchCount, created.length, "each created connection must be probed once");
+  }
 });
 test.after(async () => {
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
@@ -57,29 +87,41 @@ async function makeNode(type = "openai-compatible-chat") {
 }
 
 async function post(provider: string, providerSpecificData?: Record<string, unknown>, extra = {}) {
-  const result = await POST(
-    await makeManagementSessionRequest("http://localhost/api/providers", {
-      method: "POST",
-      headers: { "X-Skip-Model-Sync": "true" },
-      body: {
-        provider,
-        name: "Binding fixture",
-        apiKey: "sk-fixture-only-15970",
-        ...(providerSpecificData ? { providerSpecificData } : {}),
-        ...extra,
-      },
-    })
+  const calls: string[] = [];
+  fetchCallsByPost.push(calls);
+  const result = await requestFetchCalls.run(calls, async () =>
+    POST(
+      await makeManagementSessionRequest("http://localhost/api/providers", {
+        method: "POST",
+        headers: { "X-Skip-Model-Sync": "true" },
+        body: {
+          provider,
+          name: "Binding fixture",
+          apiKey: "sk-fixture-only-15970",
+          ...(providerSpecificData ? { providerSpecificData } : {}),
+          ...extra,
+        },
+      })
+    )
   );
+  fetchCallsByResponse.set(result, calls);
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
   return result;
 }
 
 async function assertRejected(result: Response, reason = /conflict/i) {
+  // Anything the request started in the background has run, so every upstream call it made is
+  // already recorded below (and an earlier test's follow-ups settled before this test began).
+  assert.equal(await waitForConnectionFollowUps(10_000), true);
   const body = JSON.stringify(await result.json());
   assert.equal(result.status, 400, body);
   assert.match(body, reason);
   assert.equal((await connections.getProviderConnections()).length, 0);
-  assert.equal(fetchCalls.length, 0, "conflict must not start credential validation upstream");
+  assert.equal(
+    fetchCallsByResponse.get(result)?.length,
+    0,
+    "conflict must not start credential validation upstream"
+  );
   assert.doesNotMatch(body, /sk-fixture|first\.invalid|second\.invalid|at \//);
 }
 
@@ -93,6 +135,24 @@ for (const type of [
     await assertRejected(await post(type, { baseUrl: "https://second.invalid/v1" }));
   });
 }
+
+test("a prior request's delayed probe does not count toward a rejected create", async () => {
+  await makeNode();
+  const earlierCalls: string[] = [];
+  const delayedProbe = new Promise<void>((resolve, reject) => {
+    requestFetchCalls.run(earlierCalls, () => {
+      setTimeout(() => {
+        void fetch("https://first.invalid/v1/models").then(() => resolve(), reject);
+      }, 5);
+    });
+  });
+  const rejected = await post("openai-compatible-chat", {
+    baseUrl: "https://second.invalid/v1",
+  });
+  await delayedProbe;
+  await assertRejected(rejected);
+  assert.equal(earlierCalls.length, 1, "the earlier request's probe was observed separately");
+});
 
 test("unsupported bare Anthropic type stays invalid instead of expanding the API", async () => {
   await makeNode("anthropic-compatible");

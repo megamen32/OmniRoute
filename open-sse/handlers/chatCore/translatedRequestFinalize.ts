@@ -14,9 +14,11 @@ import { aliasMuseToolNames } from "../../executors/museToolNameAliases.ts";
 import { applyResponsesPreviousResponseIdPolicy } from "../../utils/responsesStatePolicy.ts";
 import { sanitizeKiroTools } from "../../utils/kiroSanitizer.ts";
 import { FORMATS } from "../../translator/formats.ts";
+import { enforceResponsesToolHistory } from "../../translator/helpers/responsesToolHistory.ts";
 import { normalizeClaudeToolsForDispatch } from "./claudeToolDefaults.ts";
 import { normalizeToolSchemasForProvider } from "./openrouterToolSchemas.ts";
 import { buildClaudePassthroughToolNameMap } from "./passthroughToolNames.ts";
+import { dedupeDeepSeekTools } from "./dedupeDeepSeekTools.ts";
 import {
   extractRequestToolMetadata,
   resolveResponseToolNameMap,
@@ -33,6 +35,7 @@ type KiroToolCarrier = {
   };
 };
 
+/** Finalize provider metadata and continuation policy; strict mode rejects invalid tool history. */
 export function finalizeTranslatedRequest({
   translatedBody: translatedBodyInput,
   body,
@@ -82,6 +85,11 @@ export function finalizeTranslatedRequest({
   // regex in any tool schema; drop only those constraints before dispatch.
   if (Array.isArray(translatedBody?.tools)) {
     translatedBody.tools = normalizeToolSchemasForProvider(provider, translatedBody.tools, log);
+  }
+
+  // DeepSeek 400s on a repeated tool name (any endpoint); keep the first definition.
+  if (Array.isArray(translatedBody?.tools)) {
+    translatedBody.tools = dedupeDeepSeekTools(translatedBody.tools, effectiveModel);
   }
 
   // Kiro: sanitize tool schemas before dispatch. Kiro returns 400 "Improperly
@@ -163,6 +171,13 @@ export function finalizeTranslatedRequest({
   });
   translatedBody = previousResponseIdPolicy.body as typeof translatedBody;
 
+  // Strict mode: continuation-owned outputs are valid only while the effective wire
+  // payload still carries previous_response_id. Revalidate after policy finalization so
+  // stateless dispatch cannot forward an output whose ownership was stripped.
+  if (targetFormat === FORMATS.OPENAI_RESPONSES) {
+    enforceResponsesToolHistory(translatedBody);
+  }
+
   // #1789: Prevent output_config.effort from overriding effort encoded in model name (Codex)
   if (provider === "codex" || provider?.startsWith("codex")) {
     const hasEffortSuffix = finalModelToUpstream.match(/-(low|medium|high|xhigh)$/i);
@@ -177,10 +192,12 @@ export function finalizeTranslatedRequest({
           "PARAMS",
           `Stripped output_config.effort="${oc.effort}" because model "${finalModelToUpstream}" already encodes effort`
         );
-        delete oc.effort;
-        if (Object.keys(oc).length === 0) {
-          delete translatedBody.output_config;
-        }
+        // Copy-on-write: output_config is shared with the other targets of a combo (the body is
+        // only copied one level deep), so deleting in place also removed the client's effort
+        // from the next target.
+        const { effort: _effort, ...rest } = oc;
+        if (Object.keys(rest).length === 0) delete translatedBody.output_config;
+        else translatedBody.output_config = rest;
       }
     }
   }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslations } from "next-intl";
 import { EmptyState } from "@omniroute/ui-kit/empty-state";
+import { Progress } from "@omniroute/ui-kit/progress";
 import {
   Table,
   TableBody,
@@ -11,18 +12,38 @@ import {
   TableHeader,
   TableRow,
 } from "@omniroute/ui-kit/table";
-import { Badge, Card, Button, Input } from "@/shared/components";
+import { Badge, Card, Button, Input, NumberInput, whenNumber } from "@/shared/components";
 import Icon from "@/shared/components/Icon";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import InfoTooltip from "@/shared/components/InfoTooltip";
+import Notice from "@/shared/components/Notice";
 import { compareTr, matchesSearch } from "@/shared/utils/turkishText";
 import { extractApiErrorMessage } from "@/shared/http/apiErrorMessage";
 import { useConfirmDialog } from "@/shared/hooks/useConfirmDialog";
 import { FilterSelect, HeroStat, SyncMini } from "./PricingTabHelpers";
+import {
+  fetchPricingBundle,
+  hasPricingConfiguration,
+  type PricingBundle,
+  type PricingCatalogModel,
+  type PricingCatalogProvider,
+  type PricingSource,
+  type SyncStatus,
+} from "./pricingBundle";
+import {
+  isPricingProviderConfigured,
+  modelsMatchingSearch,
+  pricingDisplayModeOptions,
+  providersForComparison,
+  type PricingDisplayMode,
+} from "./pricingTabFilters";
+import { buildModelComparison } from "./pricingCompare";
+import PricingCompareView from "./PricingCompareView";
 
 type CoverageFilter = "all" | "lt50" | "gte50lt100" | "full";
 type AuthFilter = "all" | "oauth" | "apikey" | "unknown";
 type SortKey = "modelsDesc" | "coverageDesc" | "coverageAsc" | "nameAsc";
+type ViewMode = "providers" | "compare";
 
 const INITIAL_VISIBLE = 20;
 const VISIBLE_INCREMENT = 30;
@@ -37,77 +58,13 @@ const FIELD_LABEL_KEYS: Record<(typeof PRICING_FIELDS)[number], string> = {
 };
 
 type PricingField = (typeof PRICING_FIELDS)[number];
-type PricingSource = "default" | "litellm" | "modelsDev" | "user";
 
-interface SyncStatus {
-  enabled: boolean;
-  lastSync: string | null;
-  lastSyncModelCount: number;
-  nextSync: string | null;
-  intervalMs: number;
-  sources: string[];
-}
-
-interface PricingCatalogModel {
-  id: string;
-  name: string;
-  custom?: boolean;
-}
-
-interface PricingCatalogProvider {
-  id: string;
-  alias: string;
-  authType: string;
-  format: string;
-  modelCount: number;
-  models: PricingCatalogModel[];
-  /** Original pricing namespace (e.g. public prefix) when it differs from `alias`. */
-  pricingKey?: string;
-}
-
-function getSourceTone(source: PricingSource): string {
-  switch (source) {
-    case "user":
-      return "bg-warning/15 text-warning border border-warning/25";
-    case "modelsDev":
-      return "bg-info/15 text-info border border-info/25";
-    case "litellm":
-      return "bg-success/15 text-success border border-success/25";
-    default:
-      return "bg-bg-subtle text-text-muted border border-border/40";
-  }
-}
-
-type PricingBundle = {
-  catalog?: Record<string, PricingCatalogProvider>;
-  pricing?: Record<string, Record<string, Record<string, number>>>;
-  sources?: Record<string, Record<string, PricingSource>>;
-  sync?: SyncStatus;
+// Badge variant that names where a price came from; anything else is the neutral badge.
+const SOURCE_BADGE_VARIANT: Partial<Record<PricingSource, "warning" | "info" | "success">> = {
+  user: "warning",
+  modelsDev: "info",
+  litellm: "success",
 };
-
-async function fetchPricingBundle(): Promise<PricingBundle> {
-  const [catalogRes, pricingRes, syncRes] = await Promise.all([
-    fetch("/api/pricing/models"),
-    fetch("/api/pricing?includeSources=1"),
-    fetch("/api/pricing/sync"),
-  ]);
-  const bundle: PricingBundle = {};
-  if (catalogRes.ok) {
-    bundle.catalog = (await catalogRes.json()) as Record<string, PricingCatalogProvider>;
-  }
-  if (pricingRes.ok) {
-    const pricingPayload = (await pricingRes.json()) as {
-      pricing?: Record<string, Record<string, Record<string, number>>>;
-      sourceMap?: Record<string, Record<string, PricingSource>>;
-    };
-    bundle.pricing = pricingPayload.pricing || {};
-    bundle.sources = pricingPayload.sourceMap || {};
-  }
-  if (syncRes.ok) {
-    bundle.sync = (await syncRes.json()) as SyncStatus;
-  }
-  return bundle;
-}
 
 export default function PricingTab() {
   const [catalog, setCatalog] = useState<Record<string, PricingCatalogProvider>>({});
@@ -118,6 +75,10 @@ export default function PricingTab() {
     Record<string, Record<string, PricingSource>>
   >({});
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [connectedProviderIds, setConnectedProviderIds] = useState<Set<string>>(new Set());
+  const [blockedProviders, setBlockedProviders] = useState<string[]>([]);
+  // Stays true once the Configured inputs have loaded; a later failed reload keeps them.
+  const [configurationLoaded, setConfigurationLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -126,6 +87,8 @@ export default function PricingTab() {
   const [searchQuery, setSearchQuery] = useState("");
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("all");
   const [authFilter, setAuthFilter] = useState<AuthFilter>("all");
+  const [displayMode, setDisplayMode] = useState<PricingDisplayMode>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("providers");
   const [sortKey, setSortKey] = useState<SortKey>("modelsDesc");
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [editedProviders, setEditedProviders] = useState<Set<string>>(new Set());
@@ -134,6 +97,7 @@ export default function PricingTab() {
     message: string;
   } | null>(null);
   const t = useTranslations("settings");
+  const tGlobal = useTranslations();
   const { requestConfirm, confirmDialog } = useConfirmDialog();
 
   const showStatus = useCallback((tone: "success" | "error" | "info", message: string) => {
@@ -146,6 +110,9 @@ export default function PricingTab() {
     if (bundle.pricing) setPricingData(bundle.pricing);
     if (bundle.sources) setPricingSources(bundle.sources);
     if (bundle.sync) setSyncStatus(bundle.sync);
+    if (bundle.connectedProviderIds) setConnectedProviderIds(bundle.connectedProviderIds);
+    if (bundle.blockedProviders) setBlockedProviders(bundle.blockedProviders);
+    if (hasPricingConfiguration(bundle)) setConfigurationLoaded(true);
     setLoading(false);
   }, []);
 
@@ -221,8 +188,13 @@ export default function PricingTab() {
       );
     };
 
+    const matchesDisplayMode = (p: (typeof allProviders)[number]) =>
+      displayMode === "all" ||
+      isPricingProviderConfigured(p, connectedProviderIds, blockedProviders);
+
     const filtered = allProviders.filter(
-      (p) => providerMatchesSearch(p) && matchesCoverage(p) && matchesAuth(p)
+      (p) =>
+        providerMatchesSearch(p) && matchesCoverage(p) && matchesAuth(p) && matchesDisplayMode(p)
     );
 
     // Sort
@@ -242,7 +214,41 @@ export default function PricingTab() {
         break;
     }
     return sorted;
-  }, [allProviders, searchQuery, coverageFilter, authFilter, sortKey]);
+  }, [
+    allProviders,
+    searchQuery,
+    coverageFilter,
+    authFilter,
+    displayMode,
+    connectedProviderIds,
+    blockedProviders,
+    sortKey,
+  ]);
+
+  // #18642: model-centric view — the providers the auth and Configured filters keep,
+  // grouped by model with each offer's price, cheapest first.
+  const { compareGroups, compareProviderCount } = useMemo(() => {
+    if (viewMode !== "compare") return { compareGroups: [], compareProviderCount: 0 };
+    const providers = providersForComparison(allProviders, {
+      authFilter,
+      displayMode,
+      connectedProviderIds,
+      blockedProviders,
+    });
+    return {
+      compareGroups: buildModelComparison(providers, pricingData, { searchQuery }),
+      compareProviderCount: providers.length,
+    };
+  }, [
+    viewMode,
+    allProviders,
+    authFilter,
+    displayMode,
+    connectedProviderIds,
+    blockedProviders,
+    pricingData,
+    searchQuery,
+  ]);
 
   const authCounts = useMemo(() => {
     const counts = { oauth: 0, apikey: 0, unknown: 0 };
@@ -255,13 +261,21 @@ export default function PricingTab() {
     return counts;
   }, [allProviders]);
 
+  const configuredCount = useMemo(
+    () =>
+      allProviders.filter((p) =>
+        isPricingProviderConfigured(p, connectedProviderIds, blockedProviders)
+      ).length,
+    [allProviders, connectedProviderIds, blockedProviders]
+  );
+
   const coverageGapCount = useMemo(
     () => allProviders.filter((p) => p.modelCount > 0 && p.pricedModels / p.modelCount < 1).length,
     [allProviders]
   );
 
   // Reset visible count when filters change (state adjustment during render)
-  const filtersKey = `${searchQuery}|${coverageFilter}|${authFilter}|${sortKey}`;
+  const filtersKey = `${viewMode}|${searchQuery}|${coverageFilter}|${authFilter}|${displayMode}|${sortKey}`;
   const [prevFiltersKey, setPrevFiltersKey] = useState(filtersKey);
   if (prevFiltersKey !== filtersKey) {
     setPrevFiltersKey(filtersKey);
@@ -515,7 +529,7 @@ export default function PricingTab() {
       <Card className="p-5">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
-            <h2 className="text-xl font-bold flex items-center gap-2">
+            <h2 className="ci-heading flex items-center gap-2" data-size="xl">
               <Icon name="payments" size={22} className="text-primary" />
               {t("modelPricing")}
             </h2>
@@ -530,7 +544,7 @@ export default function PricingTab() {
 
         <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-4">
           {/* Stats panel with coverage bar */}
-          <div className="rounded-lg border border-border/40 bg-bg-subtle/30 p-4">
+          <Card.Section>
             <div className="grid grid-cols-4 gap-3 mb-3">
               <HeroStat label={t("providers")} value={stats.providers} />
               <HeroStat label={t("registry")} value={stats.totalModels} />
@@ -542,30 +556,27 @@ export default function PricingTab() {
               />
             </div>
             <div>
-              <div className="flex items-center justify-between text-[11px] text-text-muted mb-1">
-                <span className="uppercase tracking-wide font-semibold">
+              <div className="flex items-center justify-between text-2xs text-text-muted mb-1">
+                <span className="ci-eyebrow" data-size="2xs" data-weight="medium">
                   {t("priced")} / {t("registry")}
                 </span>
                 <span className="tabular-nums font-semibold">{coveragePct}%</span>
               </div>
-              <div className="h-2 rounded-sm bg-border/60 overflow-hidden" aria-hidden="true">
-                <div
-                  className={`h-full transition-[width] duration-300 ${
-                    coveragePct >= 90 ? "bg-success" : coveragePct >= 60 ? "bg-warning" : "bg-error"
-                  }`}
-                  style={{ width: `${Math.min(coveragePct, 100)}%` }}
-                />
-              </div>
+              <Progress
+                aria-label={`${t("priced")} / ${t("registry")}`}
+                aria-valuetext={`${coveragePct}%`}
+                value={coveragePct}
+                tone={coveragePct >= 90 ? "success" : coveragePct >= 60 ? "warning" : "danger"}
+                animate={false}
+              />
             </div>
-          </div>
+          </Card.Section>
 
           {/* Sync panel */}
-          <div className="rounded-lg border border-border/40 bg-bg-subtle/30 p-4 flex flex-col gap-3">
+          <Card.Section className="flex flex-col gap-3">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <h3 className="text-xs font-bold uppercase tracking-wide text-text-muted">
-                  {t("pricingSyncTitle")}
-                </h3>
+                <h3 className="ci-eyebrow">{t("pricingSyncTitle")}</h3>
                 <div className="flex items-center gap-1.5 mt-1">
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
@@ -598,7 +609,7 @@ export default function PricingTab() {
                 </Button>
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-[11px]">
+            <div className="grid grid-cols-3 gap-2 text-2xs">
               <SyncMini
                 label={t("lastSync")}
                 value={formatSyncDate(syncStatus?.lastSync || null)}
@@ -612,22 +623,22 @@ export default function PricingTab() {
                 value={formatSyncDate(syncStatus?.nextSync || null)}
               />
             </div>
-          </div>
+          </Card.Section>
         </div>
       </Card>
 
       {statusMessage && (
-        <div
-          className={`px-3 py-2 rounded-lg border text-sm ${
+        <Notice
+          variant={
             statusMessage.tone === "success"
-              ? "bg-success/10 border-success/20 text-success"
+              ? "success"
               : statusMessage.tone === "error"
-                ? "bg-error/10 border-error/20 text-error"
-                : "bg-info/10 border-info/20 text-info"
-          }`}
+                ? "critical"
+                : "info"
+          }
         >
           {statusMessage.message}
-        </div>
+        </Notice>
       )}
 
       {/* Search + Filters */}
@@ -644,15 +655,38 @@ export default function PricingTab() {
           />
 
           <FilterSelect
-            label={t("pricingCoverage")}
-            value={coverageFilter}
-            onChange={(v) => setCoverageFilter(v as CoverageFilter)}
+            label={t("pricingView")}
+            value={viewMode}
+            onChange={(v) => setViewMode(v as ViewMode)}
             options={[
-              { value: "all", label: `${t("pricingAll")} (${allProviders.length})` },
-              { value: "lt50", label: "<50%" },
-              { value: "gte50lt100", label: "50–99%" },
-              { value: "full", label: "100%" },
+              { value: "providers", label: t("pricingViewByProvider") },
+              { value: "compare", label: t("pricingViewCompare") },
             ]}
+          />
+
+          {viewMode === "providers" && (
+            <FilterSelect
+              label={t("pricingCoverage")}
+              value={coverageFilter}
+              onChange={(v) => setCoverageFilter(v as CoverageFilter)}
+              options={[
+                { value: "all", label: `${t("pricingAll")} (${allProviders.length})` },
+                { value: "lt50", label: "<50%" },
+                { value: "gte50lt100", label: "50–99%" },
+                { value: "full", label: "100%" },
+              ]}
+            />
+          )}
+
+          <FilterSelect
+            label={t("providers")}
+            value={displayMode}
+            onChange={(v) => setDisplayMode(v as PricingDisplayMode)}
+            options={pricingDisplayModeOptions(
+              `${t("pricingAll")} (${allProviders.length})`,
+              `${tGlobal("providers.showConfiguredOnly")} (${configuredCount})`,
+              configurationLoaded
+            )}
           />
 
           <FilterSelect
@@ -670,33 +704,38 @@ export default function PricingTab() {
             ]}
           />
 
-          <FilterSelect
-            label={t("pricingSort")}
-            value={sortKey}
-            onChange={(v) => setSortKey(v as SortKey)}
-            options={[
-              { value: "modelsDesc", label: t("pricingMostModels") },
-              { value: "coverageDesc", label: t("pricingHighestCoverage") },
-              { value: "coverageAsc", label: t("pricingLowestCoverage") },
-              { value: "nameAsc", label: t("pricingNameAscending") },
-            ]}
-          />
+          {viewMode === "providers" && (
+            <FilterSelect
+              label={t("pricingSort")}
+              value={sortKey}
+              onChange={(v) => setSortKey(v as SortKey)}
+              options={[
+                { value: "modelsDesc", label: t("pricingMostModels") },
+                { value: "coverageDesc", label: t("pricingHighestCoverage") },
+                { value: "coverageAsc", label: t("pricingLowestCoverage") },
+                { value: "nameAsc", label: t("pricingNameAscending") },
+              ]}
+            />
+          )}
         </div>
 
         {/* Quick shortcuts */}
-        <div className="flex items-center gap-2 flex-wrap text-[11px]">
-          <Button
-            variant={coverageFilter === "lt50" ? "warning" : "outline"}
-            size="sm"
-            icon="warning"
-            aria-pressed={coverageFilter === "lt50"}
-            onClick={() => setCoverageFilter(coverageFilter === "lt50" ? "all" : "lt50")}
-          >
-            {t("pricingCoverageGaps")} ({coverageGapCount})
-          </Button>
+        <div className="flex items-center gap-2 flex-wrap text-2xs">
+          {viewMode === "providers" && (
+            <Button
+              variant={coverageFilter === "lt50" ? "warning" : "outline"}
+              size="sm"
+              icon="warning"
+              aria-pressed={coverageFilter === "lt50"}
+              onClick={() => setCoverageFilter(coverageFilter === "lt50" ? "all" : "lt50")}
+            >
+              {t("pricingCoverageGaps")} ({coverageGapCount})
+            </Button>
+          )}
           {(searchQuery ||
             coverageFilter !== "all" ||
             authFilter !== "all" ||
+            displayMode !== "all" ||
             sortKey !== "modelsDesc" ||
             selectedProvider) && (
             <Button
@@ -707,6 +746,7 @@ export default function PricingTab() {
                 setSearchQuery("");
                 setCoverageFilter("all");
                 setAuthFilter("all");
+                setDisplayMode("all");
                 setSortKey("modelsDesc");
                 setSelectedProvider(null);
               }}
@@ -714,68 +754,119 @@ export default function PricingTab() {
               {t("pricingClearFilters")}
             </Button>
           )}
-          <span className="text-text-muted ml-auto">
-            {t("pricingShowingProviders", {
-              visible: displayProviders.length,
-              total: totalFiltered,
-            })}
-            {totalFiltered !== allProviders.length &&
-              ` ${t("pricingFilteredFrom", { count: allProviders.length })}`}
-          </span>
+          <ShowingCount
+            viewMode={viewMode}
+            compareTotal={compareGroups.length}
+            visibleCount={visibleCount}
+            displayedProviders={displayProviders.length}
+            filteredProviders={totalFiltered}
+            allProviders={allProviders.length}
+          />
         </div>
       </div>
 
+      {viewMode === "compare" && (
+        <PricingCompareView
+          groups={compareGroups}
+          searchQuery={searchQuery}
+          providerCount={compareProviderCount}
+          visibleCount={visibleCount}
+          onShowMore={() => setVisibleCount((c) => c + VISIBLE_INCREMENT)}
+          showMoreIncrement={VISIBLE_INCREMENT}
+        />
+      )}
+
       {/* Provider list */}
-      <div className="flex flex-col gap-2">
-        {displayProviders.map((provider) => (
-          <ProviderSection
-            key={provider.alias}
-            provider={provider}
-            pricingData={pricingData[provider.pricingKey || provider.alias] || {}}
-            sourceMap={pricingSources[provider.pricingKey || provider.alias] || {}}
-            isExpanded={expandedProviders.has(provider.alias)}
-            isEdited={editedProviders.has(provider.pricingKey || provider.alias)}
-            onToggle={() => toggleProvider(provider.alias)}
-            onPricingChange={(model, field, value) =>
-              handlePricingChange(provider.pricingKey || provider.alias, model, field, value)
-            }
-            onSave={() => void saveProvider(provider.alias, provider.pricingKey)}
-            onReset={() => void resetProvider(provider.alias, provider.pricingKey)}
-            saving={saving}
-            getSourceLabel={getSourceLabel}
-          />
-        ))}
+      {viewMode === "providers" && (
+        <div className="flex flex-col gap-2">
+          {displayProviders.map((provider) => (
+            <ProviderSection
+              key={provider.alias}
+              provider={provider}
+              visibleModels={modelsMatchingSearch(provider, provider.models, searchQuery)}
+              pricingData={pricingData[provider.pricingKey || provider.alias] || {}}
+              sourceMap={pricingSources[provider.pricingKey || provider.alias] || {}}
+              isExpanded={expandedProviders.has(provider.alias)}
+              isEdited={editedProviders.has(provider.pricingKey || provider.alias)}
+              onToggle={() => toggleProvider(provider.alias)}
+              onPricingChange={(model, field, value) =>
+                handlePricingChange(provider.pricingKey || provider.alias, model, field, value)
+              }
+              onSave={() => void saveProvider(provider.alias, provider.pricingKey)}
+              onReset={() => void resetProvider(provider.alias, provider.pricingKey)}
+              saving={saving}
+              getSourceLabel={getSourceLabel}
+            />
+          ))}
 
-        {displayProviders.length === 0 && (
-          <EmptyState
-            compact
-            icon={<Icon name="search_off" size={24} />}
-            title={t("noProvidersMatch")}
-          />
-        )}
+          {displayProviders.length === 0 && (
+            <EmptyState
+              compact
+              icon={<Icon name="search_off" size={24} />}
+              title={t("noProvidersMatch")}
+            />
+          )}
 
-        {visibleCount < totalFiltered && (
-          <Button
-            variant="outline"
-            size="sm"
-            icon="expand_more"
-            onClick={() => setVisibleCount((c) => c + VISIBLE_INCREMENT)}
-            className="mt-2 mx-auto"
-          >
-            {t("pricingShowMoreProviders", {
-              count: Math.min(VISIBLE_INCREMENT, totalFiltered - visibleCount),
-              remaining: totalFiltered - visibleCount,
-            })}
-          </Button>
-        )}
-      </div>
+          {visibleCount < totalFiltered && (
+            <Button
+              variant="outline"
+              size="sm"
+              icon="expand_more"
+              onClick={() => setVisibleCount((c) => c + VISIBLE_INCREMENT)}
+              className="mt-2 mx-auto"
+            >
+              {t("pricingShowMoreProviders", {
+                count: Math.min(VISIBLE_INCREMENT, totalFiltered - visibleCount),
+                remaining: totalFiltered - visibleCount,
+              })}
+            </Button>
+          )}
+        </div>
+      )}
       {confirmDialog}
     </div>
   );
 }
 
+/** "Showing N of M": model cards in Compare models, providers (and the unfiltered total) otherwise. */
+function ShowingCount({
+  viewMode,
+  compareTotal,
+  visibleCount,
+  displayedProviders,
+  filteredProviders,
+  allProviders,
+}: {
+  viewMode: ViewMode;
+  compareTotal: number;
+  visibleCount: number;
+  displayedProviders: number;
+  filteredProviders: number;
+  allProviders: number;
+}) {
+  const t = useTranslations("settings");
+  if (viewMode === "compare") {
+    return (
+      <span className="text-text-muted ml-auto">
+        {t("pricingShowingProviders", {
+          visible: Math.min(visibleCount, compareTotal),
+          total: compareTotal,
+        })}
+      </span>
+    );
+  }
+  return (
+    <span className="text-text-muted ml-auto">
+      {t("pricingShowingProviders", { visible: displayedProviders, total: filteredProviders })}
+      {filteredProviders !== allProviders &&
+        ` ${t("pricingFilteredFrom", { count: allProviders })}`}
+    </span>
+  );
+}
+
 function ProviderSection({
   provider,
+  visibleModels,
   pricingData,
   sourceMap,
   isExpanded,
@@ -788,6 +879,8 @@ function ProviderSection({
   getSourceLabel,
 }: {
   provider: PricingCatalogProvider;
+  /** The provider's models narrowed to the current search. */
+  visibleModels: PricingCatalogModel[];
   pricingData: Record<string, Record<string, number>>;
   sourceMap: Record<string, PricingSource>;
   isExpanded: boolean;
@@ -826,7 +919,7 @@ function ProviderSection({
         variant="ghost"
         onClick={onToggle}
         aria-expanded={isExpanded}
-        className="h-auto w-full justify-between gap-3 rounded-none px-4 py-3 text-left font-normal"
+        className="h-auto w-full justify-between gap-3 rounded-none px-4 py-3 text-left"
       >
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <Icon
@@ -841,7 +934,7 @@ function ProviderSection({
             <span className="font-semibold text-sm truncate">
               {provider.id.charAt(0).toUpperCase() + provider.id.slice(1)}
             </span>
-            <span className="text-text-muted text-[11px] truncate">
+            <span className="text-text-muted text-2xs truncate">
               ({provider.alias.toUpperCase()})
             </span>
           </div>
@@ -858,45 +951,44 @@ function ProviderSection({
           >
             {authBadge}
           </Badge>
-          <span className="px-1.5 py-0.5 bg-bg-subtle text-text-muted text-[9px] rounded uppercase font-semibold shrink-0">
+          <Badge size="sm" className="shrink-0 uppercase">
             {provider.format}
-          </span>
+          </Badge>
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {sourceCounts.user > 0 && (
             <span
-              className="inline-flex items-center gap-1 text-[10px] font-semibold text-warning"
+              className="inline-flex items-center gap-1 text-3xs font-semibold text-warning"
               title={`${sourceCounts.user} ${getSourceLabel("user")}`}
             >
               💎 {sourceCounts.user}
             </span>
           )}
-          {isEdited && (
-            <span className="text-warning text-[11px] font-semibold">{t("unsaved")}</span>
-          )}
-          <span className="text-text-muted text-[11px] tabular-nums hidden sm:inline">
+          {isEdited && <span className="text-warning text-2xs font-semibold">{t("unsaved")}</span>}
+          <span className="text-text-muted text-2xs tabular-nums hidden sm:inline">
             {pricedCount}/{provider.modelCount}
           </span>
           {(() => {
             const pct =
               provider.modelCount > 0 ? Math.round((pricedCount / provider.modelCount) * 100) : 0;
-            const barColor = pct >= 100 ? "bg-success" : pct >= 50 ? "bg-warning" : "bg-error";
+            const barTone = pct >= 100 ? "success" : pct >= 50 ? "warning" : "danger";
             const textColor =
               pct >= 100 ? "text-success" : pct >= 50 ? "text-warning" : "text-error";
             const icon = pct >= 100 ? "✓" : pct >= 50 ? "◐" : "⚠";
             return (
               <>
-                <div
-                  className="w-20 h-1.5 bg-border/60 rounded-full overflow-hidden"
-                  aria-hidden="true"
-                >
-                  <div
-                    className={`h-full ${barColor} rounded-full transition-all`}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
+                <Progress
+                  semantics="meter"
+                  size="sm"
+                  tone={barTone}
+                  animate={false}
+                  value={pct}
+                  aria-label={`${provider.id}: ${t("withPricing")}`}
+                  aria-valuetext={`${pct}%`}
+                  className="w-20"
+                />
                 <span
-                  className={`text-[11px] font-bold tabular-nums w-10 text-right ${textColor}`}
+                  className={`text-2xs font-semibold tabular-nums w-10 text-right ${textColor}`}
                   title={`${pricedCount}/${provider.modelCount} ${t("withPricing")}`}
                 >
                   {pct}% {icon}
@@ -938,19 +1030,24 @@ function ProviderSection({
             </div>
           </div>
 
-          <Table scrollbarLabel={t("modelPricing")} className="text-sm">
+          <Table
+            scrollbarLabel={t("modelPricing")}
+            scrollLabel={t("modelPricing")}
+            variant="plain"
+            density="compact"
+          >
             <TableHeader>
               <TableRow>
                 <TableHead>{t("model")}</TableHead>
                 {PRICING_FIELDS.map((field) => (
-                  <TableHead key={field} className="w-24 text-right">
+                  <TableHead key={field} numeric className="w-24">
                     {t(FIELD_LABEL_KEYS[field])}
                   </TableHead>
                 ))}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {provider.models.map((model) => (
+              {visibleModels.map((model) => (
                 <ModelRow
                   key={model.id}
                   model={model}
@@ -986,7 +1083,7 @@ function ModelRow({
 
   return (
     <TableRow className="group">
-      <TableCell className="py-1.5">
+      <TableCell>
         <div className="flex items-center gap-2">
           <span
             className={`w-1.5 h-1.5 rounded-full ${hasPricing ? "bg-success" : "bg-text-muted/30"}`}
@@ -997,24 +1094,25 @@ function ModelRow({
               {t("custom")}
             </Badge>
           )}
-          <span className={`px-1.5 py-0.5 rounded text-[9px] ${getSourceTone(source)}`}>
+          <Badge size="sm" variant={SOURCE_BADGE_VARIANT[source] ?? "default"}>
             {getSourceLabel(source)}
-          </span>
-          <span className="text-text-muted text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
+          </Badge>
+          <span className="text-text-muted text-3xs opacity-0 group-hover:opacity-100 transition-opacity">
             {model.id}
           </span>
         </div>
       </TableCell>
       {PRICING_FIELDS.map((field) => (
-        <TableCell key={field} className="px-2 py-1.5">
-          <Input
-            type="number"
-            step="0.01"
-            min="0"
+        <TableCell key={field}>
+          <NumberInput
+            step={0.01}
+            precision={6}
+            min={0}
             aria-label={`${model.name} ${t(FIELD_LABEL_KEYS[field])}`}
             value={pricing?.[field] || 0}
-            onChange={(event) => onPricingChange(field, event.target.value)}
-            inputClassName="text-right text-xs tabular-nums"
+            onValueChange={whenNumber((value) => onPricingChange(field, String(value)))}
+            size="xs"
+            inputClassName="text-right tabular-nums"
           />
         </TableCell>
       ))}

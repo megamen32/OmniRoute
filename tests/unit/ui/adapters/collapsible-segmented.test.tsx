@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { default: Collapsible } = await import("@/shared/components/Collapsible");
 const { default: CollapsibleSection } = await import("@/shared/components/CollapsibleSection");
-const { default: SegmentedControl } = await import("@/shared/components/SegmentedControl");
+const {
+  default: SegmentedControl,
+  SegmentedPanel,
+  SegmentedTabs,
+} = await import("@/shared/components/SegmentedControl");
 
 afterEach(() => cleanup());
 
@@ -43,11 +47,12 @@ describe("Collapsible / CollapsibleSection / SegmentedControl adapters", () => {
     expect(screen.getByText("inner")).not.toBeNull();
   });
 
-  it("SegmentedControl is a tablist with aria-selected and reports onChange", () => {
+  it('SegmentedControl semantics="radio" is a radiogroup with aria-checked and reports onChange', () => {
     const onChange = vi.fn();
     render(
       <SegmentedControl
-        aria-label="View"
+        semantics="radio"
+        aria-label="Period"
         value="a"
         onChange={onChange}
         options={[
@@ -56,21 +61,121 @@ describe("Collapsible / CollapsibleSection / SegmentedControl adapters", () => {
         ]}
       />
     );
-    const tabs = screen.getAllByRole("tab");
-    expect(screen.getByRole("tablist", { name: "View" })).not.toBeNull();
-    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
-    expect(tabs[0].querySelector("svg.oi-icon")).not.toBeNull();
-    // No TabsContent is rendered, so no tab may point at a (missing) panel.
-    for (const tab of tabs) expect(tab.hasAttribute("aria-controls")).toBe(false);
-    fireEvent.click(tabs[1]);
+    const group = screen.getByRole("radiogroup", { name: "Period" });
+    const radios = screen.getAllByRole("radio");
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    // The kit SegmentedControl, not a capsule Tabs with its roles rewritten.
+    expect(group.getAttribute("data-slot")).toBe("segmented-control");
+    expect(group.className).toContain("ci-segmented");
+    expect(group.getAttribute("data-size")).toBe("default");
+    expect(group.closest(".ci-tabs")).toBeNull();
+    expect(radios[0].className).toContain("ci-segmented__item");
+    expect(radios[0].className).not.toContain("ci-tabs__trigger");
+    expect(group.contains(radios[0])).toBe(true);
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
+    expect(radios[1].getAttribute("aria-checked")).toBe("false");
+    // The icon name becomes the kit's decorative icon slot; the label stays the accessible name.
+    const icon = radios[0].querySelector(".ci-segmented__icon");
+    expect(icon?.getAttribute("aria-hidden")).toBe("true");
+    expect(icon?.querySelector("svg.oi-icon")).not.toBeNull();
+    expect(radios[1].querySelector(".ci-segmented__icon")).toBeNull();
+    expect(screen.getByRole("radio", { name: "A" })).toBe(radios[0]);
+    for (const radio of radios) {
+      expect(radio.hasAttribute("aria-selected")).toBe(false);
+      expect(radio.hasAttribute("aria-controls")).toBe(false);
+    }
+    fireEvent.click(radios[1]);
     expect(onChange).toHaveBeenCalledWith("b");
+    // The checked segment does not report itself again.
+    fireEvent.click(radios[0]);
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
-  it("SegmentedControl maps size onto the triggers and keeps the full-width phone layout", () => {
+  it("the radio arrows move the selection, wrap around, and keep one tab stop", () => {
+    function Harness() {
+      const [value, setValue] = React.useState("a");
+      return (
+        <SegmentedControl
+          semantics="radio"
+          aria-label="Density"
+          value={value}
+          onChange={setValue}
+          options={[
+            { value: "a", label: "A" },
+            { value: "b", label: "B" },
+            { value: "c", label: "C" },
+          ]}
+        />
+      );
+    }
+    render(<Harness />);
+    const radio = (name: string) => screen.getByRole("radio", { name });
+    const stops = () => screen.getAllByRole("radio").filter((item) => item.tabIndex === 0);
+
+    expect(stops()).toEqual([radio("A")]);
+    radio("A").focus();
+    fireEvent.keyDown(radio("A"), { key: "ArrowRight" });
+    expect(radio("B").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(radio("B"));
+    expect(stops()).toEqual([radio("B")]);
+    fireEvent.keyDown(radio("B"), { key: "ArrowDown" });
+    expect(radio("C").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio("C"), { key: "ArrowRight" });
+    expect(radio("A").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio("A"), { key: "ArrowLeft" });
+    expect(radio("C").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio("C"), { key: "ArrowUp" });
+    expect(radio("B").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio("B"), { key: "Home" });
+    expect(radio("A").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio("A"), { key: "End" });
+    expect(radio("C").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("leaves modified arrows to the browser (Alt+Left is history back)", () => {
+    const onChange = vi.fn();
     render(
       <SegmentedControl
-        aria-label="Density"
-        size="sm"
+        semantics="radio"
+        aria-label="Range"
+        value="b"
+        onChange={onChange}
+        options={[
+          { value: "a", label: "A" },
+          { value: "b", label: "B" },
+        ]}
+      />
+    );
+    const checked = screen.getByRole("radio", { name: "B" });
+    for (const modifier of ["altKey", "ctrlKey", "metaKey"] as const) {
+      const notCancelled = fireEvent.keyDown(checked, { key: "ArrowLeft", [modifier]: true });
+      expect(notCancelled).toBe(true);
+    }
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("a radio group with no matching value stays reachable from the keyboard", () => {
+    render(
+      <SegmentedControl
+        semantics="radio"
+        aria-label="Scope"
+        value="missing"
+        options={[
+          { value: "a", label: "A" },
+          { value: "b", label: "B" },
+        ]}
+      />
+    );
+    const radios = screen.getAllByRole("radio");
+    expect(radios.map((item) => item.tabIndex)).toEqual([0, -1]);
+  });
+
+  it("the selected radio carries the kit selected state, with no weight class of its own", () => {
+    render(
+      <SegmentedControl
+        semantics="radio"
+        aria-label="Weight"
         value="a"
         options={[
           { value: "a", label: "A" },
@@ -78,16 +183,149 @@ describe("Collapsible / CollapsibleSection / SegmentedControl adapters", () => {
         ]}
       />
     );
+    const [checked, unchecked] = screen.getAllByRole("radio");
+    // The kit styles the checked segment (surface and semibold) from these two attributes.
+    expect(checked.getAttribute("data-active")).toBe("true");
+    expect(unchecked.hasAttribute("data-active")).toBe(false);
+    expect(checked.className).not.toContain("font-semibold");
+    expect(unchecked.className).not.toContain("font-semibold");
+  });
+
+  it('SegmentedControl semantics="tabs" drives real panels through SegmentedTabs', () => {
+    function Harness() {
+      const [value, setValue] = React.useState("a");
+      return (
+        <SegmentedTabs value={value} onChange={setValue}>
+          <div data-testid="elsewhere">
+            <SegmentedControl
+              semantics="tabs"
+              aria-label="Sections"
+              options={[
+                { value: "a", label: "A" },
+                { value: "b", label: "B" },
+              ]}
+            />
+          </div>
+          <SegmentedPanel value="a">first panel</SegmentedPanel>
+          <SegmentedPanel value="b">second panel</SegmentedPanel>
+        </SegmentedTabs>
+      );
+    }
+    render(<Harness />);
+    expect(screen.getByRole("tablist", { name: "Sections" })).not.toBeNull();
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    const [first, second] = screen.getAllByRole("tab");
+    expect(first.getAttribute("aria-selected")).toBe("true");
+
+    const panel = screen.getByRole("tabpanel");
+    expect(panel.textContent).toBe("first panel");
+    expect(first.getAttribute("aria-controls")).toBe(panel.id);
+    expect(panel.getAttribute("aria-labelledby")).toBe(first.id);
+
+    fireEvent.click(second);
+    expect(screen.getByRole("tabpanel").textContent).toBe("second panel");
+    expect(screen.queryByText("first panel")).toBeNull();
+    expect(second.getAttribute("aria-controls")).toBe(screen.getByRole("tabpanel").id);
+  });
+
+  it("a shared panel follows the selected tab", () => {
+    render(
+      <SegmentedTabs value="b">
+        <SegmentedControl
+          semantics="tabs"
+          aria-label="Modality"
+          options={[
+            { value: "a", label: "A" },
+            { value: "b", label: "B" },
+          ]}
+        />
+        <SegmentedPanel value="b">shared form</SegmentedPanel>
+      </SegmentedTabs>
+    );
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(
+      screen.getByRole("tab", { name: "B" }).id
+    );
+  });
+
+  it("radio semantics forward size to the kit and keep the full-width phone layout on the root", () => {
+    const options = [
+      { value: "a", label: "A" },
+      { value: "b", label: "B" },
+    ];
+    const { rerender } = render(
+      <SegmentedControl
+        semantics="radio"
+        aria-label="Density"
+        size="sm"
+        value="a"
+        options={options}
+      />
+    );
+    const group = () => screen.getByRole("radiogroup", { name: "Density" });
+    // Kit `sm`: 24px segments with 12px text, the same as `Tabs size="sm"`.
+    expect(group().getAttribute("data-size")).toBe("sm");
+    // Phones: the capsule takes the line and the kit lets the segments share it. From `sm` up it
+    // hugs its segments (the kit default). A set too long for the line scrolls inside the capsule
+    // (#18068) — the kit does both, so no layout class is left on the list or the segments.
+    expect(group().className).toContain("max-sm:w-full");
+    expect(group().className).not.toMatch(/(^|\s)flex-wrap(\s|$)/);
+    for (const item of screen.getAllByRole("radio")) {
+      expect(item.className).toBe("ci-segmented__item");
+    }
+    rerender(
+      <SegmentedControl
+        semantics="radio"
+        aria-label="Density"
+        size="md"
+        value="a"
+        options={options}
+      />
+    );
+    expect(group().getAttribute("data-size")).toBe("default");
+    rerender(
+      <SegmentedControl
+        semantics="radio"
+        aria-label="Density"
+        className="mb-3 w-full"
+        value="a"
+        options={options}
+      />
+    );
+    // A caller width wins at every breakpoint; other classes land on the same root.
+    expect(group().className).toContain("mb-3");
+    expect(group().className).toMatch(/(^|\s)w-full(\s|$)/);
+  });
+
+  it("tabs semantics map size onto the triggers and keep the full-width phone layout", () => {
+    render(
+      <SegmentedTabs value="a">
+        <SegmentedControl
+          semantics="tabs"
+          aria-label="Density"
+          size="sm"
+          options={[
+            { value: "a", label: "A" },
+            { value: "b", label: "B" },
+          ]}
+        />
+      </SegmentedTabs>
+    );
     const list = screen.getByRole("tablist", { name: "Density" });
     expect(list.className).toContain("w-full");
     expect(list.className).toContain("sm:w-auto");
     expect(list.className).toContain("[&>*]:flex-1");
     expect(list.className).toContain("sm:[&>*]:flex-none");
-    for (const tab of screen.getAllByRole("tab")) {
-      expect(tab.className).toContain("h-7");
-      // The kit capsule trigger has a ~30px min-height that would beat h-7 alone.
-      expect(tab.className).toContain("min-h-7");
-      expect(tab.className).toContain("text-xs");
+    // #18068: at 390 px a long set (Endpoint: APIs/MCP/A2A/Context Sources) wrapped the capsule
+    // onto two lines. It stays one line and scrolls sideways instead.
+    expect(list.className).not.toMatch(/(^|\s)flex-wrap(\s|$)/);
+    expect(list.className).toContain("flex-nowrap");
+    expect(list.className).toContain("overflow-x-auto");
+    for (const item of screen.getAllByRole("tab")) {
+      // 24px, the kit `sm` segment: the tab set and the radio set stay the same height.
+      expect(item.className).toContain("h-6");
+      // The kit capsule trigger has a ~30px min-height that would beat h-6 alone.
+      expect(item.className).toContain("min-h-6");
+      expect(item.className).toContain("text-xs");
     }
   });
 

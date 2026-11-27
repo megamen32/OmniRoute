@@ -1,5 +1,6 @@
 "use client";
 
+import Card from "@/shared/components/Card";
 import { Input } from "@/shared/components";
 import { getProviderConnectionFamilyIds } from "@/shared/constants/providers";
 import { providerText, type ProviderMessageTranslator } from "../../providerPageHelpers";
@@ -25,7 +26,47 @@ type QuotaScrapingFieldsProps = {
   editMode?: boolean;
 };
 
-export default function QuotaScrapingFields({
+export default function QuotaScrapingFields(props: QuotaScrapingFieldsProps) {
+  if (props.provider === "zed-hosted") return <ZedHostedBillingPortalField {...props} />;
+  return <ConsoleSessionQuotaFields {...props} />;
+}
+
+/** Zed Hosted is OAuth-only; its one quota input is the optional Orb billing portal link. */
+function ZedHostedBillingPortalField({
+  values,
+  onChange,
+  t,
+  editMode = false,
+}: QuotaScrapingFieldsProps) {
+  return (
+    <Card.Section className="flex flex-col gap-3">
+      <Input
+        label={providerText(
+          t,
+          "zedHostedBillingPortalUrlLabel",
+          "Zed Hosted billing portal link (optional)"
+        )}
+        name="billingPortalUrl"
+        type="password"
+        value={values.billingPortalUrl ?? ""}
+        onChange={(e) => onChange({ billingPortalUrl: e.target.value })}
+        placeholder="https://portal.withorb.com/view?token=..."
+        hint={providerText(
+          t,
+          "zedHostedBillingPortalUrlHint",
+          (editMode ? "Leave blank to keep the stored link. " : "") +
+            "Optional. Copy the Orb billing portal link from Zed's billing page. " +
+            "Once set, switch Provider Limits to the Full or Compact layout to see the remaining USD credit."
+        )}
+        autoComplete="off"
+        spellCheck={false}
+        autoCapitalize="off"
+      />
+    </Card.Section>
+  );
+}
+
+function ConsoleSessionQuotaFields({
   provider,
   values,
   onChange,
@@ -34,7 +75,7 @@ export default function QuotaScrapingFields({
 }: QuotaScrapingFieldsProps) {
   if (provider === "ollama-cloud") {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-subtle p-4">
+      <Card.Section className="flex flex-col gap-3">
         <Input
           label={providerText(t, "ollamaCloudUsageCookieLabel", "Ollama Cloud usage cookie")}
           name="ollamaCloudUsageCookie"
@@ -53,13 +94,13 @@ export default function QuotaScrapingFields({
           spellCheck={false}
           autoCapitalize="off"
         />
-      </div>
+      </Card.Section>
     );
   }
 
   if (getProviderConnectionFamilyIds("alibaba").includes(provider)) {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-subtle p-4">
+      <Card.Section className="flex flex-col gap-3">
         <Input
           label={providerText(
             t,
@@ -102,13 +143,13 @@ export default function QuotaScrapingFields({
           spellCheck={false}
           autoCapitalize="off"
         />
-      </div>
+      </Card.Section>
     );
   }
 
   if (QWEN_TOKEN_PLAN_PROVIDERS.has(provider ?? "")) {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-subtle p-4">
+      <Card.Section className="flex flex-col gap-3">
         <Input
           label={providerText(t, "qwenCloudCookieLabel", "Qwen / Model Studio console cookie")}
           name="qwenCloudCookie"
@@ -147,13 +188,13 @@ export default function QuotaScrapingFields({
           spellCheck={false}
           autoCapitalize="off"
         />
-      </div>
+      </Card.Section>
     );
   }
 
   if (VOLCENGINE_PLAN_PROVIDERS.has(provider ?? "")) {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-subtle p-4">
+      <Card.Section className="flex flex-col gap-3">
         <Input
           label={providerText(t, "volcConsoleCookieLabel", "Volcano Engine console cookie")}
           name="volcConsoleCookie"
@@ -175,13 +216,13 @@ export default function QuotaScrapingFields({
           spellCheck={false}
           autoCapitalize="off"
         />
-      </div>
+      </Card.Section>
     );
   }
 
   if (XIAOMI_MIMO_PROVIDERS.has(provider ?? "")) {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-subtle p-4">
+      <Card.Section className="flex flex-col gap-3">
         <Input
           label={providerText(t, "xiaomiMimoConsoleCookieLabel", "Xiaomi MiMo console cookie")}
           name="xiaomiMimoConsoleCookie"
@@ -204,7 +245,7 @@ export default function QuotaScrapingFields({
           spellCheck={false}
           autoCapitalize="off"
         />
-      </div>
+      </Card.Section>
     );
   }
 

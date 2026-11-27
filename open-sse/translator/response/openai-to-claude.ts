@@ -1,5 +1,7 @@
 import { extractXmlInvokeBlocks } from "../helpers/xmlToolCalls.ts";
 import { register } from "../registry.ts";
+import { mergeCacheCreationFields } from "../../utils/cacheWriteUsage.ts";
+import { usableTokenCounter } from "../../utils/usageEvidence.ts";
 import { FORMATS } from "../formats.ts";
 import { CLAUDE_OAUTH_TOOL_PREFIX } from "../request/openai-to-claude.ts";
 import {
@@ -18,6 +20,7 @@ import { restoreDeclaredToolName } from "../../services/declaredToolCasing.ts";
 import { sanitizeToolId } from "../helpers/schemaCoercion.ts";
 import { splitMarkdownBoundary } from "../helpers/markdownBoundary.ts";
 import { hasDsmlToolCalls, parseDsmlToolCalls } from "../../utils/dsmlToolCalls.ts";
+import { needsDotsParsing, parseDotsToolCalls } from "../../utils/dotsToolCalls.ts";
 import {
   createDirectivePreambleStripper,
   createSystemPreambleStripper,
@@ -208,7 +211,7 @@ function resolveToolCallKey(state, tc, incomingName: string): number {
   return fresh;
 }
 
-function createToolCallEntry(tc, incomingName: string) {
+function createToolCallEntry(tc, incomingName: string, schemas?) {
   return {
     // An id-less call still needs an addressable tool_use id (sanitizeToolId
     // mints a random one); a real id arriving before the block opens wins.
@@ -219,7 +222,9 @@ function createToolCallEntry(tc, incomingName: string) {
     blockIndex: undefined,
     // Shimmed tools buffer their raw args and emit a single corrected
     // input_json_delta at content_block_stop time (see finish handler).
-    shimmed: incomingName ? hasToolCallShim(incomingName) : false,
+    shimmed: incomingName
+      ? hasToolCallShim(incomingName, findToolCallSchema(incomingName, schemas))
+      : false,
     argBuffer: "",
     startEmitted: false,
     // Arguments arrived before any id/name: hold them until the call is known.
@@ -227,7 +232,7 @@ function createToolCallEntry(tc, incomingName: string) {
   };
 }
 
-function adoptToolCallIdentity(toolInfo, tc, incomingName: string): void {
+function adoptToolCallIdentity(toolInfo, tc, incomingName: string, schemas?): void {
   if (tc.id && !toolInfo.startEmitted && (toolInfo.syntheticId || !toolInfo.id)) {
     toolInfo.id = sanitizeToolId(tc.id);
     toolInfo.upstreamId = tc.id;
@@ -235,7 +240,7 @@ function adoptToolCallIdentity(toolInfo, tc, incomingName: string): void {
   }
   if (incomingName && !toolInfo.startEmitted && !toolInfo.name) {
     toolInfo.name = incomingName;
-    toolInfo.shimmed = hasToolCallShim(incomingName);
+    toolInfo.shimmed = hasToolCallShim(incomingName, findToolCallSchema(incomingName, schemas));
   }
   if (tc.id || incomingName) toolInfo.awaitingIdentity = false;
 }
@@ -313,7 +318,11 @@ function readUsageCounters(usage) {
   return {
     promptTokens: firstNumber(usage.prompt_tokens, usage.input_tokens),
     outputTokens: firstNumber(usage.completion_tokens, usage.output_tokens),
-    cacheReadTokens: firstNumber(promptDetails?.cached_tokens ?? inputDetails?.cached_tokens),
+    reportedCacheReadTokens: [
+      promptDetails?.cached_tokens,
+      inputDetails?.cached_tokens,
+      usage.cache_read_input_tokens,
+    ].find(usableTokenCounter),
     cacheCreateTokens: firstNumber(
       promptDetails?.cache_creation_tokens ?? inputDetails?.cache_creation_tokens
     ),
@@ -333,7 +342,7 @@ function trackUsageFromChunk(chunk, state) {
   const {
     promptTokens,
     outputTokens,
-    cacheReadTokens,
+    reportedCacheReadTokens,
     cacheCreateTokens,
     writeInPrompt,
     reasoningTokens,
@@ -342,17 +351,18 @@ function trackUsageFromChunk(chunk, state) {
   // #2215 reports cache creation outside prompt_tokens.
   const inputTokens = Math.max(
     0,
-    promptTokens - cacheReadTokens - (writeInPrompt ? cacheCreateTokens : 0)
+    promptTokens - (reportedCacheReadTokens ?? 0) - (writeInPrompt ? cacheCreateTokens : 0)
   );
 
   state.usage = {
+    ...mergeCacheCreationFields(state.usage, chunk.usage),
     input_tokens: inputTokens,
     output_tokens: outputTokens,
   };
 
-  // Add cache_read_input_tokens if present
-  if (cacheReadTokens > 0) {
-    state.usage.cache_read_input_tokens = cacheReadTokens;
+  // A reported zero is evidence of no cached input, not an unknown count.
+  if (reportedCacheReadTokens !== undefined) {
+    state.usage.cache_read_input_tokens = reportedCacheReadTokens;
   }
 
   // Add cache_creation_input_tokens if present
@@ -376,6 +386,34 @@ function toClaudeClientUsage(usage) {
   const clientUsage = { ...usage };
   delete clientUsage.reasoning_tokens;
   return clientUsage;
+}
+
+type PendingToolCall = { id: string; name: string; args: Record<string, string> };
+
+/**
+ * Pull Dots Studio `<dots_function_call>` blocks out of a text delta, carrying an
+ * unfinished block across chunks in `state._dotsHoldback`.
+ */
+function extractDotsToolCalls(
+  state: { _dotsHoldback?: string; clientTools?: unknown },
+  text: string
+): { content: string; toolCalls: PendingToolCall[] } {
+  const pending = state._dotsHoldback;
+  state._dotsHoldback = undefined;
+  const input = pending ? pending + text : text;
+  if (!needsDotsParsing(input)) return { content: input, toolCalls: [] };
+  const result = parseDotsToolCalls(input, {
+    tools: Array.isArray(state.clientTools) ? state.clientTools : [],
+  });
+  if (result.holdback) state._dotsHoldback = result.holdback;
+  return {
+    content: result.content,
+    toolCalls: result.toolCalls.map((tc) => ({
+      id: tc.id,
+      name: tc.function.name,
+      args: JSON.parse(tc.function.arguments) as Record<string, string>,
+    })),
+  };
 }
 
 // Convert OpenAI stream chunk to Claude format
@@ -428,6 +466,7 @@ export function openaiToClaudeResponse(chunk, state) {
     state._pendingXmlToolCalls = [];
     state._dsmlHoldback = undefined;
     state._xmlInvokeBuffer = "";
+    state._dotsHoldback = undefined;
     state._markdownBuffer = "";
     state._markdownCodeSpanRun = 0;
     state._markdownTrailingBackslash = false;
@@ -492,7 +531,7 @@ export function openaiToClaudeResponse(chunk, state) {
         results.push({
           type: "content_block_start",
           index: state.thinkingBlockIndex,
-          content_block: { type: "thinking", thinking: "" },
+          content_block: { type: "thinking", thinking: "", signature: "" },
         });
       }
 
@@ -606,18 +645,24 @@ export function openaiToClaudeResponse(chunk, state) {
         }));
       }
 
+      // Dots Studio <dots_function_call> markup
+      const { content: dotsContent, toolCalls: dotsToolCalls } = extractDotsToolCalls(
+        state,
+        dsmlContent
+      );
+
       // Check for XML <invoke> blocks that some models emit instead of JSON tool_calls
       const { cleaned, toolCalls: xmlToolCalls } = extractXmlInvokeBlocks(
-        bufferedPrefix + dsmlContent,
+        bufferedPrefix + dotsContent,
         state
       );
 
-      // Accumulate extracted tool calls for emission at finish. DSML and XML
+      // Accumulate extracted tool calls for emission at finish. DSML, Dots, and XML
       // invoke tool calls share the same pending queue and finish emission.
-      if (xmlToolCalls.length > 0 || dsmlToolCalls.length > 0) {
+      if (xmlToolCalls.length > 0 || dsmlToolCalls.length > 0 || dotsToolCalls.length > 0) {
         // Close any ongoing text block before tool calls
         stopTextBlock(state, results);
-        state._pendingXmlToolCalls.push(...xmlToolCalls, ...dsmlToolCalls);
+        state._pendingXmlToolCalls.push(...xmlToolCalls, ...dsmlToolCalls, ...dotsToolCalls);
       }
 
       // Defer any trailing incomplete Markdown boundary token to the next chunk.
@@ -685,13 +730,13 @@ export function openaiToClaudeResponse(chunk, state) {
       // patch a content_block_start after it is emitted, so content_block_start
       // is DEFERRED until the name arrives (#2077 / decolua/9router#2077).
       if (!state.toolCalls.has(idx) && (tc.id || incomingName || tc.function?.arguments)) {
-        state.toolCalls.set(idx, createToolCallEntry(tc, incomingName));
+        state.toolCalls.set(idx, createToolCallEntry(tc, incomingName, state.toolSchemas));
       }
 
       const toolInfo = state.toolCalls.get(idx);
       if (toolInfo) {
         // Capture a late-arriving id or name (streamed after the initial chunk).
-        adoptToolCallIdentity(toolInfo, tc, incomingName);
+        adoptToolCallIdentity(toolInfo, tc, incomingName, state.toolSchemas);
         if (!toolInfo.awaitingIdentity) ensureToolBlockIndex(state, toolInfo, results);
 
         // Emit content_block_start once we have a name. If arguments arrive before
@@ -711,8 +756,14 @@ export function openaiToClaudeResponse(chunk, state) {
           // Always buffer the raw stream so shimmed tools can re-emit a
           // corrected JSON at stop time.
           const existingArgs = toolInfo.argBuffer || "";
-          const nextArgs = appendToolCallArgumentDelta(existingArgs, tc.function.arguments);
-          let deltaStr = nextArgs.slice(existingArgs.length);
+          const incomingArgs = tc.function.arguments;
+          const nextArgs = appendToolCallArgumentDelta(existingArgs, incomingArgs, state);
+          // The new bytes are the tail of the short incoming fragment. Slicing the grown
+          // buffer would flatten it, and each slice would then pin the whole old prefix.
+          let deltaStr =
+            typeof incomingArgs === "string"
+              ? incomingArgs.slice(incomingArgs.length - (nextArgs.length - existingArgs.length))
+              : nextArgs.slice(existingArgs.length);
           toolInfo.argBuffer = nextArgs;
 
           if (!toolInfo.startEmitted || toolInfo.shimmed || !deltaStr) {
@@ -764,15 +815,17 @@ export function openaiToClaudeResponse(chunk, state) {
     // dropped the held text silently — for a single-chunk response whose block
     // never closes, that is the ENTIRE answer replaced by an empty message.
     // Release whatever is still held before the terminal blocks are emitted.
-    // The same goes for an unclosed <invoke>/<tool_call> tag and the DSML holdback:
+    // The same goes for an unclosed <invoke>/<tool_call> tag and the DSML/Dots holdback:
     // no further chunk can complete them, so they were prose and must reach the client.
     const flushedPreamble =
       (state._directiveStripper?.flush?.() ?? "") +
       (state._systemPreambleStripper?.flush?.() ?? "") +
       (state._xmlInvokeBuffer ?? "") +
-      (state._dsmlHoldback ?? "");
+      (state._dsmlHoldback ?? "") +
+      (state._dotsHoldback ?? "");
     state._xmlInvokeBuffer = "";
     state._dsmlHoldback = undefined;
+    state._dotsHoldback = undefined;
     if (flushedPreamble) {
       if (!state.textBlockStarted || state.textBlockClosed) {
         state.textBlockIndex = state.nextBlockIndex++;

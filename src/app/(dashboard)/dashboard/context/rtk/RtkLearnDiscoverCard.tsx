@@ -94,7 +94,9 @@ export default function RtkLearnDiscoverCard() {
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
         {/* ── Discover ─────────────────────────────────────────────── */}
         <div>
-          <h3 className="text-xs font-medium text-text-main">{t("discoverHeading")}</h3>
+          <h3 className="ci-heading" data-size="xs">
+            {t("discoverHeading")}
+          </h3>
           <Button
             variant="outline"
             size="sm"
@@ -108,17 +110,17 @@ export default function RtkLearnDiscoverCard() {
 
           {candidates !== null && (
             <div className="mt-3" data-testid="rtk-discover-results">
-              <p className="text-[11px] text-text-muted">
+              <p className="text-xs text-text-muted">
                 {t("discoverSamples", { count: discoverCount })}
               </p>
               {candidates.length === 0 ? (
-                <p className="mt-1 text-[11px] text-text-muted">{t("discoverEmpty")}</p>
+                <p className="mt-1 text-xs text-text-muted">{t("discoverEmpty")}</p>
               ) : (
                 <ul className="mt-2 flex flex-col gap-1">
                   {candidates.slice(0, 20).map((candidate, index) => (
                     <li
                       key={`${candidate.pattern}-${index}`}
-                      className="flex items-start justify-between gap-2 text-[11px]"
+                      className="flex items-start justify-between gap-2 text-2xs"
                     >
                       <code className="min-w-0 truncate text-text-main">{candidate.pattern}</code>
                       <span className="shrink-0 text-text-muted">
@@ -134,7 +136,9 @@ export default function RtkLearnDiscoverCard() {
 
         {/* ── Learn ────────────────────────────────────────────────── */}
         <div>
-          <h3 className="text-xs font-medium text-text-main">{t("learnHeading")}</h3>
+          <h3 className="ci-heading" data-size="xs">
+            {t("learnHeading")}
+          </h3>
           <div className="mt-2 flex gap-2">
             <Input
               type="text"
@@ -158,13 +162,13 @@ export default function RtkLearnDiscoverCard() {
           </div>
 
           {suggested === null ? (
-            <p className="mt-3 text-[11px] text-text-muted">{t("learnEmpty")}</p>
+            <p className="mt-3 text-xs text-text-muted">{t("learnEmpty")}</p>
           ) : (
             <div className="mt-3" data-testid="rtk-learn-results">
-              <p className="text-[11px] text-text-muted">
+              <p className="text-xs text-text-muted">
                 {t("learnSamplesUsed", { count: learnCount })}
               </p>
-              <pre className="mt-2 max-h-48 overflow-auto rounded bg-bg-subtle p-2 text-[10px] text-text-main">
+              <pre className="mt-2 max-h-48 overflow-auto rounded bg-bg-subtle p-2 text-xs text-text-main">
                 {JSON.stringify(suggested, null, 2)}
               </pre>
             </div>

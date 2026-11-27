@@ -43,6 +43,7 @@ export const USAGE_SUPPORTED_PROVIDERS: readonly string[] = [
   "minimax",
   "minimax-cn",
   "crof",
+  "mistral",
   "clinepass",
   "nanogpt",
   "nan",
@@ -104,6 +105,9 @@ export const USAGE_SUPPORTED_PROVIDERS: readonly string[] = [
   "tokenrouter",
   // Kilo Code personal USD balance (GET /api/profile/balance, existing OAuth token)
   "kilocode",
+  // MegaBrain plan session + weekly limits (GET /api/profile/limits, OAuth token or mb-v1 key)
+  "megabrain",
+  "mb",
   // OpenRouter key limits + account credits (GET /api/v1/key + /api/v1/credits)
   "openrouter",
   // Muse Code has no live quota endpoint; its fetcher surfaces persisted subscription metadata.
@@ -119,4 +123,8 @@ export const USAGE_SUPPORTED_PROVIDERS: readonly string[] = [
   "cpl",
   // Cloudflare Workers AI daily neurons vs the 10k/day free allocation (needs Analytics: Read)
   "cloudflare-ai",
+  // xKiro daily free-token quota (GET /v1/usage → free_tokens; wallet ignored)
+  "xkiro",
+  // Zed Hosted Models USD credit (optional Orb billing portal link)
+  "zed-hosted",
 ];

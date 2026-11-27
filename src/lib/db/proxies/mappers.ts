@@ -28,6 +28,7 @@ export function mapProxyRow(row: unknown): ProxyRegistryRecord {
     source: typeof r.source === "string" ? r.source : "manual",
     family: typeof r.family === "string" ? r.family : "auto",
     subscriptionId: typeof r.subscription_id === "string" ? r.subscription_id : null,
+    rotatingEgress: Number(r.rotating_egress) === 1,
     createdAt: typeof r.created_at === "string" ? r.created_at : "",
     updatedAt: typeof r.updated_at === "string" ? r.updated_at : "",
   };
@@ -138,6 +139,7 @@ export function toRegistryProxyResolution(row: unknown, level: ProxyScope, level
   const relayAuth = isRelayProxyType(record.type) ? extractRelayAuth(record.notes) : undefined;
   return {
     proxy: {
+      ...(typeof record.id === "string" ? { proxyId: record.id } : {}),
       type: record.type,
       host: record.host,
       port: record.port,

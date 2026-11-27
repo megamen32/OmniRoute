@@ -22,10 +22,15 @@ const CURATED_MODEL_ONLY_PROVIDERS = new Set<string>([
   // The clean-room browser integration exposes only model/effort routes
   // observed in the first-party picker. It has no upstream model-list API.
   "chatgpt-web",
-  // CodeBuddy Intl has no verified live model-catalog endpoint; CN discovers
-  // its authenticated, account-specific roster from /v3/config.
-  "codebuddy-intl",
 ]);
+
+// CodeBuddy Intl is deliberately NOT curated-only: it exposes an authenticated
+// `GET /v3/config` catalog that is merged into the curated list at runtime
+// (open-sse/executors/codebuddy-intl/catalog.ts + catalogFetch.ts), so the
+// registry list is a fallback rather than the complete lineup. CodeBuddy CN
+// used to be curated-only, but #17916 gave it authenticated live discovery
+// against /v3/config, so it is now an exclusive-synced provider instead
+// (see providerUsesExclusiveSyncedListing below).
 
 export function providerUsesCuratedModelsOnly(providerId: string): boolean {
   return CURATED_MODEL_ONLY_PROVIDERS.has(providerId.trim().toLowerCase());
@@ -49,13 +54,28 @@ export function isDiscoveryImportedCustomSource(source: unknown): boolean {
  * static registry for dashboard / `/v1/models` / Test All listing. Static rows
  * remain offline fallback only when synced is empty.
  *
- * Cursor, Codex, and CodeBuddy CN inventories are account-specific.
+ * Cursor, Codex, CodeBuddy CN, and ChatGPT inventories are account-specific.
  * Partial-discovery providers retain coverage-style preservation (e.g.
  * command-code uncovered static ids).
  */
 export function providerUsesExclusiveSyncedListing(providerId: string): boolean {
   const id = providerId.trim().toLowerCase();
-  return id === "cursor" || id === "cu" || id === "codex" || id === "cx" || id === "codebuddy-cn";
+  return (
+    providerIsCursor(id) ||
+    id === "codex" ||
+    id === "cx" ||
+    id === "codebuddy-cn" ||
+    id === "chatgpt"
+  );
+}
+
+/**
+ * Cursor-specific listing behavior (`owned_by: "cursor"` + synthetic `auto*`
+ * router rows). Exclusive-listing providers other than Cursor must not inherit it.
+ */
+export function providerIsCursor(providerId: string): boolean {
+  const id = providerId.trim().toLowerCase();
+  return id === "cursor" || id === "cu";
 }
 
 /**

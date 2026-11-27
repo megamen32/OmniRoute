@@ -33,6 +33,7 @@ import KiloPassMeter from "./KiloPassMeter";
 import QuotaCardSpeed from "./QuotaCardSpeed";
 import { hasCodexPaidCredits, type CodexPaidCredits } from "@/lib/providers/codexPaidCredits";
 import AntigravityQuotaGroups, { resolveAntigravityQuotaGroups } from "../AntigravityQuotaGroups";
+import CursorModelUsageTable from "../CursorModelUsageTable";
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: "$",
@@ -58,7 +59,7 @@ function ProviderBillingDetails({ billing }: { billing: ProviderBillingStatus })
       );
 
   return (
-    <div className="flex flex-col gap-1.5 border-t border-border/40 pt-2 text-[11px] text-text-main">
+    <div className="flex flex-col gap-1.5 border-t border-border/40 pt-2 text-2xs text-text-main">
       {rows.map((row) =>
         row.kind === "link" ? (
           <a
@@ -166,6 +167,10 @@ interface Props {
   onShowQuota?: (quota: any) => void;
   /** Read-time decode-speed stats from the usage API (`speed` payload). */
   speed?: unknown;
+  /** Shared card clock (epoch ms) driving every "Resets in" countdown. */
+  now?: number;
+  /** Cursor only: per-model tokens + billed cost rows (`raw.modelUsage`); absent → no table. */
+  cursorModelUsage?: unknown;
 }
 
 function QuotaDetailRow({
@@ -174,6 +179,7 @@ function QuotaDetailRow({
   onHideQuota,
   onOpenResetCredits,
   loadingResetCredits = false,
+  now,
 }: {
   q: any;
   /** Collapsed Kilo Pass display row; present only on kilocode provider cards. */
@@ -181,6 +187,8 @@ function QuotaDetailRow({
   onHideQuota?: (quota: any) => void;
   onOpenResetCredits?: () => void;
   loadingResetCredits?: boolean;
+  /** Shared card clock (epoch ms) so the countdown recomputes on ticks and refreshes. */
+  now?: number;
 }) {
   const t = useTranslations("usage");
   const canHide = typeof onHideQuota === "function" && !q.isCredits && !q.isResetCredits;
@@ -215,14 +223,14 @@ function QuotaDetailRow({
         </span>
         <Button
           variant="ghost"
-          size="sm"
+          size="2xs"
           disabled={!onOpenResetCredits || loadingResetCredits}
           onClick={(event) => {
             event.stopPropagation();
             onOpenResetCredits?.();
           }}
           aria-label={translateUsageOrFallback(t, "viewResetCredits", "View reset credits")}
-          className="h-6 min-h-6 shrink-0 gap-1 px-1.5 text-[12px] font-bold leading-none tabular-nums"
+          className="shrink-0 tabular-nums"
           style={{ color: colors.text }}
         >
           {loadingResetCredits && <Spinner decorative size="xs" />}
@@ -253,7 +261,7 @@ function QuotaDetailRow({
           </span>
         </span>
         <span
-          className="inline-flex h-6 shrink-0 items-center text-[12px] font-bold leading-none tabular-nums"
+          className="inline-flex h-6 shrink-0 items-center text-[12px] font-semibold leading-none tabular-nums"
           style={{ color: colors.text }}
         >
           {sym}
@@ -266,7 +274,7 @@ function QuotaDetailRow({
   const pctRaw = getQuotaRemainingPercentage(q);
   const pct = Math.round(pctRaw);
   const colors = getBarColor(pct);
-  const cd = formatCountdown(q.resetAt);
+  const cd = formatCountdown(q.resetAt, now);
   const label = q.displayName || formatQuotaLabel(q.name);
   const usedNum = Number(q.used || 0);
   const totalNum = Number(q.total || 0);
@@ -277,7 +285,7 @@ function QuotaDetailRow({
       <div className="flex items-center justify-between gap-2">
         <span className="text-[12px] font-medium text-text-main truncate">{label}</span>
         <span
-          className="text-[12px] font-bold tabular-nums shrink-0"
+          className="text-[12px] font-semibold tabular-nums shrink-0"
           style={{ color: colors.text }}
         >
           {q.unlimited ? "∞" : translateUsageOrFallback(t, "percentLeft", `${pct}% left`, { pct })}
@@ -285,12 +293,13 @@ function QuotaDetailRow({
         {canHide && (
           <Button
             variant="ghost"
-            size="icon-sm"
+            size="icon-2xs"
+            tone="muted"
             onClick={(e) => {
               e.stopPropagation();
               onHideQuota?.(q);
             }}
-            className="size-5 min-h-5 shrink-0 text-text-muted"
+            className="shrink-0"
             title={translateUsageOrFallback(t, "hideQuotaRow", "Hide this quota row")}
             aria-label={translateUsageOrFallback(t, "hideQuotaRow", "Hide this quota row")}
           >
@@ -298,8 +307,8 @@ function QuotaDetailRow({
           </Button>
         )}
       </div>
-      {!q.unlimited && <QuotaMiniBar percent={pct} size="sm" />}
-      <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted tabular-nums">
+      {!q.unlimited && <QuotaMiniBar percent={pct} label={label} size="sm" />}
+      <div className="flex items-center justify-between gap-2 text-3xs text-text-muted tabular-nums">
         <span>
           {showUsage ? (
             <>
@@ -350,6 +359,8 @@ export default function QuotaCardExpanded({
   onHideQuota,
   onShowQuota,
   speed,
+  cursorModelUsage,
+  now,
 }: Props) {
   const t = useTranslations("usage");
   const tr = (key: string, fallback: string, values?: UsageTranslationValues) =>
@@ -402,12 +413,12 @@ export default function QuotaCardExpanded({
   return (
     <div className="border-t border-border bg-bg-subtle/30 px-3 py-2.5 flex flex-col gap-1.5">
       {shouldShowLoadingPlaceholder(loading, sortedQuotas.length + zcodeGroups.length, message) ? (
-        <div role="status" className="text-[11px] text-text-muted flex items-center gap-1.5">
+        <div role="status" className="text-2xs text-text-muted flex items-center gap-1.5">
           <Spinner decorative size="xs" />
           {t("loadingQuotas")}
         </div>
       ) : error ? (
-        <div className="text-[11px] text-error flex items-start gap-1.5">
+        <div className="text-2xs text-error flex items-start gap-1.5">
           <Icon name="error" size={13} />
           <span>{error}</span>
         </div>
@@ -454,13 +465,13 @@ export default function QuotaCardExpanded({
         </div>
       ) : (providerId === "antigravity" || providerId === "agy") &&
         resolvedAntigravityGroups.length > 0 ? (
-        <AntigravityQuotaGroups groups={resolvedAntigravityGroups} />
+        <AntigravityQuotaGroups groups={resolvedAntigravityGroups} now={now} />
       ) : quotas.length === 0 && message ? (
-        <div className="text-[11px] text-text-muted italic" title={message}>
+        <div className="text-2xs text-text-muted italic" title={message}>
           {message}
         </div>
       ) : quotas.length === 0 ? (
-        <div className="text-[11px] text-text-muted italic">{t("noQuotaData")}</div>
+        <div className="text-2xs text-text-muted italic">{t("noQuotaData")}</div>
       ) : (
         <div className="flex flex-col divide-y divide-border/40">
           {visibleQuotas.map((q, i) => (
@@ -471,6 +482,7 @@ export default function QuotaCardExpanded({
               onHideQuota={onHideQuota}
               onOpenResetCredits={q.isResetCredits ? onOpenResetCredits : undefined}
               loadingResetCredits={loadingResetCredits}
+              now={now}
             />
           ))}
         </div>
@@ -480,7 +492,7 @@ export default function QuotaCardExpanded({
         <ProviderBillingDetails billing={billing} />
       )}
       {providerId === "codex" && paidCredits && (
-        <div className="flex justify-between gap-2 border-t border-border/40 pt-2 text-[11px] text-text-main">
+        <div className="flex justify-between gap-2 border-t border-border/40 pt-2 text-2xs text-text-main">
           <span>{t("codexPaidCreditsLabel")}</span>
           <span className="font-semibold">
             {paidCredits.overageLimitReached || !hasCodexPaidCredits(paidCredits)
@@ -494,22 +506,23 @@ export default function QuotaCardExpanded({
         </div>
       )}
 
+      {providerId === "cursor" && !error && <CursorModelUsageTable rows={cursorModelUsage} />}
+
       {!error && <QuotaCardSpeed speed={speed} />}
 
       {hiddenQuotaRows.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 border-t border-border/40 pt-1.5 text-[10px] text-text-muted">
+        <div className="flex flex-wrap items-center gap-1 border-t border-border/40 pt-1.5 text-3xs text-text-muted">
           <Icon name="visibility_off" size={12} />
           <span>{tr("hiddenQuotaRowsLabel", "Hidden:")}</span>
           {hiddenQuotaRows.map((q) => (
             <Button
               key={getQuotaVisibilityKey(q)}
               variant="outline"
-              size="sm"
+              size="2xs"
               onClick={(e) => {
                 e.stopPropagation();
                 onShowQuota?.(q);
               }}
-              className="h-auto min-h-0 px-1.5 py-0.5 text-[10px] font-normal"
               title={translateUsageOrFallback(t, "showQuotaRow", "Show this quota row")}
             >
               {q.displayName || formatQuotaLabel(q.name)}
@@ -527,7 +540,7 @@ export default function QuotaCardExpanded({
             e.stopPropagation();
             setExpanded((prev) => !prev);
           }}
-          className="h-7 min-h-7 gap-1 px-2 text-[11px]"
+          className="h-7 min-h-7 gap-1 px-2 text-2xs"
         >
           <Icon name={expanded ? "expand_less" : "expand_more"} size={12} />
           {expanded
@@ -537,10 +550,10 @@ export default function QuotaCardExpanded({
       )}
 
       <div className="min-w-0 space-y-1.5 pt-1.5 border-t border-border/40">
-        <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center justify-end gap-2">
           {refreshedLabel && (
             <span
-              className={`text-[10px] tabular-nums ${
+              className={`mr-auto text-3xs tabular-nums ${
                 hasStaleData ? "text-warning" : "text-text-muted"
               }`}
               title={
@@ -562,7 +575,7 @@ export default function QuotaCardExpanded({
               e.stopPropagation();
               onRefresh();
             }}
-            className="ml-auto inline-flex size-7 shrink-0 min-h-7"
+            className="inline-flex size-7 shrink-0 min-h-7"
           >
             {loading ? <Spinner decorative size="xs" /> : <Icon name="refresh" size={12} />}
           </Button>
@@ -577,7 +590,7 @@ export default function QuotaCardExpanded({
                 e.stopPropagation();
                 onOpenResetCredits?.();
               }}
-              className="h-auto min-h-0 min-w-0 gap-1 whitespace-normal break-words border-primary/40 px-1.5 py-1.5 text-[11px] text-primary"
+              className="h-auto min-h-0 min-w-0 gap-1 whitespace-normal break-words border-primary/40 px-1.5 py-1.5 text-2xs text-primary"
             >
               {redeemingResetCredit || loadingResetCredits ? (
                 <Spinner decorative size="xs" />
@@ -595,7 +608,7 @@ export default function QuotaCardExpanded({
               e.stopPropagation();
               onOpenCutoff();
             }}
-            className={`h-auto min-h-0 min-w-0 gap-1 whitespace-normal break-words px-1.5 py-1.5 text-[11px] ${
+            className={`h-auto min-h-0 min-w-0 gap-1 whitespace-normal break-words px-1.5 py-1.5 text-2xs ${
               hasCutoffOverrides ? "border-primary/40 text-primary" : ""
             }`}
           >
@@ -609,7 +622,7 @@ export default function QuotaCardExpanded({
               e.stopPropagation();
               onOpenCost();
             }}
-            className="h-auto min-h-0 min-w-0 gap-1 whitespace-normal break-words px-1.5 py-1.5 text-[11px]"
+            className="h-auto min-h-0 min-w-0 gap-1 whitespace-normal break-words px-1.5 py-1.5 text-2xs"
           >
             <Icon name="bar_chart" size={12} />
             <span className="min-w-0">{t("usdCost")}</span>

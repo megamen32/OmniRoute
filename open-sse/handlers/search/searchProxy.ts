@@ -10,12 +10,14 @@
 
 import { saveCallLog } from "@/lib/usageDb";
 import { sanitizeErrorMessage } from "../../utils/error.ts";
+import { readResponseTextWithinCap } from "../../utils/responseBodyCap.ts";
 import { formatSearchProviderFailure } from "./providerFailure.ts";
 import { fetchWithCheckedRedirects, isRegistryEndpoint } from "./redirectGuard.ts";
+import type { SearchUrlGuard } from "./baseUrl.ts";
 import { HTTP_STATUS } from "../../config/constants.ts";
 import { lockBorrowedSearchKey } from "./borrowedKeyLock.ts";
 import { filterSearchResults } from "./resultFilters.ts";
-import { isSubscriptionQuotaText } from "../../services/quotaTextCooldowns.ts";
+import { isSubscriptionQuotaForStatus } from "../../services/quotaTextCooldowns.ts";
 import type { SearchProviderConfig } from "../../config/searchRegistry.ts";
 import type { SearchResult } from "../search.ts";
 import {
@@ -25,6 +27,13 @@ import {
   resolveSearchUsage,
   type SearchUsage,
 } from "./reportedCost.ts";
+
+export function saveSearchCallLog(entry: Record<string, unknown>): Promise<void> {
+  return saveCallLog(entry);
+}
+
+/** A search page is small (SearXNG about 1 MiB); a larger body is a fault or an attack. */
+const SEARCH_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 export const SEARCH_COOLDOWN_STATUSES = new Set([
   HTTP_STATUS.PAYMENT_REQUIRED,
@@ -45,7 +54,23 @@ export function shouldCoolDownSearchConnection(status: number, errorText: string
   if (SEARCH_COOLDOWN_STATUSES.has(status)) return true;
   const lower = errorText.toLowerCase();
   if (SEARCH_CREDIT_EXHAUSTION_PHRASES.some((phrase) => lower.includes(phrase))) return true;
-  return isSubscriptionQuotaText(lower);
+  // A 400 can quote the caller's query back: plan/usage-limit wording counts on 400
+  // only with a structured quota code (same status contract as LLM fallback).
+  return isSubscriptionQuotaForStatus(status, null, errorText);
+}
+
+/** Post-dispatch state cleanup shared by JSON and SSE search providers. */
+export async function clearSearchConnectionError(connectionId?: string, providerId?: string): Promise<void> {
+  if (!connectionId) return;
+  try {
+    const current = await readConnection(connectionId);
+    if (current && (!providerId || current.provider === providerId)) {
+      const { clearAccountError } = await import("@/sse/services/auth.ts");
+      await clearAccountError(connectionId, current as never);
+    }
+  } catch {
+    /* non-critical - clearing stale error state must not break the search response */
+  }
 }
 
 /** Resolved proxy binding for a single provider attempt. */
@@ -182,6 +207,8 @@ export interface ExecuteProviderFetchParams {
   config: SearchProviderConfig;
   url: string;
   init: RequestInit;
+  /** `public-only` when the base URL came from the caller (searchBaseUrlGuard). */
+  guard?: SearchUrlGuard;
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
   query: string;
@@ -205,6 +232,12 @@ export interface ExecuteProviderFetchParams {
     query: string,
     searchType: string
   ) => { results: SearchResult[]; totalResults: number | null };
+}
+
+/** The connection-row read in this file (post-dispatch state, never credential selection). */
+async function readConnection(connectionId: string) {
+  const { getProviderConnectionById } = await import("@/lib/db/providers");
+  return getProviderConnectionById(connectionId);
 }
 
 /**
@@ -252,24 +285,28 @@ export async function executeProviderFetch(
         { ...init, signal: controller.signal },
         config.id,
         // The fixed registry origin keeps the pooled dispatcher on the first hop.
-        !isRegistryEndpoint(url, config.baseUrl)
+        !isRegistryEndpoint(url, config.baseUrl),
+        { guard: p.guard }
       )
     );
-    clearTimeout(timer);
-
+    // The timer also bounds the body read; the catch below clears it on failure.
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await readResponseTextWithinCap(response, SEARCH_MAX_BODY_BYTES);
+      clearTimeout(timer);
       if (log) {
         log.error("SEARCH", `${config.id} error ${response.status}: ${errorText.slice(0, 200)}`);
       }
       if (connectionId && shouldCoolDownSearchConnection(response.status, errorText)) {
         try {
-          const { getProviderConnectionById } = await import("@/lib/db/providers");
-          const owner = await getProviderConnectionById(connectionId);
+          // A search provider can borrow a chat key (SEARCH_CREDENTIAL_FALLBACKS). A search
+          // failure says nothing about that key's chat health, so only the provider's own
+          // connections get the connection-wide cooldown.
+          const owner = await readConnection(connectionId);
           if (owner?.provider === config.id) {
             const { markAccountUnavailable } = await import("@/sse/services/auth.ts");
             await markAccountUnavailable(connectionId, response.status, errorText, config.id, null);
           } else {
+            // Search-scoped lock: the chat model lock map, a model only search asks for.
             lockBorrowedSearchKey(config.id, owner?.provider, connectionId, response.status);
           }
         } catch {
@@ -292,7 +329,8 @@ export async function executeProviderFetch(
       };
     }
 
-    const data = await response.json();
+    const data = JSON.parse(await readResponseTextWithinCap(response, SEARCH_MAX_BODY_BYTES));
+    clearTimeout(timer);
     const normalized = normalize(config.id, data, query, searchType);
     const filteredResults = filterSearchResults(
       normalized.results,
@@ -316,18 +354,7 @@ export async function executeProviderFetch(
     // any recorded error (stale failed test, elapsed cooldown) so the dashboard
     // stops painting a serving connection red. clearAccountError() is a no-op
     // when the row is already clean.
-    if (connectionId) {
-      try {
-        const { getProviderConnectionById } = await import("@/lib/db/providers");
-        const current = await getProviderConnectionById(connectionId);
-        if (current?.provider === config.id) {
-          const { clearAccountError } = await import("@/sse/services/auth.ts");
-          await clearAccountError(connectionId, current as never);
-        }
-      } catch {
-        /* non-critical - clearing stale error state must not break the search response */
-      }
-    }
+    await clearSearchConnectionError(connectionId, config.id);
 
     return {
       success: true,

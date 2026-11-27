@@ -5,6 +5,7 @@ import Button from "@/shared/components/Button";
 import Icon from "@/shared/components/Icon";
 import ConnectionTestButton from "@/shared/components/ConnectionTestButton";
 import Badge from "@/shared/components/Badge";
+import { ChatGptPlanBadge } from "@/shared/components/ChatGptPlanUi";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { pickDisplayValue } from "@/shared/utils/maskEmail";
 import { readCookieExpiresAt } from "@/shared/utils/webCookieExpiry";
@@ -32,7 +33,12 @@ interface Props {
   /** True while the active-state PUT is in flight. */
   togglingActive: boolean;
   onTestSent?: () => void;
+  /** Shared card clock (epoch ms) for the token-expiry countdown. */
+  now?: number;
 }
+
+/** Ink of the active toggle at rest: muted while the quota is active (an inactive one is error ink). */
+const toggleTone = (isActive: boolean) => (isActive ? ("muted" as const) : undefined);
 
 export default function QuotaCardHeader({
   connection,
@@ -45,6 +51,7 @@ export default function QuotaCardHeader({
   onToggleActive,
   togglingActive,
   onTestSent,
+  now,
 }: Props) {
   const t = useTranslations("usage");
   const isActive = connection.isActive ?? true;
@@ -68,7 +75,7 @@ export default function QuotaCardHeader({
       : readCookieExpiresAt(connection.providerSpecificData);
   const tokenExpiryMs = tokenExpiryIso ? new Date(tokenExpiryIso).getTime() : NaN;
   const hasTokenExpiry = Number.isFinite(tokenExpiryMs);
-  const tokenCountdown = hasTokenExpiry ? formatCountdown(tokenExpiryIso) : null;
+  const tokenCountdown = hasTokenExpiry ? formatCountdown(tokenExpiryIso, now) : null;
   const tokenExpiryLabel = !hasTokenExpiry
     ? null
     : tokenCountdown
@@ -92,37 +99,48 @@ export default function QuotaCardHeader({
           <ProviderIcon providerId={connection.provider} size={24} type="color" />
         </div>
         <div className="flex min-w-0 flex-1 flex-col justify-center">
-          <div className="flex h-4 min-w-0 items-center gap-1.5">
+          <div
+            className={`flex min-w-0 items-center gap-1.5 ${connection.provider === "chatgpt" ? "min-h-4 flex-wrap" : "h-4"}`}
+          >
             <span
               className="truncate text-[12px] font-semibold leading-4 text-text-main"
               title={providerLabel}
             >
               {providerLabel}
             </span>
-            <span
-              className="inline-flex h-4 shrink-0 items-center"
-              title={
-                resolvedPlan
-                  ? t("rawPlanWithValue", { plan: resolvedPlan })
-                  : t("noPlanFromProvider")
-              }
-            >
-              <Badge variant={tierMeta.variant} size="sm" dot className="h-4 px-1.5 py-0 leading-4">
-                {tierMeta.label}
-              </Badge>
-            </span>
+            {connection.provider === "chatgpt" ? (
+              <ChatGptPlanBadge scopes={connection.providerSpecificData?.scopes} />
+            ) : (
+              <span
+                className="inline-flex h-4 shrink-0 items-center"
+                title={
+                  resolvedPlan
+                    ? t("rawPlanWithValue", { plan: resolvedPlan })
+                    : t("noPlanFromProvider")
+                }
+              >
+                <Badge
+                  variant={tierMeta.variant}
+                  size="sm"
+                  dot
+                  className="h-4 px-1.5 py-0 leading-4"
+                >
+                  {tierMeta.label}
+                </Badge>
+              </span>
+            )}
             {hasStaleData && (
               <span className="shrink-0 leading-4 text-warning" title={t("staleQuotaTooltip")}>
                 <Icon name="schedule" size={12} ariaLabel={t("staleQuotaTooltip")} />
               </span>
             )}
           </div>
-          <span className="text-[11px] text-text-muted truncate" title={accountName ?? ""}>
+          <span className="text-2xs text-text-muted truncate" title={accountName ?? ""}>
             {accountName}
           </span>
           {tokenExpiryLabel && (
             <span
-              className={`text-[10px] whitespace-normal [overflow-wrap:anywhere] leading-[1.4] ${tokenCountdown ? "text-info" : "text-error"}`}
+              className={`text-3xs whitespace-normal [overflow-wrap:anywhere] leading-[1.4] ${tokenCountdown ? "text-info" : "text-error"}`}
               title={tokenExpiryTitle}
             >
               {tokenExpiryLabel}
@@ -139,7 +157,8 @@ export default function QuotaCardHeader({
         />
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon-2xs"
+          tone={toggleTone(isActive)}
           disabled={togglingActive}
           onClick={(e) => {
             e.stopPropagation();
@@ -148,7 +167,7 @@ export default function QuotaCardHeader({
           }}
           title={toggleActiveLabel}
           aria-label={toggleActiveLabel}
-          className={`size-6 min-h-6 ${isActive ? "text-text-muted" : "text-error"}`}
+          className={isActive ? undefined : "text-error"}
         >
           <Icon name={isActive ? "toggle_on" : "toggle_off"} size={14} />
         </Button>

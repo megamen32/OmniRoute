@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 
 const retryAfterJson = await import("../../open-sse/services/retryAfterJson.ts");
 const accountFallback = await import("../../open-sse/services/accountFallback.ts");
+const { buildSubscriptionQuotaFallback } =
+  await import("../../open-sse/services/quotaTextCooldowns.ts");
 const { parseDetailedRetryHintFromJsonBody, parseRetryHintFromJsonBody } = retryAfterJson;
 const { lockExactModel, isModelLocked, getModelLockoutInfo, evictModelLockoutOverflow } =
   accountFallback;
@@ -98,6 +100,217 @@ test("non-authoritative hint still never shortens an existing lock (old behavior
     60 * 1000,
     { failureCount: 2, lastFailureAt: Date.now() },
     { authoritativeReset: false }
+  );
+  const info = getModelLockoutInfo(provider, connection, model);
+  assert.ok(info!.remainingMs > 55 * 60 * 1000, "long lock must be preserved");
+  accountFallback.clearModelLock(provider, connection, model);
+});
+
+// ── CodeRabbit review follow-up (PR #19027) ──────────────────────────────────
+
+const REVIEW_PROFILE_DISABLED = {
+  baseCooldownMs: 125,
+  useUpstreamRetryHints: false,
+  maxCooldownMs: 60000,
+  maxBackoffSteps: 3,
+  failureThreshold: 60,
+  resetTimeoutMs: 5000,
+  transientCooldown: 125,
+  rateLimitCooldown: 125,
+  maxBackoffLevel: 3,
+  circuitBreakerThreshold: 60,
+  circuitBreakerReset: 5000,
+  providerFailureThreshold: 5,
+  providerFailureWindowMs: 300000,
+  providerCooldownMs: 60000,
+};
+
+const REVIEW_PROFILE_ENABLED = {
+  ...REVIEW_PROFILE_DISABLED,
+  useUpstreamRetryHints: true,
+};
+
+test("subscription-quota fallback preserves the upstream hint provenance", () => {
+  const sub = buildSubscriptionQuotaFallback(
+    "You've reached your usage limit",
+    () => ({ retryAfterMs: 900_000, provenance: "header" }),
+    () => null
+  );
+  assert.ok(sub, "expected a subscription-quota fallback");
+  assert.equal(sub.usedUpstreamRetryHint, true);
+  assert.equal(sub.retryHintSource, "header", "applied hint provenance must reach callers");
+  assert.equal(sub.cooldownMs, 900_000);
+
+  const local = buildSubscriptionQuotaFallback(
+    "You've reached your usage limit",
+    () => null,
+    () => null
+  );
+  assert.ok(local);
+  assert.equal(local.usedUpstreamRetryHint, false);
+  assert.equal(local.retryHintSource, undefined, "a locally scaled cooldown carries no provenance");
+});
+
+test("a per-model 402 with subscription-quota text + structured body carries authoritative provenance", async () => {
+  const body = JSON.stringify({
+    error: {
+      message: "You've reached your plan's set usage limit",
+      retry_after: 3095,
+      reset_at: new Date(Date.now() + 3_095_000).toISOString(),
+    },
+  });
+  const { checkFallbackError } = accountFallback;
+  const result = checkFallbackError(
+    402,
+    body,
+    0,
+    "test-model",
+    "routerai-review",
+    null,
+    REVIEW_PROFILE_ENABLED
+  );
+  assert.ok(result.shouldFallback, "expected a fallback verdict");
+  assert.equal(result.usedUpstreamRetryHint, true, "the structured hint was applied");
+  assert.equal(
+    accountFallback.isAuthoritativeRetryHintSource(result.retryHintSource),
+    true,
+    `expected an authoritative provenance, got ${result.retryHintSource}`
+  );
+});
+
+routerai_review_disabled: {
+  const body = JSON.stringify({
+    error: {
+      message: "You've reached your plan's set usage limit",
+      retry_after: 3095,
+      reset_at: new Date(Date.now() + 3_095_000).toISOString(),
+    },
+  });
+  const { checkFallbackError } = accountFallback;
+
+  test("with hints disabled the quota verdict stays locally scaled (never an applied hint)", () => {
+    const result = checkFallbackError(
+      402,
+      body,
+      0,
+      "test-model",
+      "routerai-review",
+      null,
+      REVIEW_PROFILE_DISABLED
+    );
+    assert.ok(result.shouldFallback, "expected a fallback verdict");
+    // The auth.ts per-model 402/403 branch shortens a stale lock ONLY when
+    // usedUpstreamRetryHint === true AND the source is authoritative. With hints
+    // disabled the cooldown is the locally scaled one, so the guard must be false
+    // even though the body itself carries a structured hint that was not applied.
+    assert.notEqual(
+      result.usedUpstreamRetryHint,
+      true,
+      `usedUpstreamRetryHint=${result.usedUpstreamRetryHint}, source=${result.retryHintSource}`
+    );
+    const qualifiesAsAuthoritative =
+      result.usedUpstreamRetryHint === true &&
+      accountFallback.isAuthoritativeRetryHintSource(result.retryHintSource);
+    assert.equal(
+      qualifiesAsAuthoritative,
+      false,
+      "a locally scaled cooldown must not qualify as an authoritative upstream hint"
+    );
+  });
+}
+
+test("subscription-quota import surface: buildSubscriptionQuotaFallback re-exported type stays aligned", async () => {
+  const mod = await import("../../open-sse/services/quotaTextCooldowns.ts");
+  assert.equal(typeof mod.buildSubscriptionQuotaFallback, "function");
+  // Shorten-order guarantee stays intact at the lock layer: a provenance-only
+  // local result must not flip the authoritative flag (regression pin for the
+  // auth.ts guard: provenance without an applied hint is not enough).
+  const withLocalOnly = mod.buildSubscriptionQuotaFallback(
+    "You've reached your usage limit",
+    () => null,
+    () => 999_999
+  );
+  assert.ok(withLocalOnly);
+  assert.notEqual(withLocalOnly.usedUpstreamRetryHint, true);
+});
+
+// The quota-family lock layer (lockModel, reached through recordModelLockoutFailure
+// for per-model 402/403/429) must honor the same authoritative-shorten contract as
+// the exact layer above — auth.ts passes the flag through this entry point.
+test("recordModelLockoutFailure: authoritativeBodyReset shortens a longer quota-family lock", () => {
+  evictModelLockoutOverflow();
+  const provider = "routerai-family";
+  const connection = "conn-family";
+  const model = "family-model";
+  const options = { scope: "quota_family" as const };
+
+  accountFallback.recordModelLockoutFailure(
+    provider,
+    connection,
+    model,
+    "credits",
+    402,
+    1000,
+    null,
+    {
+      ...options,
+      exactCooldownMs: 24 * 60 * 60 * 1000,
+    }
+  );
+  assert.ok(getModelLockoutInfo(provider, connection, model)!.remainingMs > 23 * 60 * 60 * 1000);
+
+  accountFallback.recordModelLockoutFailure(
+    provider,
+    connection,
+    model,
+    "credits",
+    402,
+    1000,
+    null,
+    {
+      ...options,
+      exactCooldownMs: 5 * 60 * 1000,
+      authoritativeBodyReset: true,
+    }
+  );
+  const after = getModelLockoutInfo(provider, connection, model);
+  assert.ok(after, "lock must survive shortening");
+  assert.ok(after!.remainingMs < 6 * 60 * 1000, `expected ~5m, got ${after!.remainingMs}`);
+  accountFallback.clearModelLock(provider, connection, model);
+});
+
+test("recordModelLockoutFailure: without authoritativeBodyReset a shorter hint keeps the longer quota-family lock", () => {
+  evictModelLockoutOverflow();
+  const provider = "routerai-family-keep";
+  const connection = "conn-family-keep";
+  const model = "family-model";
+  const options = { scope: "quota_family" as const };
+
+  accountFallback.recordModelLockoutFailure(
+    provider,
+    connection,
+    model,
+    "credits",
+    402,
+    1000,
+    null,
+    {
+      ...options,
+      exactCooldownMs: 60 * 60 * 1000,
+    }
+  );
+  accountFallback.recordModelLockoutFailure(
+    provider,
+    connection,
+    model,
+    "credits",
+    402,
+    1000,
+    null,
+    {
+      ...options,
+      exactCooldownMs: 60 * 1000,
+    }
   );
   const info = getModelLockoutInfo(provider, connection, model);
   assert.ok(info!.remainingMs > 55 * 60 * 1000, "long lock must be preserved");

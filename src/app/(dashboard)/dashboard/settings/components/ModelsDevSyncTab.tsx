@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { Slider } from "@omniroute/ui-kit/slider";
 import { Button, Card, Toggle } from "@/shared/components";
 import Icon from "@/shared/components/Icon";
+import IconChip from "@/shared/components/IconChip";
 
 interface ModelsDevStatus {
   enabled: boolean;
@@ -65,6 +66,12 @@ function snapPosition(pos: number): number {
 function formatInterval(hours: number): string {
   return hours === 168 ? "7d" : `${hours}h`;
 }
+
+// One kit slider mark per checkpoint position (0..3), labelled 1h / 6h / 24h / 7d.
+const INTERVAL_MARKS = INTERVAL_CHECKPOINTS.map((hours, position) => ({
+  value: position,
+  label: formatInterval(hours),
+}));
 
 async function fetchSyncStatusData(): Promise<ModelsDevStatus | null> {
   try {
@@ -217,11 +224,13 @@ export default function ModelsDevSyncTab() {
     return (
       <Card>
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-bg-subtle text-text-muted">
+          <IconChip>
             <Icon name="sync" size={20} />
-          </div>
+          </IconChip>
           <div>
-            <h3 className="text-lg font-semibold">{t("modelsDevTitle")}</h3>
+            <h3 className="ci-heading" data-size="lg">
+              {t("modelsDevTitle")}
+            </h3>
             <p className="text-sm text-text-muted">{t("modelsDevDesc")}</p>
           </div>
         </div>
@@ -248,11 +257,13 @@ export default function ModelsDevSyncTab() {
       {/* Main sync card */}
       <Card>
         <div className="flex items-center gap-3 mb-5">
-          <div className="p-2 rounded-lg bg-bg-subtle text-text-muted">
+          <IconChip>
             <Icon name="database" size={20} />
-          </div>
+          </IconChip>
           <div>
-            <h3 className="text-lg font-semibold">{t("modelsDevTitle")}</h3>
+            <h3 className="ci-heading" data-size="lg">
+              {t("modelsDevTitle")}
+            </h3>
             <p className="text-sm text-text-muted">{t("modelsDevDesc")}</p>
           </div>
           {feedback && (
@@ -268,7 +279,7 @@ export default function ModelsDevSyncTab() {
         </div>
 
         {/* Enable toggle */}
-        <div className="flex items-center justify-between p-4 rounded-lg bg-surface/30 border border-border/30 mb-4">
+        <Card.Section className="flex items-center justify-between mb-4">
           <div>
             <p className="text-sm font-medium">{t("modelsDevEnabled")}</p>
             <p className="text-xs text-text-muted mt-0.5">{t("modelsDevEnabledDesc")}</p>
@@ -279,11 +290,13 @@ export default function ModelsDevSyncTab() {
             disabled={saving}
             ariaLabel={t("modelsDevEnabled")}
           />
-        </div>
+        </Card.Section>
 
         {/* Sync interval */}
         {enabled && (
-          <div className="p-4 rounded-lg bg-surface/30 border border-border/30 mb-4">
+          // dir="ltr": the kit places marks with `left`, so in an RTL page the 1h mark would
+          // sit at the 7d end of the (mirrored) track. Pinning the slider LTR keeps them aligned.
+          <Card.Section dir="ltr" className="mb-4">
             <Slider
               label={t("modelsDevInterval")}
               min={0}
@@ -295,14 +308,11 @@ export default function ModelsDevSyncTab() {
               onMouseUp={commitDraftInterval}
               onTouchEnd={commitDraftInterval}
               onBlur={commitDraftInterval}
+              marks={INTERVAL_MARKS}
+              // The kit marks are aria-hidden and the input runs 0..3: speak the interval.
+              aria-valuetext={formatInterval(positionToHours(draftPos))}
             />
-            <div className="flex justify-between text-xs text-text-muted mt-1">
-              <span>1h</span>
-              <span>6h</span>
-              <span>24h</span>
-              <span>7d</span>
-            </div>
-          </div>
+          </Card.Section>
         )}
 
         {/* Manual sync button */}
@@ -328,40 +338,42 @@ export default function ModelsDevSyncTab() {
       {status && (status.providerCount > 0 || status.modelCount > 0) && (
         <Card>
           <div className="flex items-center gap-3 mb-5">
-            <div className="p-2 rounded-lg bg-bg-subtle text-text-muted">
+            <IconChip>
               <Icon name="bar_chart" size={20} />
-            </div>
+            </IconChip>
             <div>
-              <h3 className="text-lg font-semibold">{t("modelsDevStats")}</h3>
+              <h3 className="ci-heading" data-size="lg">
+                {t("modelsDevStats")}
+              </h3>
               <p className="text-sm text-text-muted">{t("modelsDevStatsDesc")}</p>
             </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="p-4 rounded-lg bg-surface/30 border border-border/30 text-center">
-              <p className="text-2xl font-bold text-info">
+            <Card.Section className="text-center">
+              <p className="text-2xl font-semibold text-info">
                 {status.providerCount.toLocaleString()}
               </p>
               <p className="text-xs text-text-muted mt-1">{t("providers")}</p>
-            </div>
-            <div className="p-4 rounded-lg bg-surface/30 border border-border/30 text-center">
-              <p className="text-2xl font-bold text-success">
+            </Card.Section>
+            <Card.Section className="text-center">
+              <p className="text-2xl font-semibold text-success">
                 {status.modelCount.toLocaleString()}
               </p>
               <p className="text-xs text-text-muted mt-1">{t("modelsWithPricing")}</p>
-            </div>
-            <div className="p-4 rounded-lg bg-surface/30 border border-border/30 text-center">
-              <p className="text-2xl font-bold text-primary">
+            </Card.Section>
+            <Card.Section className="text-center">
+              <p className="text-2xl font-semibold text-primary">
                 {status.capabilityCount.toLocaleString()}
               </p>
               <p className="text-xs text-text-muted mt-1">{t("capabilities")}</p>
-            </div>
-            <div className="p-4 rounded-lg bg-surface/30 border border-border/30 text-center">
-              <p className="text-2xl font-bold text-warning">
+            </Card.Section>
+            <Card.Section className="text-center">
+              <p className="text-2xl font-semibold text-warning">
                 {status.lastSyncModelCount > 0 ? status.lastSyncModelCount.toLocaleString() : "—"}
               </p>
               <p className="text-xs text-text-muted mt-1">{t("lastSyncCount")}</p>
-            </div>
+            </Card.Section>
           </div>
 
           {status.lastSync && (
@@ -375,11 +387,13 @@ export default function ModelsDevSyncTab() {
       {/* Info card */}
       <Card>
         <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 rounded-lg bg-bg-subtle text-text-muted">
+          <IconChip>
             <Icon name="info" size={20} />
-          </div>
+          </IconChip>
           <div>
-            <h3 className="text-lg font-semibold">{t("modelsDevInfo")}</h3>
+            <h3 className="ci-heading" data-size="lg">
+              {t("modelsDevInfo")}
+            </h3>
           </div>
         </div>
         <div className="text-sm text-text-muted space-y-2">

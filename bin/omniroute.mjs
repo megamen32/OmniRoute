@@ -27,6 +27,7 @@ import { isNativeBinaryCompatible } from "../scripts/build/native-binary-compat.
 import { getNodeRuntimeSupport, getNodeRuntimeWarning } from "./nodeRuntimeSupport.mjs";
 import { getDefaultDataDir } from "./cli/data-dir.mjs";
 import { shouldProvisionStorageKey } from "./cli/utils/storageKeyProvision.mjs";
+import { formatCliError } from "./cli/utils/formatCliError.mjs";
 import { isVersionFastPath } from "./cli/utils/versionFastPath.mjs";
 import { parseEnvValue } from "./cli/utils/parseEnvValue.mjs";
 import { describeVolatileEnvWarning } from "./cli/utils/volatileEnvPath.mjs";
@@ -101,8 +102,10 @@ if (shouldProvisionStorageKey(process.argv)) {
 // YAML (or JSON) on stdout and is meant to be piped —
 // `omniroute deploy k8s | kubectl apply -f -`. Env-loading notices and DB
 // warnings on stdout make that YAML unparseable ("control characters are not
-// allowed"), so they belong on stderr where a human still sees them.
-const STDOUT_IS_DATA = process.argv.includes("--mcp") || process.argv[2] === "deploy";
+// allowed"), so they belong on stderr where a human still sees them. Same for
+// `launch`/`gateway` --json output.
+const STDOUT_IS_DATA =
+  process.argv.includes("--mcp") || /^(deploy|launch|gateway)$/.test(process.argv[2]);
 
 if (STDOUT_IS_DATA) {
   const { Console } = await import("node:console");
@@ -444,13 +447,14 @@ if (process.argv.includes("reset-password")) {
 }
 
 try {
-  const { createProgram } = await import(
+  const { createProgram, loadCliPlugins } = await import(
     pathToFileURL(join(ROOT, "bin", "cli", "program.mjs")).href
   );
   const program = createProgram();
+  await loadCliPlugins(program);
   await program.parseAsync(process.argv);
 } catch (err) {
-  if (err.exitCode !== undefined) process.exit(err.exitCode);
-  console.error("\x1b[31m✖", err.message, "\x1b[0m");
+  if (err?.exitCode !== undefined) process.exit(err.exitCode);
+  console.error("\x1b[31m✖", formatCliError(err), "\x1b[0m");
   process.exit(1);
 }

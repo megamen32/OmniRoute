@@ -14,7 +14,11 @@ import {
 } from "@/lib/combos/testHealth";
 import { getCustomModels } from "@/lib/db/models";
 import { getProviderNodeById } from "@/lib/db/providers";
-import { requiresWebSessionCredential } from "@/shared/providers/webSessionCredentials";
+import {
+  CHAT_PROBE_NOT_ISOLATED_MESSAGE,
+  chatProbeLeavesNoConversation,
+  isChatProbeRefusal,
+} from "@/lib/providers/chatProbePolicy";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { isImageOnlyModel } from "@omniroute/open-sse/config/imageRegistry";
 import { withRateLimit } from "@omniroute/open-sse/services/rateLimitManager";
@@ -31,7 +35,6 @@ import { ownListenerSelfHopToken, SELF_HOP_HEADER } from "@omniroute/open-sse/ut
 
 const INTERNAL_ORIGIN = "http://omniroute.internal";
 export const DEFAULT_MODEL_TEST_TIMEOUT_MS = 30_000;
-const CHATGPT_WEB_CLEAN_ROOM_PROVIDER_ID = "chatgpt-web";
 const DOLA_PRO_TEST_TIMEOUT_MS = 90_000;
 const DOUBAO_WEB_PROVIDER_ID = "doubao-web";
 const ZAI_WEB_PROVIDER_ID = "zai-web";
@@ -46,14 +49,6 @@ const STREAMING_CHAT_TEST_MAX_TOKENS = 64;
 // ignored on that endpoint, which would let a reasoning model spend the whole
 // default budget before emitting any visible text.
 const RESPONSES_TEST_MAX_OUTPUT_TOKENS = 256;
-
-export function shouldSkipWebSessionModelTest(providerId: unknown): boolean {
-  return (
-    requiresWebSessionCredential(providerId) &&
-    (typeof providerId !== "string" ||
-      providerId.trim().toLowerCase() !== CHATGPT_WEB_CLEAN_ROOM_PROVIDER_ID)
-  );
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -442,6 +437,19 @@ export interface RunSingleModelTestOptions {
   streamChat?: boolean;
   /** A manual connection message; only supported for chat models. */
   prompt?: string;
+  /**
+   * Cap the answer length of a chat / Responses probe (chat `max_tokens`, Responses
+   * `max_output_tokens`). Used by background probes that only need the upstream to
+   * accept the request, e.g. the daily quota revalidation (one token).
+   */
+  maxOutputTokens?: number;
+  /** A 2xx with no text still proves the upstream accepted the request (tiny caps). */
+  acceptEmptyOutput?: boolean;
+  /**
+   * Keep every failure of this probe off the connection's state (cooldowns, terminal
+   * status, lockouts) even when the operator opted into `probeCanDisable`.
+   */
+  isolateFailures?: boolean;
 }
 
 export interface SingleModelTestResult {
@@ -549,6 +557,18 @@ export function classifyTestErrorQuota(errorText: string): {
  * `SingleModelTestResult` (not an HTTP Response) so the single-test and
  * batch-test endpoints can format it differently.
  */
+/** A probe the conversation-isolation policy kept off a signed-in account: never dispatched. */
+function skippedProbe(modelId: string): SingleModelTestResult {
+  return {
+    modelId,
+    status: "error",
+    latencyMs: 0,
+    httpStatus: 422,
+    skipped: true,
+    error: CHAT_PROBE_NOT_ISOLATED_MESSAGE,
+  };
+}
+
 export async function runSingleModelTest(
   options: RunSingleModelTestOptions
 ): Promise<SingleModelTestResult> {
@@ -559,6 +579,11 @@ export async function runSingleModelTest(
     timeoutMs = DEFAULT_MODEL_TEST_TIMEOUT_MS,
     streamChat = true,
   } = options;
+  const probeOptions = { isolateFailures: options.isolateFailures === true };
+  const maxOutputTokens =
+    typeof options.maxOutputTokens === "number" && options.maxOutputTokens > 0
+      ? Math.floor(options.maxOutputTokens)
+      : undefined;
 
   if (connectionId && (await isConnectionUnavailableToAuxiliaryActivity(connectionId))) {
     const fullModelId = modelId.includes("/") ? modelId : `${providerId}/${modelId}`;
@@ -575,17 +600,8 @@ export async function runSingleModelTest(
   if (!fullModelStr.includes("/")) {
     fullModelStr = `${providerId}/${modelId}`;
   }
-  if (shouldSkipWebSessionModelTest(providerId)) {
-    return {
-      modelId: fullModelStr,
-      status: "error",
-      latencyMs: 0,
-      httpStatus: 422,
-      skipped: true,
-      error:
-        "Skipped: web-session providers are excluded from chat probes to avoid creating provider conversations",
-    };
-  }
+  // Every probe kind asks the same policy the chat pipeline enforces (#14780).
+  if (!(await chatProbeLeavesNoConversation(providerId))) return skippedProbe(fullModelStr);
   const effectiveTimeoutMs = resolveModelTestTimeoutMs(providerId, fullModelStr, timeoutMs);
 
   const catalogError = await prepareConnectionModelTest(providerId, connectionId, fullModelStr);
@@ -660,7 +676,7 @@ export async function runSingleModelTest(
             model: fullModelStr,
             // Responses takes `input`, not `messages`.
             input: buildComboTestPrompt(),
-            max_output_tokens: RESPONSES_TEST_MAX_OUTPUT_TOKENS,
+            max_output_tokens: maxOutputTokens ?? RESPONSES_TEST_MAX_OUTPUT_TOKENS,
             // Non-streaming on purpose: the SSE reader below understands Chat
             // Completions deltas and the `output_text`/`output[]` shapes, but not
             // Responses stream events (`response.output_text.delta`), so a
@@ -669,7 +685,9 @@ export async function runSingleModelTest(
           }
         : buildComboTestRequestBody(fullModelStr, isEmbedding, {
             stream: !isEmbedding && streamChat,
-            maxTokens: !isEmbedding && streamChat ? STREAMING_CHAT_TEST_MAX_TOKENS : undefined,
+            maxTokens: isEmbedding
+              ? undefined
+              : (maxOutputTokens ?? (streamChat ? STREAMING_CHAT_TEST_MAX_TOKENS : undefined)),
           });
 
   if (options.prompt !== undefined && "messages" in testBody) {
@@ -721,11 +739,11 @@ export async function runSingleModelTest(
         // T-PROBE: wrap the scheduled fn, not the withRateLimit call — a
         // queued Bottleneck job executes from its own async resource and
         // would otherwise run outside the probe context below.
-        (signal) => runAsProbe(() => runInner(signal)),
+        (signal) => runAsProbe(() => runInner(signal), probeOptions),
         controller.signal
       );
     } else {
-      res = await runAsProbe(() => runInner(controller.signal));
+      res = await runAsProbe(() => runInner(controller.signal), probeOptions);
     }
   } catch (error: unknown) {
     clearTimeout(timeoutHandle);
@@ -811,12 +829,14 @@ export async function runSingleModelTest(
       // error frame inside a 200 stream (Sentinel blocks, "account
       // deactivated") would run outside runAsProbe and could still reach
       // markAccountUnavailable (#9817).
-      const parsedResponse = await runAsProbe(() =>
-        extractModelTestResponseText(
-          res,
-          !isEmbedding && !isRerank && !isResponses && streamChat,
-          isAudioSpeech
-        )
+      const parsedResponse = await runAsProbe(
+        () =>
+          extractModelTestResponseText(
+            res,
+            !isEmbedding && !isRerank && !isResponses && streamChat,
+            isAudioSpeech
+          ),
+        probeOptions
       );
       responseText = parsedResponse.text;
       streamError = parsedResponse.error;
@@ -847,7 +867,11 @@ export async function runSingleModelTest(
         ...(quotaFlags.isQuota ? { isQuota: true } : {}),
       };
     }
-    const outputState = classifyModelTestOutput(timedOut, responseText, isEmbedding || isRerank);
+    const outputState = classifyModelTestOutput(
+      timedOut,
+      responseText,
+      isEmbedding || isRerank || options.acceptEmptyOutput === true
+    );
     // A streaming response can yield partial text just as the test timeout
     // aborts the underlying request. Partial output does not make an aborted
     // request healthy: the call log correctly records that race as 499, so
@@ -893,6 +917,8 @@ export async function runSingleModelTest(
   let errorMsg = "";
   try {
     const errBody = await res.json();
+    // A probe that reached a non-isolated target indirectly (e.g. through a combo).
+    if (isChatProbeRefusal(errBody)) return skippedProbe(fullModelStr);
     errorMsg = extractProviderErrorMessage(errBody, res.statusText);
   } catch {
     errorMsg = res.statusText;

@@ -58,7 +58,7 @@ export default function CodexAccountDetails({ pool }: CodexAccountDetailsProps) 
           .map((child) => (
             <div
               key={child.key.scope}
-              className="rounded-md border border-border/50 bg-background/60 px-2.5 py-2 text-xs"
+              className="rounded-md border border-border/50 bg-bg/60 px-2.5 py-2 text-xs"
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium">Codex</span>
@@ -71,7 +71,7 @@ export default function CodexAccountDetails({ pool }: CodexAccountDetailsProps) 
                 </span>
               </div>
               {limited && child.cooldown.rateLimitedUntil ? (
-                <div className="mt-1 text-[11px] text-warning">
+                <div className="mt-1 text-xs text-warning">
                   {t("codexPoolUntil", {
                     value: new Intl.DateTimeFormat(locale, {
                       dateStyle: "short",
@@ -86,10 +86,10 @@ export default function CodexAccountDetails({ pool }: CodexAccountDetailsProps) 
       {limited && (
         <Button
           variant="ghost"
-          size="sm"
+          size="2xs"
           disabled={busy}
           onClick={release}
-          className="mt-2 h-auto min-h-0 px-0 text-xs text-primary"
+          className="mt-2 px-0 text-primary"
           title={t("codexReleaseCooldownHint")}
         >
           {busy ? t("codexReleasingCooldown") : t("codexReleaseCooldown")}

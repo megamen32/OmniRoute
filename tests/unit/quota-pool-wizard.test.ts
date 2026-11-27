@@ -65,8 +65,8 @@ test("PoolWizard.tsx: PATCH body includes the exclusive flag", () => {
   );
   // More specifically, the PATCH body object literal must pass exclusive
   assert.ok(
-    wizardSrc.includes("body: JSON.stringify({ allocations, exclusive })"),
-    "Expected PATCH body to serialize { allocations, exclusive }"
+    wizardSrc.includes("body: JSON.stringify({ allocations, exclusive, memberBreakdown })"),
+    "Expected PATCH body to serialize { allocations, exclusive, memberBreakdown }"
   );
 });
 
@@ -100,8 +100,8 @@ test("PoolWizard.tsx: save sequence does POST then conditional PUT then PATCH", 
   assert.ok(putIdx < patchIdx, "PUT must appear before PATCH in handleFinish");
 });
 
-test("PoolWizard.tsx: Stepper renders 3-step header", () => {
-  assert.ok(wizardSrc.includes("Stepper"), "Expected a Stepper component in PoolWizard");
+test("PoolWizard.tsx: kit Wizard renders the 3 labelled steps", () => {
+  assert.ok(wizardSrc.includes("<ModalWizard"), "Expected the kit Wizard in PoolWizard");
   assert.ok(wizardSrc.includes("wizardStep1Label"), "Expected wizardStep1Label i18n key used");
   assert.ok(wizardSrc.includes("wizardStep2Label"), "Expected wizardStep2Label i18n key used");
   assert.ok(wizardSrc.includes("wizardStep3Label"), "Expected wizardStep3Label i18n key used");

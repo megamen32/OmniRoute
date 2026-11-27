@@ -11,6 +11,7 @@ import {
   parseRequestBudgetFallback,
 } from "../autoCombo/requestControls.ts";
 import { selectWithStrategyAsync } from "../autoCombo/routerStrategy.ts";
+import { buildDecisionRoutingContext, type DecisionRuntime } from "../decision/factory.ts";
 import { buildComplexityRoutingHint } from "../autoCombo/complexityRouter";
 import { getModePack } from "../autoCombo/modePacks.ts";
 import { recordComboIntent } from "../comboMetrics.ts";
@@ -23,6 +24,7 @@ import type { ResilienceSettings } from "../../../src/lib/resilience/settings";
 import { parseAutoConfig } from "./autoConfig.ts";
 import { isComboEmptyPoolNoEligibleTargetsEnabled } from "./protectedPriorityStopStatus.ts";
 import { dedupeTargetsByExecutionKey } from "./comboData.ts";
+import { costKey } from "./candidateCost.ts";
 import { restoreIncomingOrder } from "./rungOrder.ts";
 import {
   getModelContextLimitForModelString,
@@ -30,6 +32,7 @@ import {
   filterTargetsByRequestCompatibility,
   deriveRequestCompatibilityRequirements,
 } from "./comboStructure.ts";
+import { resolveOutputLimitPolicy } from "./outputLimitPolicy.ts";
 import { hasMediaRequirements } from "./mediaCompatibility.ts";
 import {
   calculatePromptCacheAffinityScores,
@@ -52,6 +55,7 @@ import type {
 } from "./types.ts";
 import { normalizeAutoConnectionScope } from "./autoConnectionScope.ts";
 import { isDeclaredGlmFlashRoute, orderDeclaredGlmFlashTargets } from "./glmFlashRoute.ts";
+import { firstAccountPreferenceTier, orderAccountPreferences } from "./accountPreferences.ts";
 
 /**
  * Dependency-injected `buildAutoCandidates` — it lives in `combo.ts` (the host of
@@ -72,6 +76,7 @@ export interface ResolveAutoStrategyDeps {
   body: Record<string, unknown>;
   combo: ComboLike;
   settings: Record<string, unknown> | null | undefined;
+  sourceFormat?: string | null;
   // Index signature keeps this structurally assignable from the caller's much
   // wider `resolveComboSetupConfig()` return type — without it, TS2559 ("no
   // properties in common") fires now that `complexityAwareRouting` (the one
@@ -91,6 +96,8 @@ export interface ResolveAutoStrategyDeps {
   log: ComboLogger;
   buildAutoCandidates: BuildAutoCandidates;
   apiKeyAllowedConnections?: string[] | null;
+  /** Request seams for the `decision` router (signal, handleSingleModel, combos). */
+  decisionRuntime?: DecisionRuntime | null;
 }
 
 export type ResolveAutoStrategyResult =
@@ -168,6 +175,45 @@ function emptyCandidatePoolResponse(poolSize: number, comboName: string): Respon
       terminalReason: "no_eligible_targets",
     },
     { code: "no_eligible_targets", type: "api_error" }
+  );
+}
+
+function estimateCandidateCost(candidate: AutoProviderCandidate, estimatedInputTokens: number) {
+  const tokens = estimatedInputTokens > 0 ? estimatedInputTokens : 1000;
+  return (candidate.costPer1MTokens * tokens) / 1_000_000;
+}
+
+function filterCandidatesByBudget(
+  candidates: AutoProviderCandidate[],
+  budgetCap: number | undefined,
+  strict: boolean,
+  estimatedInputTokens: number
+): AutoProviderCandidate[] | Response {
+  if (!budgetCap || candidates.length === 0) return candidates;
+  const cost = (candidate: AutoProviderCandidate) =>
+    estimateCandidateCost(candidate, estimatedInputTokens);
+  const affordable = candidates.filter((candidate) => cost(candidate) <= budgetCap);
+  if (affordable.length > 0) return affordable;
+
+  const cheapest = Math.min(...candidates.map(cost));
+  if (strict) return errorResponse(402, new BudgetExceededError(budgetCap, cheapest).message);
+  return candidates.filter((candidate) => cost(candidate) === cheapest);
+}
+
+function filterBudgetFallbackTargets(
+  targets: ResolvedComboTarget[],
+  candidates: AutoProviderCandidate[],
+  budgetCap: number,
+  estimatedInputTokens: number
+) {
+  // The tail includes unpinned targets, so match the cost by provider and model.
+  const affordableModels = new Set(
+    candidates
+      .filter((candidate) => estimateCandidateCost(candidate, estimatedInputTokens) <= budgetCap)
+      .map((candidate) => costKey(candidate.provider, candidate.modelStr))
+  );
+  return targets.filter((target) =>
+    affordableModels.has(costKey(target.provider, target.modelStr))
   );
 }
 
@@ -297,7 +343,9 @@ export async function resolveAutoStrategyOrder(
   // Recheck before scoring so unsupported transports cannot consume the retry
   // budget, and retain this pool even when candidate telemetry is unavailable.
   if (hasMediaRequirements(deriveRequestCompatibilityRequirements(body))) {
-    eligibleTargets = filterTargetsByRequestCompatibility(eligibleTargets, body, log, combo.name);
+    eligibleTargets = filterTargetsByRequestCompatibility(eligibleTargets, body, log, combo.name, {
+      ...resolveOutputLimitPolicy(config, settings, deps.sourceFormat, "strict"),
+    });
     if (eligibleTargets.length === 0) {
       return {
         earlyResponse: errorResponse(
@@ -331,6 +379,8 @@ export async function resolveAutoStrategyOrder(
     resetWindowConfig,
     slaPolicy,
     nadirConfig,
+    decisionConfig,
+    accountPreferences,
   } = parseAutoConfig(combo, eligibleTargets);
 
   // Per-request overrides (#6023 / #6024 / #6025 / #3470): X-OmniRoute-Budget,
@@ -400,33 +450,37 @@ export async function resolveAutoStrategyOrder(
     log
   );
 
-  const { sourceCandidates, candidates, routableCandidates, scoredTargets } =
-    await evaluateAutoCandidates({
-      targets: eligibleTargets,
-      comboName: combo.name,
-      body,
-      taskType,
-      weights,
-      sessionId: relayOptions?.sessionId,
-      resetWindowConfig,
-      resilienceSettings: autoCandidateResilienceSettings,
-      manifestHint: autoManifestHint,
-      buildAutoCandidates,
-      apiKeyAllowedConnections: deps.apiKeyAllowedConnections ?? null,
-    });
+  const {
+    sourceCandidates,
+    candidates,
+    routableCandidates: unfilteredCandidates,
+    scoredTargets,
+  } = await evaluateAutoCandidates({
+    targets: eligibleTargets,
+    comboName: combo.name,
+    body,
+    taskType,
+    weights,
+    sessionId: relayOptions?.sessionId,
+    resetWindowConfig,
+    resilienceSettings: autoCandidateResilienceSettings,
+    manifestHint: autoManifestHint,
+    buildAutoCandidates,
+    apiKeyAllowedConnections: deps.apiKeyAllowedConnections ?? null,
+  });
   for (let index = 0; index < sourceCandidates.length; index += 1) {
     sourceCandidates[index].cacheAffinity = candidates[index]?.cacheAffinity;
   }
-  const quotaBlockedCount = candidates.length - routableCandidates.length;
+  const quotaBlockedCount = candidates.length - unfilteredCandidates.length;
   if (quotaBlockedCount > 0) {
     log.info(
       "COMBO",
       `Auto strategy: quota cutoff skipped ${quotaBlockedCount}/${candidates.length} account candidates`
     );
   }
-  // G2: Register candidates so chatCore can mark quotaSoftPenalty via setCandidateQuotaSoftPenalty.
-  _registerExecutionCandidates(routableCandidates);
-  if (candidates.length > 0 && routableCandidates.length === 0) {
+  // Checked before the account-preference filters so an all-quota-blocked pool keeps
+  // its 429 whether or not preferences are configured.
+  if (candidates.length > 0 && unfilteredCandidates.length === 0) {
     return {
       earlyResponse: unavailableResponse(
         429,
@@ -434,6 +488,57 @@ export async function resolveAutoStrategyOrder(
       ),
     };
   }
+  const hasAccountPreferences = Object.keys(accountPreferences).length > 0;
+  let preferredCandidates = orderAccountPreferences(unfilteredCandidates, accountPreferences);
+  if (hasAccountPreferences) {
+    const eligibleCandidates = preferredCandidates.filter(
+      (candidate) =>
+        candidate.circuitBreakerState !== "OPEN" &&
+        (!candidatePool.length || candidatePool.includes(candidate.provider))
+    );
+    // A soft status penalty (#4540) is last-resort, never an exclusion: penalised
+    // accounts follow every healthy account, each group kept in tier order.
+    preferredCandidates = [
+      ...eligibleCandidates.filter((candidate) => !candidate.statusPenalty),
+      ...eligibleCandidates.filter((candidate) => candidate.statusPenalty),
+    ];
+  }
+  const strictBudgetCap = budgetFallback === "strict" ? budgetCap : undefined;
+  const restrictToRoutable = hasAccountPreferences || Boolean(strictBudgetCap);
+  // Explicit routers such as LKGP can select without calling the budget-aware rules engine.
+  const routableCandidates = filterCandidatesByBudget(
+    preferredCandidates,
+    restrictToRoutable ? budgetCap : undefined,
+    Boolean(strictBudgetCap),
+    estimatedInputTokens
+  );
+  if (routableCandidates instanceof Response) return { earlyResponse: routableCandidates };
+  if (restrictToRoutable && routableCandidates.length === 0) {
+    return {
+      earlyResponse: unavailableResponse(
+        503,
+        hasAccountPreferences
+          ? "No eligible accounts remain for this combo's account preferences"
+          : "No candidates are available for this combo's strict budget check"
+      ),
+    };
+  }
+  const penalisedKeys = new Set(
+    hasAccountPreferences
+      ? routableCandidates
+          .filter((candidate) => candidate.statusPenalty)
+          .map((candidate) => candidate.executionKey)
+      : []
+  );
+  const healthyCandidates = routableCandidates.filter(
+    (candidate) => !penalisedKeys.has(candidate.executionKey)
+  );
+  const selectionCandidates = firstAccountPreferenceTier(
+    healthyCandidates.length > 0 ? healthyCandidates : routableCandidates,
+    accountPreferences
+  );
+  // G2: Register candidates so chatCore can mark quotaSoftPenalty via setCandidateQuotaSoftPenalty.
+  _registerExecutionCandidates(routableCandidates);
   if (routableCandidates.length > 0) {
     let selectedProvider: string | null = null;
     let selectedModel: string | null = null;
@@ -443,7 +548,7 @@ export async function resolveAutoStrategyOrder(
     if (routingStrategy !== "rules") {
       try {
         const decision = await selectWithStrategyAsync(
-          routableCandidates,
+          selectionCandidates,
           {
             taskType,
             requestHasTools,
@@ -461,6 +566,12 @@ export async function resolveAutoStrategyOrder(
             manifestHint: autoManifestHint,
             messages: body.messages,
             nadir: nadirConfig,
+            decision: buildDecisionRoutingContext(
+              decisionConfig,
+              deps.decisionRuntime,
+              body,
+              deps.apiKeyAllowedConnections
+            ),
           },
           routingStrategy
         );
@@ -494,7 +605,7 @@ export async function resolveAutoStrategyOrder(
             explorationRate,
             manifestHint: autoManifestHint,
           },
-          routableCandidates,
+          selectionCandidates,
           taskType
         );
       } catch (err) {
@@ -512,19 +623,25 @@ export async function resolveAutoStrategyOrder(
       selectionReason = `score=${selection.score.toFixed(3)}${selection.isExploration ? " (exploration)" : ""}`;
     }
 
-    const rankedTargets = scoredTargets.map((entry) => entry.target);
+    const routableKeys = new Set(routableCandidates.map((candidate) => candidate.executionKey));
+    const rankedTargets = orderAccountPreferences(
+      scoredTargets
+        .filter((entry) => !restrictToRoutable || routableKeys.has(entry.target.executionKey))
+        .map((entry) => entry.target),
+      accountPreferences
+    );
     const selectedTarget =
-      scoredTargets.find((entry) => {
-        const parsed = parseModel(entry.target.modelStr);
-        const modelId = parsed.model || entry.target.modelStr;
+      rankedTargets.find((target) => {
+        const parsed = parseModel(target.modelStr);
+        const modelId = parsed.model || target.modelStr;
         return (
-          entry.target.provider === selectedProvider &&
+          target.provider === selectedProvider &&
           modelId === selectedModel &&
-          (!selectedConnectionId || entry.target.connectionId === selectedConnectionId)
+          (!selectedConnectionId || target.connectionId === selectedConnectionId)
         );
-      })?.target ||
+      }) ||
       rankedTargets[0] ||
-      eligibleTargets[0];
+      (strictBudgetCap ? undefined : eligibleTargets[0]);
     if (!selectedTarget) {
       return {
         earlyResponse: unavailableResponse(
@@ -550,11 +667,33 @@ export async function resolveAutoStrategyOrder(
       : preserveGlmFlashOrder
         ? declaredTargets
         : [selectedTarget, ...rankedTargets];
+    let fallbackTargets = hasAccountPreferences ? [] : eligibleTargets;
+    if (strictBudgetCap) {
+      fallbackTargets = filterBudgetFallbackTargets(
+        fallbackTargets,
+        candidates,
+        strictBudgetCap,
+        estimatedInputTokens
+      );
+    }
     orderedTargets = dedupeTargetsByExecutionKey(
-      [...headTargets, ...eligibleTargets].filter(
+      [...headTargets, ...fallbackTargets].filter(
         (entry): entry is ResolvedComboTarget => entry !== undefined && entry !== null
       )
     );
+    orderedTargets = orderAccountPreferences(orderedTargets, accountPreferences);
+    if (penalisedKeys.size > 0) {
+      orderedTargets = [
+        ...orderedTargets.filter((target) => !penalisedKeys.has(target.executionKey)),
+        ...orderedTargets.filter((target) => penalisedKeys.has(target.executionKey)),
+      ];
+    }
+    if (hasAccountPreferences) {
+      log.info(
+        "COMBO",
+        `Account preferences: ${orderedTargets.length} concrete targets ordered preferred → normal → reserve; excluded accounts removed`
+      );
+    }
 
     log.info(
       "COMBO",

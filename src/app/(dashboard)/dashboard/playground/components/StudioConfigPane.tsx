@@ -151,12 +151,13 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center w-8 shrink-0">
+      <div className="flex w-full shrink-0 items-center justify-end border-t border-border md:w-8 md:flex-col md:justify-start md:border-t-0">
         <Button
           variant="ghost"
           size="icon-sm"
           onClick={() => setCollapsed(false)}
-          className="mt-2 text-text-muted"
+          tone="muted"
+          className="mt-2"
           title={tp("expandConfig")}
           aria-label={tp("expandConfig")}
           icon="settings"
@@ -167,19 +168,19 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
 
   return (
     <aside
-      className="w-72 shrink-0 border-l border-border bg-bg-alt flex flex-col overflow-y-auto"
+      className="flex max-h-[45vh] min-h-0 w-full shrink flex-col overflow-y-auto border-t border-border bg-bg-alt md:max-h-none md:w-72 md:shrink-0 md:border-t-0 md:border-l"
       aria-label={tp("configPane")}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <span className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+        <span className="ci-eyebrow" data-weight="medium">
           {tp("configPane")}
         </span>
         <Button
           variant="ghost"
           size="icon-sm"
           onClick={() => setCollapsed(true)}
-          className="text-text-muted"
+          tone="muted"
           title={tp("collapseConfig")}
           aria-label={tp("collapseConfig")}
           icon="chevron_right"
@@ -195,7 +196,7 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
           label={tp("endpointLabel")}
           value={configState.endpoint}
           onChange={(e) => update("endpoint", e.target.value as PlaygroundEndpoint)}
-          selectClassName="text-xs"
+          nativeSize="xs"
         >
           {ENDPOINT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -218,7 +219,7 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
             }));
           }}
           disabled={loadingProviders}
-          selectClassName="text-xs"
+          nativeSize="xs"
         >
           <option value="">{tp("autoProvider")}</option>
           {providerOptions.map((opt) => (
@@ -244,7 +245,7 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
                   placeholder={t("search")}
                   aria-label={t("search")}
                   icon="search"
-                  inputClassName="text-xs"
+                  size="xs"
                 />
               )}
               <Select
@@ -252,7 +253,7 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
                 value={configState.model}
                 onChange={(e) => update("model", e.target.value)}
                 disabled={loadingModels}
-                selectClassName="text-xs"
+                nativeSize="xs"
               >
                 {filteredModels.map((m) => (
                   <option key={m} value={m}>
@@ -268,7 +269,7 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
               value={configState.model}
               onChange={(e) => update("model", e.target.value)}
               placeholder={tp("modelPlaceholder")}
-              inputClassName="text-xs"
+              size="xs"
             />
           )}
         </div>
@@ -291,7 +292,7 @@ export default function StudioConfigPane({ configState, setConfigState }: Studio
 
         {/* Param sliders */}
         <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+          <span className="ci-eyebrow" data-weight="medium">
             {tp("parametersLabel")}
           </span>
           <ParamSliders params={configState.params} setParams={(p) => update("params", p)} />

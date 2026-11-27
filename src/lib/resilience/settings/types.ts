@@ -234,6 +234,8 @@ export interface ProviderQuotaOverrideSettings {
   concurrency?: number;
   /** Shared concurrency cap across every connection for this provider. */
   providerConcurrency?: number;
+  /** Default per-connection cap when maxConcurrent is unset or zero. */
+  defaultConnectionConcurrency?: number;
   /**
    * Fixed connection cooldown (seconds) after a rate-limit error when the upstream sent no
    * retry hint. Replaces the scaled exponential backoff for this provider; a per-connection
@@ -277,7 +279,25 @@ export interface StreamThroughputWatchdogSettings {
   minUsefulBytes: number;
 }
 
+/** Opt-in preferred-account response-start failover, available to API-key-preferred connections across chat providers. */
+export interface PreferredAccountFailoverSettings {
+  enabled: boolean;
+  /** Default response-start deadline in milliseconds for other providers. */
+  defaultTimeoutMs: number;
+  /** Exact provider ID -> milliseconds; 0 disables the policy for that provider. */
+  providerTimeoutsMs: Record<string, number>;
+  /** provider/model or provider/model* -> milliseconds; 0 disables. */
+  modelTimeoutsMs: Record<string, number>;
+}
+
+/** Controls sanitized timing of the real Antigravity physical HTTP sends. */
+export interface AntigravityTimingTelemetrySettings {
+  enabled: boolean;
+}
+
 export interface ResilienceSettings {
+  preferredAccountFailover: PreferredAccountFailoverSettings;
+  antigravityTimingTelemetry: AntigravityTimingTelemetrySettings;
   requestQueue: RequestQueueSettings;
   connectionCooldown: Record<AuthCategory, ConnectionCooldownProfileSettings>;
   providerBreaker: Record<AuthCategory, ProviderBreakerProfileSettings>;
@@ -295,6 +315,8 @@ export interface ResilienceSettings {
 }
 
 export interface ResilienceSettingsPatch {
+  preferredAccountFailover?: Partial<PreferredAccountFailoverSettings>;
+  antigravityTimingTelemetry?: Partial<AntigravityTimingTelemetrySettings>;
   requestQueue?: Partial<RequestQueueSettings>;
   connectionCooldown?: Partial<Record<AuthCategory, Partial<ConnectionCooldownProfileSettings>>>;
   providerBreaker?: Partial<Record<AuthCategory, Partial<ProviderBreakerProfileSettings>>>;

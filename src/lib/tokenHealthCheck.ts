@@ -19,7 +19,9 @@ import { getCachedProviderConnectionById } from "@/lib/db/readCache";
 import { getSettings } from "@/lib/db/settings";
 import { resolveGuardedProxyConfig } from "@/lib/tokenHealthCheckProxyGuard";
 import * as tokenRefresh from "@omniroute/open-sse/services/tokenRefresh.ts";
+import { createProviderLimiter } from "@/lib/providerConcurrencyLimiter";
 import { ROTATION_LOCK_GROUP } from "@omniroute/open-sse/services/refreshSerializer.ts";
+import { isTransientRefreshError } from "@omniroute/open-sse/services/tokenRefresh/transientError.ts";
 import { readStoredVerificationUrl } from "@omniroute/open-sse/services/antigravityVerification.ts";
 import { pickMaskedDisplayValue } from "@/shared/utils/maskEmail";
 import { isAutomatedTestProcess } from "@/shared/utils/testProcess";
@@ -37,6 +39,7 @@ import {
   isInRefreshBackoff,
   preservesRefreshTokenOnUnrecoverable,
 } from "@/lib/tokenRefreshCircuit";
+import { waitForGoogleRefreshSlot } from "@/lib/tokenHealthGoogleGap";
 
 const LOG_PREFIX = "[HealthCheck]";
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -336,6 +339,15 @@ function getConfiguredBatchSize(): number {
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_BATCH_SIZE;
 }
 
+/**
+ * Opt-in cap on proactive refreshes in flight per provider (HEALTHCHECK_PER_PROVIDER_CONCURRENCY).
+ * 0 / unset / invalid = no cap, so the sweep keeps its batch concurrency.
+ */
+function getPerProviderConcurrency(): number {
+  const configured = parseInt(process.env.HEALTHCHECK_PER_PROVIDER_CONCURRENCY || "", 10);
+  return Number.isFinite(configured) && configured > 0 ? configured : 0;
+}
+
 function isEnvFlagEnabled(name: string): boolean {
   const value = process.env[name];
   if (!value) return false;
@@ -529,6 +541,7 @@ export async function sweep(): Promise<number> {
     // prevention intent (Issue #1220) while reducing total sweep time from
     // O(total × staggerMs) to O(total ÷ batchSize × staggerMs).
     const batchSize = Math.min(getConfiguredBatchSize(), total);
+    const runForProvider = createProviderLimiter(getPerProviderConcurrency());
     for (let offset = 0; offset < total; offset += batchSize) {
       const batchEnd = Math.min(offset + batchSize, total);
       const batch: Array<Promise<void>> = [];
@@ -536,9 +549,11 @@ export async function sweep(): Promise<number> {
       for (let i = offset; i < batchEnd; i++) {
         const conn = connections[i];
         batch.push(
-          checkConnection(conn).catch((err: Error) => {
-            logError(`${LOG_PREFIX} Error checking ${conn.name || conn.id}:`, err.message);
-          })
+          runForProvider(String(conn.provider || ""), () => checkConnection(conn)).catch(
+            (err: Error) => {
+              logError(`${LOG_PREFIX} Error checking ${conn.name || conn.id}:`, err.message);
+            }
+          )
         );
       }
 
@@ -614,10 +629,16 @@ export async function checkConnection(conn: any) {
     return;
   }
   if (!conn.isActive) {
-    // #P0: allow expired connections with retry budget remaining to pass
-    // through so transient OAuth failures can self-heal instead of being
-    // permanently skipped. Exhausted retries stay terminal.
-    if (!(conn.testStatus === "expired" && getExpiredRetryCount(conn) < EXPIRED_RETRY_MAX)) {
+    // Inactive connections (e.g. disabled due to quota exhaustion, operator pause,
+    // or rate limit cooldown) must still keep their OAuth credentials refreshed as long as they
+    // have a usable refresh token and are not permanently banned. Otherwise, resting accounts
+    // lose their OAuth session and fail with `invalid_grant` (Refresh token consumed) when reactivated.
+    const isMaintainableOAuth =
+      conn.authType === "oauth" && Boolean(conn.refreshToken) && conn.testStatus !== "banned";
+    const isRetryableExpired =
+      conn.testStatus === "expired" && getExpiredRetryCount(conn) < EXPIRED_RETRY_MAX;
+
+    if (!isMaintainableOAuth && !isRetryableExpired) {
       return;
     }
   }
@@ -813,6 +834,10 @@ export async function checkConnection(conn: any) {
           ...providerSpecificData,
           copilotToken: copilotResult.token,
           copilotTokenExpiresAt: copilotResult.expiresAt,
+          ...(copilotResult.endpoints?.api ? { copilotApiUrl: copilotResult.endpoints.api } : {}),
+          ...(copilotResult.endpoints?.proxy
+            ? { copilotProxyUrl: copilotResult.endpoints.proxy }
+            : {}),
         };
       }
 
@@ -950,7 +975,8 @@ export async function checkConnection(conn: any) {
   // cadence while the access token is still valid for days.
   const tokenExpiresAt = getEffectiveTokenExpiryMs(conn);
   const hasKnownExpiry = tokenExpiresAt > 0;
-  const isAboutToExpire = hasKnownExpiry && tokenExpiresAt - Date.now() < TOKEN_EXPIRY_BUFFER;
+  const refreshLeadMs = conn.provider === "chatgpt" ? 60_000 : TOKEN_EXPIRY_BUFFER;
+  const isAboutToExpire = hasKnownExpiry && tokenExpiresAt - Date.now() < refreshLeadMs;
 
   // ROTATING_REFRESH_PROVIDERS — providers whose refresh_tokens are SINGLE-USE
   // (each refresh consumes the old one and returns a new one). For these, refreshing
@@ -1012,7 +1038,7 @@ export async function checkConnection(conn: any) {
   type RefreshResultShape = {
     accessToken?: string;
     refreshToken?: string;
-    expiresAt?: string;
+    expiresAt?: string | null;
     expiresIn?: number;
     providerSpecificData?: Record<string, unknown>;
     error?: string;
@@ -1023,6 +1049,7 @@ export async function checkConnection(conn: any) {
   let persistedResult: RefreshResultShape | null = null;
   let result: RefreshResultShape | null;
   try {
+    await waitForGoogleRefreshSlot(conn.provider);
     result = await tokenRefresh.getAccessToken(
       conn.provider,
       credentials,
@@ -1047,6 +1074,9 @@ export async function checkConnection(conn: any) {
           const expiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
           updateData.expiresAt = expiresAt;
           updateData.tokenExpiresAt = expiresAt;
+        } else if (refreshResult.accessToken && refreshResult.expiresAt === null) {
+          updateData.expiresAt = null;
+          updateData.tokenExpiresAt = null;
         }
         // Merge new providerSpecificData and ALWAYS clear the refresh circuit
         // breaker streak on a successful refresh.
@@ -1086,25 +1116,7 @@ export async function checkConnection(conn: any) {
     }
     // Classify: only network/timeout errors are transient. Programming errors
     // and DB failures fall through to the exponential backoff path.
-    const errObj = typeof err === "object" && err !== null ? err : {};
-    const errName = err instanceof Error ? err.name : String(errObj.name ?? "");
-    const errMsg = err instanceof Error ? err.message : String(err);
-    const errCode = String(errObj.code ?? "");
-    // Also check err.cause for wrapped fetch errors.
-    const errCause = errObj.cause instanceof Error ? errObj.cause.message : "";
-    const errCauseCode = String(errObj.cause?.code ?? "");
-    const combinedMsg = `${errMsg} ${errCause}`;
-    const combinedCode = `${errCode} ${errCauseCode}`;
-    const isTransientNetworkError =
-      errName === "AbortError" ||
-      errName === "TimeoutError" ||
-      /ETIMEDOUT|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|EHOSTUNREACH|ENETUNREACH|ENOTCONN|ENOTFOUND|EAI_AGAIN|ERR_NETWORK|ERR_SOCKET|ERR_CONNECTION|socket hang up|fetch failed/i.test(
-        combinedMsg
-      ) ||
-      /ETIMEDOUT|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|EHOSTUNREACH|ENETUNREACH|ENOTCONN|ENOTFOUND|EAI_AGAIN|ERR_NETWORK|ERR_SOCKET|ERR_CONNECTION/i.test(
-        combinedCode
-      );
-    if (isTransientNetworkError) {
+    if (isTransientRefreshError(err)) {
       const transientNow = new Date().toISOString();
       const updateData = buildTransientRefreshRetryUpdate(conn, transientNow);
       try {
@@ -1249,6 +1261,9 @@ export async function checkConnection(conn: any) {
         const expiresAt = new Date(Date.now() + result.expiresIn * 1000).toISOString();
         updateData.expiresAt = expiresAt;
         updateData.tokenExpiresAt = expiresAt;
+      } else if (result.expiresAt === null) {
+        updateData.expiresAt = null;
+        updateData.tokenExpiresAt = null;
       }
 
       if (result.providerSpecificData) {

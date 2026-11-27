@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslations } from "next-intl";
 import Badge from "@/shared/components/Badge";
 import Button from "@/shared/components/Button";
@@ -21,6 +21,7 @@ const WINDOWS = [
 export default function BreakerTimeline({ breakers, onWindowChange }: BreakerTimelineProps) {
   const t = useTranslations("resilienceConnections");
   const [selectedWindowMs, setSelectedWindowMs] = useState(3600000);
+  const windowLabelId = useId();
 
   const stateLabel = (state: string) => {
     const key = `timeline.state.${state.toLowerCase()}`;
@@ -56,7 +57,9 @@ export default function BreakerTimeline({ breakers, onWindowChange }: BreakerTim
     <Card className="flex flex-col gap-4">
       {currentBreakers.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h3 className="ci-heading text-sm">{t("timeline.currentState")}</h3>
+          <h3 className="ci-heading" data-size="sm">
+            {t("timeline.currentState")}
+          </h3>
           <div className="flex flex-wrap gap-2">
             {currentBreakers.map((b) => (
               <span key={b.name}>
@@ -79,10 +82,10 @@ export default function BreakerTimeline({ breakers, onWindowChange }: BreakerTim
       )}
       <div
         role="group"
-        aria-labelledby="breaker-timeline-window"
+        aria-labelledby={windowLabelId}
         className="flex flex-wrap items-center gap-2"
       >
-        <span id="breaker-timeline-window" className="mr-2 text-sm font-semibold">
+        <span id={windowLabelId} className="mr-2 text-sm font-semibold">
           {t("timeline.window")}
         </span>
         {WINDOWS.map((w) => (

@@ -11,7 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@omniroute/ui-kit/table";
-import { SectionHeader } from "@omniroute/ui-kit/page-header";
+import { PageHeader } from "@omniroute/ui-kit/page-header";
 import Badge from "@/shared/components/Badge";
 import Button from "@/shared/components/Button";
 import Icon from "@/shared/components/Icon";
@@ -83,18 +83,18 @@ const POLL_STORAGE_KEY = "conversationsListPollSeconds";
 const LIVE_TEXT_POLL_INTERVAL_MS = 1200;
 
 function ProviderBadge({ provider }: { provider: string | null }) {
-  if (!provider) return <span className="text-text-muted text-[10px]">—</span>;
+  if (!provider) return <span className="text-text-muted text-3xs">—</span>;
   const style = PROVIDER_COLORS[provider];
   if (!style) {
     return (
-      <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-bold bg-bg-subtle text-text-muted border border-border">
+      <span className="inline-block px-2 py-0.5 rounded-full text-3xs font-semibold bg-bg-subtle text-text-muted border border-border">
         {provider}
       </span>
     );
   }
   return (
     <span
-      className="inline-block px-2 py-0.5 rounded-full text-[9px] font-bold"
+      className="inline-block px-2 py-0.5 rounded-full text-3xs font-semibold"
       style={{ backgroundColor: style.bg, color: style.text }}
     >
       {style.label}
@@ -103,11 +103,11 @@ function ProviderBadge({ provider }: { provider: string | null }) {
 }
 
 function StatusBadge({ status }: { status: number | null }) {
-  if (status == null) return <span className="text-text-muted text-[10px]">—</span>;
+  if (status == null) return <span className="text-text-muted text-3xs">—</span>;
   const style = getHttpStatusStyle(status);
   return (
     <span
-      className="inline-block px-2 py-0.5 rounded-full text-[9px] font-bold"
+      className="inline-block px-2 py-0.5 rounded-full text-3xs font-semibold"
       style={{ backgroundColor: style.bg, color: style.text }}
     >
       {status}
@@ -203,7 +203,7 @@ function ConversationLogView({
       ))}
       {livePartialText && (
         <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-1.5 text-[10px] text-warning">
+          <div className="flex items-center gap-1.5 text-3xs text-warning">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-warning animate-pulse" />
             Generating…
           </div>
@@ -221,6 +221,7 @@ function ConversationLogView({
 
 function ConversationsPageContent() {
   const t = useTranslations("conversations");
+  const tSidebar = useTranslations("sidebar");
   const router = useRouter();
   const searchParams = useSearchParams();
   // Read once on mount, mirroring dashboard/logs/page.tsx (#6830/#8354): re-reading the
@@ -594,19 +595,8 @@ function ConversationsPageContent() {
       conversationNodes.length > 0 ? conversationNodes[conversationNodes.length - 1].seq : null;
   }, [conversationNodes]);
 
-  useEffect(() => {
-    if (!activeConversationId) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeConversation();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-    // activeConversationId, not the whole activeConversation object: it
-    // gets resynced (new object reference) from the list poll while the
-    // modal stays open (see that effect's comment) — depending on the
-    // object here would rebind this listener on every poll tick for no
-    // reason.
-  }, [activeConversationId, closeConversation]);
+  // Escape is handled by the kit Modal (Radix Dialog); a document-level listener here would also
+  // close the drawer when Escape was meant for a nested menu or tooltip (#18076).
 
   // While the conversation is open, keep polling for turns that arrive
   // later (the request that opened it may not be the last one — OpenClaw
@@ -784,8 +774,9 @@ function ConversationsPageContent() {
 
   return (
     <div className="flex flex-col gap-4">
-      <SectionHeader
-        title={t("title")}
+      <PageHeader
+        compact
+        title={tSidebar("conversations")}
         description={t("countSummary", { total })}
         actions={
           <Input
@@ -840,7 +831,7 @@ function ConversationsPageContent() {
                         e.stopPropagation();
                         copyToClipboard(row.id);
                       }}
-                      className="font-mono text-[11px] text-text-main hover:underline truncate"
+                      className="font-mono text-2xs text-text-main hover:underline truncate"
                     >
                       {row.id.slice(0, 16)}…
                     </span>
@@ -858,7 +849,7 @@ function ConversationsPageContent() {
                   </div>
                   <StatusBadge status={row.lastStatus} />
                 </div>
-                <div className="text-right text-[11px] text-text-muted">
+                <div className="text-right text-2xs text-text-muted">
                   {formatTime(row.lastSeenAt)}
                 </div>
               </div>
@@ -870,6 +861,7 @@ function ConversationsPageContent() {
             className="text-sm"
             containerClassName="hidden sm:block"
             scrollbarLabel={t("title")}
+            scrollLabel={t("title")}
           >
             <TableHeader>
               <TableRow>
@@ -887,9 +879,9 @@ function ConversationsPageContent() {
                 <TableRow
                   key={row.id}
                   className="cursor-pointer"
-                  onClick={() => openConversation(row)}
+                  onActivate={() => openConversation(row)}
                 >
-                  <TableCell className="font-mono text-[11px] text-text-main">
+                  <TableCell className="font-mono text-2xs text-text-main">
                     <span className="flex items-center gap-1.5">
                       {row.isActive && <ActiveSpinner />}
                       <span
@@ -941,7 +933,7 @@ function ConversationsPageContent() {
             {activeConversation && (
               <span
                 title={activeConversation.id}
-                className="block truncate font-mono text-[11px] font-normal text-text-muted"
+                className="block truncate font-mono text-2xs font-normal text-text-muted"
               >
                 {activeConversation.id.slice(0, 24)}…
               </span>

@@ -20,6 +20,8 @@ const L1 = [
   "cu",
   "grok-cli",
   "zcode",
+  // Sign in with ChatGPT (#15201): models are discovered live for each registration.
+  "chatgpt",
 ] as const;
 
 test("test 1: L1 ids are account-live", () => {

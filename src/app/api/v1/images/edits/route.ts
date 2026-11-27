@@ -1,3 +1,4 @@
+import { getFalCompatibilityPreparer } from "@/lib/fal/compatibility";
 import {
   handleAdobeFireflyImageGeneration,
   handleCodexImageEdit,
@@ -7,10 +8,13 @@ import {
   handleSyntxImageGeneration,
 } from "@omniroute/open-sse/handlers/imageGeneration.ts";
 import {
+  falImageEditBody,
+  falImageEditMaxReferences,
   handleFalAIImageEdit,
-  FAL_IMAGE_EDIT_MAX_REFERENCES,
   isFalImageEditModel,
 } from "@omniroute/open-sse/handlers/imageGeneration/providers/fal.ts";
+import { handleLeonardoImageGeneration } from "@omniroute/open-sse/handlers/imageGeneration/providers/leonardo.ts";
+import { GEMINI_IMAGE_MAX_REFERENCES } from "@omniroute/open-sse/handlers/imageGeneration/providers/geminiInline.ts";
 import { createInjectionGuard } from "@/middleware/promptInjectionGuard";
 import {
   buildAdobeFireflyEditDataUrls,
@@ -19,6 +23,7 @@ import {
 import {
   getProviderCredentialsWithQuotaPreflight,
   clearRecoveredProviderState,
+  isCodexPoolPlanIneligibleForModel,
 } from "@/sse/services/auth";
 import { executeImageWithCredentialFallback } from "@/sse/services/imageCredentialRetry";
 import {
@@ -34,6 +39,8 @@ import {
   runImageComboTargets,
   type ImageComboDispatchResult,
 } from "@omniroute/open-sse/services/imageCombo.ts";
+import { projectComboForEndpoint } from "@omniroute/open-sse/services/combo/endpointCapabilities.ts";
+import { orderCapabilityTargets } from "@omniroute/open-sse/services/combo/capabilityTargetOrder.ts";
 import { isAllRateLimitedCredentials } from "@/app/api/v1/_shared/rateLimit";
 import {
   runImageRequestWithAccounting,
@@ -53,6 +60,7 @@ import { isMicrosoftDesignerWebProviderRetiredError } from "@/shared/constants/d
 import { resolveProxyForConnection } from "@/lib/db/settings";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { isCodexFreePlan } from "@omniroute/open-sse/executors/codex/tools.ts";
+import { imageQuotaPreflightOptions } from "@/sse/services/imageQuotaSelectionPolicy";
 import { RequestBodyTooLargeError } from "@/shared/middleware/bodySizeGuard";
 import { readEditInput, type EditInput } from "./editInput.ts";
 import {
@@ -213,6 +221,7 @@ async function handleSyntxEditRequest(params: {
 
 /** Reference/prompt payload an edit dispatch needs, shared by single + combo paths. */
 interface ImageEditContext {
+  options?: Record<string, unknown>;
   prompt: string;
   size: string | null;
   responseFormat: string | null;
@@ -229,6 +238,7 @@ interface ImageEditContext {
 /** A combo target that resolved to an edit-capable provider/node. */
 interface EditComboTarget {
   modelStr: string;
+  weight?: number;
   parsed: ReturnType<typeof parseImageModel>;
   providerConfig: ReturnType<typeof getImageProvider> | null;
   /** Credential/connection lookup key (built-in provider id, or custom node id). */
@@ -238,8 +248,8 @@ interface EditComboTarget {
 /**
  * Decide whether a prefix-resolved combo target can service an image edit, and
  * return the credential key to resolve it with. Mirrors postHandler's provider
- * branches: codex-responses, fal-ai edit models, adobe-firefly, built-in
- * openrouter, and custom OpenAI-compatible nodes are edit-capable; every other
+ * branches: codex-responses, fal-ai edit models, adobe-firefly, syntx, leonardo,
+ * built-in openrouter, and custom OpenAI-compatible nodes are edit-capable; every other
  * built-in provider is not (it exposes no OpenAI-compatible edit endpoint).
  */
 function classifyImageEditTarget(
@@ -252,7 +262,9 @@ function classifyImageEditTarget(
       providerConfig.format === "codex-responses" ||
       providerConfig.format === "adobe-firefly-image" ||
       providerConfig.format === "syntx-image" ||
-      (providerConfig.format === "fal-ai" && isFalImageEditModel(parsed.model)) ||
+      providerConfig.format === "leonardo-image" ||
+      (providerConfig.format === "fal-ai" &&
+        isFalImageEditModel(parsed.model, getFalCompatibilityPreparer() !== null)) ||
       providerConfig.id === "openrouter"
     ) {
       return parsed.provider ? { credKey: parsed.provider } : null;
@@ -343,15 +355,23 @@ async function dispatchImageEditTarget(
       : editImage())) as ImageComboDispatchResult;
   }
 
-  if (providerConfig?.format === "fal-ai" && isFalImageEditModel(parsed.model)) {
+  const prepareFalInput = getFalCompatibilityPreparer();
+  const falNative = prepareFalInput !== null;
+  if (providerConfig?.format === "fal-ai" && isFalImageEditModel(parsed.model, falNative)) {
     return (await handleFalAIImageEdit({
+      prepareFalInput,
       provider: parsed.provider,
       model: parsed.model,
       providerConfig,
-      body: { prompt, size: size ?? undefined, response_format: responseFormat ?? undefined, n: 1 },
+      body: falImageEditBody(parsed.model, falNative, ctx.options, {
+        prompt,
+        size,
+        responseFormat,
+      }),
       images,
       credentials: credentials as never,
       log,
+      signal: request.signal,
     })) as ImageComboDispatchResult;
   }
 
@@ -411,6 +431,28 @@ async function dispatchImageEditTarget(
     })) as ImageComboDispatchResult;
   }
 
+  // #18671: Leonardo uploads the reference as an init image and runs image-to-image.
+  if (providerConfig?.format === "leonardo-image") {
+    // One init image per generation: reject extra references as the single-model path does,
+    // rather than editing with the first and dropping the rest.
+    if (images.length > 1) {
+      return {
+        success: false,
+        status: HTTP_STATUS.BAD_REQUEST,
+        error: "This image edit provider currently supports only one reference image",
+      };
+    }
+    return (await handleLeonardoImageGeneration({
+      provider: parsed.provider,
+      model: parsed.model,
+      providerConfig,
+      body: { prompt, size: size ?? undefined },
+      credentials: credentials as never,
+      log,
+      initImage: images[0] ?? null,
+    })) as ImageComboDispatchResult;
+  }
+
   if (providerConfig?.id === "openrouter") {
     return (await handleOpenRouterImageEdit({
       provider: parsed.provider,
@@ -458,19 +500,13 @@ async function dispatchImageEditTarget(
  * edit-capable (or lacks credentials) now falls through to a later edit-capable
  * target instead of flattening to the first target and hard-erroring.
  */
-async function executeImageEditCombo(comboName: string, ctx: ImageEditContext): Promise<Response> {
-  const combo = await getComboByName(comboName);
-  if (!combo) {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo not found: ${comboName}`);
-  }
-  const allCombos = await getCombos();
-  const targets = resolveComboTargets(combo as never, allCombos as never);
-  if (!targets || targets.length === 0) {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo "${comboName}" has no usable targets`);
-  }
-
-  // Build the edit-capable target list (prefix-resolved). Non-edit-capable and
-  // retired targets are skipped here so the loop only iterates dispatchable ones.
+/**
+ * Build the edit-capable target list (prefix-resolved). Non-edit-capable and
+ * retired targets are skipped here so the loop only iterates dispatchable ones.
+ */
+async function resolveEditComboTargets(
+  targets: NonNullable<ReturnType<typeof resolveComboTargets>>
+): Promise<EditComboTarget[]> {
   const editTargets: EditComboTarget[] = [];
   for (const t of targets) {
     const raw =
@@ -489,9 +525,30 @@ async function executeImageEditCombo(comboName: string, ctx: ImageEditContext): 
     const providerConfig = parsed.provider ? getImageProvider(parsed.provider) : null;
     const capability = classifyImageEditTarget(resolved, parsed, providerConfig);
     if (!capability) continue;
-    editTargets.push({ modelStr: resolved, parsed, providerConfig, credKey: capability.credKey });
+    editTargets.push({
+      modelStr: resolved,
+      weight: t.weight,
+      parsed,
+      providerConfig,
+      credKey: capability.credKey,
+    });
+  }
+  return editTargets;
+}
+
+async function executeImageEditCombo(comboName: string, ctx: ImageEditContext): Promise<Response> {
+  const combo = await getComboByName(comboName);
+  if (!combo) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo not found: ${comboName}`);
+  }
+  const allCombos = await getCombos();
+  const projected = projectComboForEndpoint(combo as never, allCombos as never, "image-edits");
+  const targets = resolveComboTargets(projected.combo as never, projected.allCombos as never);
+  if (!targets || targets.length === 0) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo "${comboName}" has no usable targets`);
   }
 
+  const editTargets = await resolveEditComboTargets(targets);
   if (editTargets.length === 0) {
     return errorResponse(
       HTTP_STATUS.BAD_REQUEST,
@@ -499,14 +556,21 @@ async function executeImageEditCombo(comboName: string, ctx: ImageEditContext): 
     );
   }
 
-  const run = await runImageComboTargets(editTargets, {
+  const orderedTargets = orderCapabilityTargets({
+    comboName,
+    endpoint: "image-edits",
+    strategy: projected.combo.strategy,
+    targets: editTargets,
+  });
+  const run = await runImageComboTargets(orderedTargets, {
     resolveProvider: (target) => ({ provider: target.credKey, model: target.parsed.model }),
     resolveCredentials: (_provider, target) =>
       getProviderCredentialsWithQuotaPreflight(
         target.credKey,
         null,
         ctx.allowedConnections,
-        target.modelStr
+        target.modelStr,
+        imageQuotaPreflightOptions(target.credKey)
       ),
     isRateLimited: isAllRateLimitedCredentials,
     dispatch: ({ target, credentials }) =>
@@ -516,7 +580,7 @@ async function executeImageEditCombo(comboName: string, ctx: ImageEditContext): 
           target.parsed.provider || target.credKey,
           target.parsed.model,
           credentials,
-          "priority"
+          projected.combo.strategy || "priority"
         ),
         () => dispatchImageEditTarget(target, credentials, ctx)
       ),
@@ -624,6 +688,7 @@ async function postHandler(request: Request, _context?: unknown) {
           ? comboPolicy.apiKeyInfo.allowedConnections
           : null;
       return executeImageEditCombo(fullModel, {
+        options: input.options,
         prompt,
         size,
         responseFormat,
@@ -669,21 +734,30 @@ async function postHandler(request: Request, _context?: unknown) {
 
   const parsed = parseImageModel(resolvedModel);
   const providerConfig = parsed.provider ? getImageProvider(parsed.provider) : null;
-  // Firefly nano/gpt-image accept multiple reference blobs; other non-Codex stay at 1.
+  const prepareFalInput = getFalCompatibilityPreparer();
+  const falNative = prepareFalInput !== null;
+  // Firefly nano/gpt-image, fal edit models and Antigravity Gemini image accept multiple
+  // reference images; other non-Codex stay at 1.
+  const isGeminiImageEdit =
+    providerConfig?.format === "gemini-image" || parsed.provider === "antigravity";
   const maxRefsForProvider =
     providerConfig?.format === "adobe-firefly-image"
       ? 4
       : providerConfig?.format === "codex-responses"
         ? Number.POSITIVE_INFINITY
-        : providerConfig?.format === "fal-ai" && isFalImageEditModel(parsed.model)
-          ? FAL_IMAGE_EDIT_MAX_REFERENCES
-          : MAX_NON_CODEX_IMAGE_EDIT_REFERENCES;
+        : providerConfig?.format === "fal-ai" && isFalImageEditModel(parsed.model, falNative)
+          ? falImageEditMaxReferences(parsed.model)
+          : isGeminiImageEdit
+            ? GEMINI_IMAGE_MAX_REFERENCES
+            : MAX_NON_CODEX_IMAGE_EDIT_REFERENCES;
   if (providerConfig?.format !== "codex-responses" && imageInputCount > maxRefsForProvider) {
     return errorResponse(
       HTTP_STATUS.BAD_REQUEST,
       providerConfig?.format === "adobe-firefly-image"
         ? "Adobe Firefly image edit supports at most 4 reference images"
-        : "This image edit provider currently supports only one reference image"
+        : isGeminiImageEdit
+          ? `Antigravity image edit supports at most ${GEMINI_IMAGE_MAX_REFERENCES} reference images`
+          : "This image edit provider currently supports only one reference image"
     );
   }
   // Built-in Codex uses its native Responses hosted tool for stateless reference-image edits.
@@ -707,8 +781,20 @@ async function postHandler(request: Request, _context?: unknown) {
       parsed.provider,
       null,
       allowedConnections,
-      resolvedModel
+      resolvedModel,
+      imageQuotaPreflightOptions(parsed.provider)
     );
+    // Paid-only Codex models skip Free/Go accounts during selection; a pool made only of
+    // them still gets the explicit paid-plan answer instead of "no credentials".
+    if (
+      !credentials &&
+      (await isCodexPoolPlanIneligibleForModel(resolvedModel, allowedConnections))
+    ) {
+      return errorResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        "Codex image editing requires a paid ChatGPT/Codex plan"
+      );
+    }
     if (!credentials) {
       return errorResponse(
         HTTP_STATUS.UNAUTHORIZED,
@@ -795,7 +881,7 @@ async function postHandler(request: Request, _context?: unknown) {
     );
   }
 
-  if (providerConfig?.format === "fal-ai" && isFalImageEditModel(parsed.model)) {
+  if (providerConfig?.format === "fal-ai" && isFalImageEditModel(parsed.model, falNative)) {
     const credentials = await getProviderCredentialsWithQuotaPreflight(
       parsed.provider,
       null,
@@ -828,18 +914,19 @@ async function postHandler(request: Request, _context?: unknown) {
       editAccounting(accounting, parsed.provider, parsed.model, credentials),
       () =>
         handleFalAIImageEdit({
+          prepareFalInput,
           provider: parsed.provider,
           model: parsed.model,
           providerConfig,
-          body: {
+          body: falImageEditBody(parsed.model, falNative, input.options, {
             prompt,
-            size: size ?? undefined,
-            response_format: responseFormat ?? undefined,
-            n: 1,
-          },
+            size,
+            responseFormat,
+          }),
           images,
           credentials: credentials as Record<string, unknown>,
           log,
+          signal: request.signal,
         })
     );
 
@@ -886,6 +973,33 @@ async function postHandler(request: Request, _context?: unknown) {
       imageMime,
       signal: request.signal,
     });
+  }
+
+  // #18671: Leonardo uploads the reference as an init image and runs image-to-image.
+  if (providerConfig?.format === "leonardo-image") {
+    const preflight = await syntxEditPreflight(parsed.provider, allowedConnections, resolvedModel);
+    if (preflight instanceof Response) return preflight;
+    const result = await runImageRequestWithAccounting(
+      editAccounting(accounting, parsed.provider, parsed.model, preflight.credentials),
+      () =>
+        handleLeonardoImageGeneration({
+          provider: parsed.provider,
+          model: parsed.model,
+          providerConfig,
+          body: { prompt, size: size ?? undefined },
+          credentials: preflight.credentials as never,
+          log,
+          initImage: images[0] ?? null,
+        })
+    );
+    if (result.success) {
+      await clearRecoveredProviderState(preflight.credentials);
+      return jsonResponse(result.data);
+    }
+    return jsonResponse(
+      toJsonErrorPayload(result.error, "Image edit provider error"),
+      result.status ?? HTTP_STATUS.BAD_GATEWAY
+    );
   }
 
   // Built-in OpenRouter uses its unified Image API for reference-image
@@ -950,11 +1064,7 @@ async function postHandler(request: Request, _context?: unknown) {
 
   // Antigravity Gemini Image-to-Image editing support; Muse Image (muse-code) edits ride
   // the same handleImageGeneration path, which posts imageBytes to Meta's /images/edits.
-  if (
-    providerConfig?.format === "gemini-image" ||
-    providerConfig?.format === "muse-image" ||
-    parsed.provider === "antigravity"
-  ) {
+  if (isGeminiImageEdit || providerConfig?.format === "muse-image") {
     const credentials = await getProviderCredentialsWithQuotaPreflight(
       parsed.provider,
       null,
@@ -993,6 +1103,7 @@ async function postHandler(request: Request, _context?: unknown) {
       allowedConnections,
       execute: (creds) =>
         handleImageGeneration({
+          prepareFalInput,
           body: {
             model: resolvedModel,
             prompt,
@@ -1001,6 +1112,7 @@ async function postHandler(request: Request, _context?: unknown) {
             n: 1,
             imageBytes,
             imageMime,
+            referenceImages: images,
           },
           credentials: creds,
           log,
@@ -1022,7 +1134,7 @@ async function postHandler(request: Request, _context?: unknown) {
     return errorResponse(
       HTTP_STATUS.BAD_REQUEST,
       `Image edit is not supported for built-in provider "${parsed.provider}". ` +
-        `Use adobe-firefly, syntx, codex, or a custom OpenAI-compatible image provider.`
+        `Use adobe-firefly, syntx, codex, leonardo, or a custom OpenAI-compatible image provider.`
     );
   }
 

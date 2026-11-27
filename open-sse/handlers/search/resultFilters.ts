@@ -2,7 +2,7 @@ import type { SearchResult } from "../search.ts";
 
 /** URL() repairs "http:///go/..." into a host called "go"; reject that raw form first. */
 export function validSearchResultUrl(value: unknown): value is string {
-  if (typeof value !== "string" || !/^https?:\/\/[^/?#\\\s]+/i.test(value)) return false;
+  if (typeof value !== "string" || !/^https?:\/\/[^/?#\\\s]+/i.test(value) || /[\u0000-\u0020\u007f\\]/.test(value)) return false;
   try {
     const url = new URL(value);
     return Boolean(url.hostname) && !url.username && !url.password;

@@ -11,11 +11,16 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 import { getTaskManager } from "@/lib/a2a/taskManager";
 import { logRoutingDecision } from "@/lib/a2a/routingLogger";
 import { resolveA2AComboAttribution } from "@/lib/a2a/resolveComboAttribution";
 import { createA2AStream, SSE_HEADERS } from "@/lib/a2a/streaming";
-import { A2A_SKILL_HANDLERS, executeA2ATaskWithState } from "@/lib/a2a/taskExecution";
+import {
+  A2A_SKILL_HANDLERS,
+  executeA2ATaskWithState,
+  type A2ASkillHandler,
+} from "@/lib/a2a/taskExecution";
 import { getSettings } from "@/lib/db/settings";
 import { authenticateA2ARequest, resolveA2AOwner } from "@/lib/a2a/authenticate";
 import type { A2ACallerContext } from "@/lib/a2a/selfLoopAuth";
@@ -30,6 +35,15 @@ import { extractApiKey } from "@/sse/services/auth";
 // 1.0 method names and reshapes the synchronous response so 1.0 clients
 // (a2a-sdk 1.x, Hermes, …) can call the endpoint unchanged. v0.3 clients are
 // unaffected.
+
+/**
+ * Explicit allowlist of dispatchable skills. `params.skill` is caller-controlled, so it is
+ * looked up in a Map rather than as an object index: a name such as "constructor" or
+ * "toString" must never resolve to an Object.prototype member and be invoked as a handler.
+ */
+const SKILL_HANDLERS: ReadonlyMap<string, A2ASkillHandler> = new Map(
+  Object.entries(A2A_SKILL_HANDLERS)
+);
 
 const V1_METHOD_ALIASES: Record<string, string> = {
   SendMessage: "message/send",
@@ -193,7 +207,7 @@ export async function POST(req: NextRequest) {
   const callerOwner = await resolveA2AOwner(req);
   // Skills that call back into OmniRoute send this caller's API key. Only a
   // caller without one (a dashboard session) gets OMNIROUTE_API_KEY instead.
-  const caller: A2ACallerContext = { apiKey: extractApiKey(req) };
+  const caller: A2ACallerContext = { apiKey: extractApiKey(req, { allowUrl: false }) };
 
   // A2A 1.0 method-name compatibility (SendMessage → message/send, etc.)
   const isV1Method = method in V1_METHOD_ALIASES;
@@ -212,7 +226,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const handler = A2A_SKILL_HANDLERS[skill];
+      const handler = SKILL_HANDLERS.get(skill);
       if (!handler) {
         return jsonRpcError(id, -32601, `Unknown skill: ${skill}`);
       }
@@ -270,7 +284,7 @@ export async function POST(req: NextRequest) {
         });
       } catch (err) {
         console.error("A2A ERROR TRACE:", err);
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
         tm.updateTask(task.id, "failed", [{ type: "error", content: msg }], msg);
         return jsonRpcError(id, -32603, `Skill execution failed: ${msg}`);
       }
@@ -288,7 +302,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const handler = A2A_SKILL_HANDLERS[skill];
+      const handler = SKILL_HANDLERS.get(skill);
       if (!handler) {
         return jsonRpcError(id, -32601, `Unknown skill: ${skill}`);
       }
@@ -329,8 +343,11 @@ export async function POST(req: NextRequest) {
         const task = tm.cancelTask(taskId, callerOwner);
         return jsonRpcResult(id, { task: { id: task.id, state: task.state } });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return jsonRpcError(id, -32603, msg);
+        return jsonRpcError(
+          id,
+          -32603,
+          sanitizeErrorMessage(err instanceof Error ? err.message : String(err))
+        );
       }
     }
 

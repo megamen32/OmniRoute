@@ -65,7 +65,10 @@ import type { ResolvedComboTarget } from "./types.ts";
  */
 export const STICKINESS_HEADROOM_THRESHOLD = 0.15;
 
-/** TTL aligned with sessionManager.ts SESSION_TTL_MS (15 min). */
+/**
+ * TTL matching the sessionManager.ts SESSION_TTL_MS default (15 min). Fixed here:
+ * OMNIROUTE_SESSION_TTL_MIN only changes the sessionManager map, not combo bindings.
+ */
 const TTL_MS = 15 * 60 * 1000;
 
 /** Cap to prevent unbounded memory growth. */
@@ -75,6 +78,7 @@ const MAX_ENTRIES = 500;
 
 interface StickyEntry {
   connectionId: string;
+  modelStr?: string;
   createdAt: number;
   lastUsedAt: number;
   /** Combo identity that owns this binding (matches `scopeMessageHash` namespace). */
@@ -361,11 +365,13 @@ export function recordStickyBinding(
   messageHash: string,
   connectionId: string,
   namespace?: string,
+  modelStr?: string,
   provider?: string
 ): void {
   const existing = stickyMap.get(messageHash);
   if (existing) {
     existing.connectionId = connectionId;
+    existing.modelStr = modelStr;
     existing.lastUsedAt = Date.now();
     if (namespace) existing.namespace = namespace;
     if (provider) existing.provider = provider;
@@ -373,12 +379,43 @@ export function recordStickyBinding(
     evict();
     stickyMap.set(messageHash, {
       connectionId,
+      ...(modelStr ? { modelStr } : {}),
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       ...(namespace ? { namespace } : {}),
       ...(provider ? { provider } : {}),
     });
   }
+}
+
+/**
+ * Record the successful attempt's sticky binding. Every strategy except `jev` keeps the
+ * pre-#15279 behavior exactly: bind the declared target connection, no namespace. `jev`
+ * binds the account that actually served (the selected-connection header) together with
+ * the model Jev chose, scoped to the combo, so the next turn stays on both.
+ */
+export function recordSuccessfulComboStickyBinding(
+  context: {
+    sticky: { messageHash: string | null };
+    combo: { name: string };
+    strategy: string;
+  },
+  declaredConnectionId: string | null | undefined,
+  effectiveConnectionId: string,
+  modelStr: string,
+  provider?: string
+): void {
+  const { messageHash } = context.sticky;
+  if (!messageHash) return;
+  if (context.strategy !== "jev") {
+    const chosenConnection = effectiveConnectionId || declaredConnectionId;
+    if (chosenConnection) {
+      recordStickyBinding(messageHash, chosenConnection, undefined, modelStr, provider);
+    }
+    return;
+  }
+  if (!effectiveConnectionId) return;
+  recordStickyBinding(messageHash, effectiveConnectionId, context.combo.name, modelStr, provider);
 }
 
 /** Remove a binding (e.g. after the connection is confirmed unhealthy). */
@@ -413,6 +450,28 @@ export function clearStickyBindingsForCombo(namespace: string): void {
  */
 export function peekStickyConnectionId(messageHash: string): string | null {
   return stickyMap.get(messageHash)?.connectionId ?? null;
+}
+
+/**
+ * Read the request's combo-scoped sticky binding without refreshing its TTL or
+ * clearing a live binding whose target has not been expanded into the current
+ * pool. An expired entry is evicted on read so peek-heavy callers (the Jev
+ * preview paths) keep the store self-cleaning even when no writer runs.
+ */
+export function peekSessionStickinessBinding(
+  messages: Array<{ role?: string; content?: unknown }> | null | undefined,
+  namespace?: string
+): { messageHash: string | null; connectionId: string | null; modelStr: string | null } {
+  const rawMessageHash = deriveMessageHash(messages);
+  if (!rawMessageHash) return { messageHash: null, connectionId: null, modelStr: null };
+  const messageHash = scopeMessageHash(rawMessageHash, namespace);
+  const entry = stickyMap.get(messageHash);
+  if (!entry) return { messageHash, connectionId: null, modelStr: null };
+  if (Date.now() - entry.lastUsedAt > TTL_MS) {
+    stickyMap.delete(messageHash);
+    return { messageHash, connectionId: null, modelStr: null };
+  }
+  return { messageHash, connectionId: entry.connectionId, modelStr: entry.modelStr ?? null };
 }
 
 /** Reset the entire store (for testing). */
@@ -518,10 +577,10 @@ export async function applySessionStickiness(
     // materialize the saved account on the matching provider target before
     // promoting it after a successful dynamic failover.
     let targets = orderedTargets;
-    let stickyIdx = orderedTargets.findIndex((t) => t.connectionId === connectionId);
+    let stickyIdx = orderedTargets.findIndex((t) => t.connectionId === connectionId && (!existing.modelStr || t.modelStr === existing.modelStr));
     if (stickyIdx === -1 && existing.provider) {
       const dynamicIdx = orderedTargets.findIndex(
-        (target) => !target.connectionId && target.provider === existing.provider
+        (target) => !target.connectionId && target.provider === existing.provider && (!existing.modelStr || target.modelStr === existing.modelStr)
       );
       if (dynamicIdx !== -1) {
         stickyIdx = dynamicIdx;

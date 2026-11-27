@@ -16,6 +16,8 @@ import { recordKeyQuotaUsage } from "@/domain/keyQuota";
 import { recordTokenUsage } from "../../services/tokenLimitCounter.ts";
 import { computeBillableTokens } from "./upstreamTimeouts.ts";
 import { type EffectiveServiceTier } from "./serviceTier.ts";
+import { type AgentContext } from "./agentContext.ts";
+import { type AgentSessionTurn } from "./agentSessionTurn.ts";
 
 export type RecordStreamingUsageStatsContext = {
   provider: string | null | undefined;
@@ -31,11 +33,18 @@ export type RecordStreamingUsageStatsContext = {
   comboStrategy: string | null | undefined;
   endpoint?: string | null | undefined;
   cpaAuthIndex?: string | null | undefined;
+  agentContext?: AgentContext | null;
+  sessionTurn?: AgentSessionTurn | null;
   /** Tokens generated before a 499 / mid-stream failure (usage is null then). */
   partialUsage?: unknown;
   /** Whether the stream carried output, so a combo cannot have failed over from it. */
   emittedOutput?: boolean;
 };
+
+/** Agent attribution for the usage row (session identity and the captured turn, both optional). */
+function streamingUsageAgentFields(ctx: RecordStreamingUsageStatsContext) {
+  return { agentContext: ctx.agentContext ?? null, sessionTurn: ctx.sessionTurn ?? null };
+}
 
 function persistStreamingUsageRow(usage: object, ctx: RecordStreamingUsageStatsContext): void {
   const { provider, model, streamStatus, startTime, ttft, streamErrorCode } = ctx;
@@ -56,6 +65,7 @@ function persistStreamingUsageRow(usage: object, ctx: RecordStreamingUsageStatsC
     comboStrategy: ctx.isCombo ? ctx.comboStrategy || undefined : undefined,
     endpoint: ctx.endpoint || undefined,
     cpaAuthIndex: ctx.cpaAuthIndex || undefined,
+    ...streamingUsageAgentFields(ctx),
   }).catch((err) => {
     console.error("Failed to save usage stats:", err.message);
   });

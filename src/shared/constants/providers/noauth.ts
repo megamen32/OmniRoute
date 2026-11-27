@@ -214,11 +214,11 @@ export const NOAUTH_PROVIDERS = {
     noAuth: true,
     hasFree: false,
     serviceKinds: ["llm"],
-    isLocalCli: true,
+    toolCalling: "native",
     authHint:
-      "No API key stored by OmniRoute. The local MiniMax Code app-server uses the existing MiniMax login.",
+      "No API key stored by OmniRoute. The provider reads the local MiniMax Code profile to authenticate a run. You can also sign in to your MiniMax account from this page (device code) \u2014 the credential is written into that same local profile.",
     notice: {
-      text: "MiniMax Code runs locally through its native app-server. OmniRoute never receives or stores the MiniMax credential.",
+      text: "MiniMax Code talks to the managed MiniMax subscription gateway. The credential lives in your local MiniMax Code profile: OmniRoute reads it to authenticate a run, writes a rotated credential back to it, and the dashboard sign-in writes the account credential into it too. The dashboard connection is the account entry \u2014 the credential a run uses is the one in your local profile.",
     },
   },
   "codex-app-server": {
@@ -243,26 +243,6 @@ export const NOAUTH_PROVIDERS = {
       "No token stored by OmniRoute. The Codex CLI app-server manages its own ChatGPT sign-in (~/.codex/auth.json, auto-refreshed). Use \u201cSign in with ChatGPT\u201d if the CLI is not yet authenticated.",
     notice: {
       text: "OpenAI Codex (App-Server) drives the Codex CLI's local app-server (JSON-RPC over WebSocket). The CLI self-manages its OpenAI OAuth, so OmniRoute never sees or replays your token. Requires the codex CLI reachable at the configured app-server URL; sign in via the CLI or the dashboard \u201cSign in with ChatGPT\u201d action.",
-    },
-  },
-  uncloseai: {
-    id: "uncloseai",
-    alias: "unc",
-    name: "UncloseAI",
-    icon: "auto_awesome",
-    color: "#8B5CF6",
-    textIcon: "UN",
-    website: "https://uncloseai.com",
-    noAuth: true,
-    hasFree: true,
-    passthroughModels: true,
-    serviceKinds: ["llm"],
-    toolCalling: "emulated",
-    authHint:
-      "No auth required. API accepts any non-empty string as key for identification. If older built-in models return 404, use Available Models → Import from /models or Auto-Sync; verified live model: Lorbus/Qwen3.6-27B-int4-AutoRound.",
-    freeNote: "Free forever — no signup, no credit card. OpenAI-compatible endpoints.",
-    notice: {
-      text: "UncloseAI needs no API key. API accepts any non-empty string as key for identification. If older built-in models return 404, use Available Models → Import from /models or Auto-Sync.",
     },
   },
   aihorde: {

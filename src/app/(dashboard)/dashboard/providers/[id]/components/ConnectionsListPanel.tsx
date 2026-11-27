@@ -22,6 +22,11 @@ import type { ConnectionDeleteConfirmState } from "../hooks/useConnectionDeleteC
 import type { QuotaRefreshState } from "../hooks/providerQuotaRefresh";
 import type { ProviderQuotaCacheEntry } from "../hooks/useProviderQuota";
 import { filterConnectionsByQuery } from "../connectionsSearchFilter";
+import {
+  countVerificationRequired,
+  matchesHealthFilter,
+  VERIFICATION_REQUIRED_FILTER,
+} from "../connectionHealthFilter";
 
 /** Rows with no explicit Codex refresh outcome yet (stable reference across renders). */
 const NO_QUOTA_REFRESH_STATES: Readonly<Record<string, QuotaRefreshState>> = {};
@@ -68,6 +73,7 @@ type ConnectionsListPanelProps = {
   handleToggleCodexPaidCredits: (id: string, enabled: boolean) => void;
   canAutoSync?: boolean;
   handleToggleConnectionAutoSync?: (connectionId: string, enabled: boolean) => void;
+  handleToggleConnectionHealthCheck?: (connectionId: string, enabled: boolean) => void;
   handleToggleCliproxyapiMode: (id: string, enabled: boolean) => void;
   handleSetUpstreamProxyMode: (
     mode: "native" | "cliproxyapi" | "dario" | "fallback",
@@ -111,6 +117,14 @@ function quotaVisibilityHandler(
   toggle: (id: string, visible: boolean) => void
 ) {
   return supported ? (visible: boolean) => toggle(connectionId, visible) : undefined;
+}
+
+// Extracted so the two ConnectionRow render sites don't each add a ternary decision point.
+function healthCheckToggleHandler(
+  toggle: ((connectionId: string, enabled: boolean) => void) | undefined,
+  connectionId: string
+) {
+  return toggle ? (enabled: boolean) => toggle(connectionId, enabled) : undefined;
 }
 
 // #7643 — extracted so the two ConnectionRow render call sites (already
@@ -159,6 +173,7 @@ export default function ConnectionsListPanel({
   handleToggleClaudeExtraUsage,
   handleToggleCodexPaidCredits,
   handleToggleConnectionAutoSync,
+  handleToggleConnectionHealthCheck,
   handleToggleCliproxyapiMode,
   handleSetUpstreamProxyMode,
   upstreamProxyMode,
@@ -243,10 +258,7 @@ export default function ConnectionsListPanel({
     </ActionBar>
   );
 
-  const isHealthy = (c: ConnectionRowConnection): boolean => {
-    const s = c.testStatus;
-    return c.isActive !== false && !c.prefixShadowed && (!s || s === "active" || s === "success");
-  };
+  const verificationRequiredCount = countVerificationRequired(sorted);
   const STATUS_FILTER_OPTIONS = [
     { value: "all", label: t("filterAll", "All") },
     { value: "active", label: t("filterActive", "Active") },
@@ -256,18 +268,18 @@ export default function ConnectionsListPanel({
       value: "credits_exhausted",
       label: t("filterCreditsExhausted", "Credits Exhausted"),
     },
+    // Only shown while some account still holds a Google verify-account link.
+    ...(verificationRequiredCount > 0 || healthFilter === VERIFICATION_REQUIRED_FILTER
+      ? [
+          {
+            value: VERIFICATION_REQUIRED_FILTER,
+            label: `${t("filterVerificationRequired", "Needs verification")} (${verificationRequiredCount})`,
+          },
+        ]
+      : []),
   ];
   const healthFiltered =
-    healthFilter === "all"
-      ? sorted
-      : sorted.filter((c) => {
-          if (healthFilter === "active") return isHealthy(c);
-          if (healthFilter === "error")
-            return (
-              !isHealthy(c) && c.testStatus !== "banned" && c.testStatus !== "credits_exhausted"
-            );
-          return c.testStatus === healthFilter;
-        });
+    healthFilter === "all" ? sorted : sorted.filter((c) => matchesHealthFilter(c, healthFilter));
   // #7937 — substring search over id/tag/name/email, applied across the FULL
   // in-memory list (not just the current page).
   const filtered = filterConnectionsByQuery(accountSearch, healthFiltered);
@@ -424,6 +436,10 @@ export default function ConnectionsListPanel({
                     ? (enabled) => handleToggleConnectionAutoSync(conn.id, enabled)
                     : undefined
                 }
+                onToggleHealthCheck={healthCheckToggleHandler(
+                  handleToggleConnectionHealthCheck,
+                  conn.id
+                )}
                 isCodex={providerId === "codex" || providerId === "codex-app-server"}
                 isCcCompatible={isCcCompatible}
                 cliproxyapiEnabled={cpaProviderEnabled}
@@ -578,7 +594,7 @@ export default function ConnectionsListPanel({
               {tag && (
                 <div className="flex items-center gap-2 px-3 pt-2 pb-1">
                   <Icon name="label" size={13} className="text-text-muted/50" />
-                  <span className="text-[11px] font-semibold uppercase tracking-widest text-text-muted/60 select-none">
+                  <span className="ci-eyebrow select-none" data-size="2xs" data-weight="medium">
                     {tag}
                   </span>
                   <div className="flex-1 h-px bg-bg-subtle" />
@@ -589,7 +605,7 @@ export default function ConnectionsListPanel({
                     disabled={batchTesting || !!retestingId}
                     size="sm"
                   />
-                  <span className="text-[10px] text-text-muted/40">{groupTotal}</span>
+                  <span className="text-3xs text-text-muted/40">{groupTotal}</span>
                 </div>
               )}
               <div className="flex flex-col divide-y divide-border">
@@ -624,6 +640,10 @@ export default function ConnectionsListPanel({
                         ? (enabled) => handleToggleConnectionAutoSync(conn.id, enabled)
                         : undefined
                     }
+                    onToggleHealthCheck={healthCheckToggleHandler(
+                      handleToggleConnectionHealthCheck,
+                      conn.id
+                    )}
                     isCodex={providerId === "codex" || providerId === "codex-app-server"}
                     isCcCompatible={isCcCompatible}
                     cliproxyapiEnabled={cpaProviderEnabled}

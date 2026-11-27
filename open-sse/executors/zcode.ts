@@ -535,14 +535,21 @@ export async function waitForNativeZcodeSelection(
   startupTimeoutMs = 10_000,
   fallbackMaxOutputTokens?: number,
   exactAccount = false,
-  requestedEffort?: string
+  requestedEffort?: string,
+  turnDeadline?: number
 ): Promise<{ selection: ZcodeTurnSelection; nativeMaxTokens: number | undefined }> {
   const fallbackProviderId = providerId || ZCODE_FALLBACK_PROVIDER_ID;
-  const readyDeadline = Date.now() + startupTimeoutMs;
+  const readyDeadline = Math.min(Date.now() + startupTimeoutMs, turnDeadline ?? Infinity);
   for (;;) {
     let registry: unknown;
     try {
-      registry = await withAbort(client.call("model-selection", "getView", []), signal);
+      registry = await withAbort(
+        client.call("model-selection", "getView", [], {
+          timeoutMs: Math.max(1, readyDeadline - Date.now()),
+          signal: signal ?? undefined,
+        }),
+        signal
+      );
     } catch (error) {
       if (exactAccount) throw error;
       return {
@@ -795,7 +802,8 @@ export class ZcodeExecutor extends BaseExecutor {
             this.startupTimeoutMs,
             undefined,
             !ZCODE_MODEL_ALLOWLIST.has(resolution.model),
-            requestedZcodeReasoningLevel(input.body)
+            requestedZcodeReasoningLevel(input.body),
+            deadline
           )
         );
         const selection = selected.selection;

@@ -3,7 +3,7 @@
  */
 
 import { getDbInstance } from "./core";
-import { backupDbFile } from "./backup";
+import { backupDbFile, backupDbFileAwaited } from "./backup";
 import { PROVIDER_ID_TO_ALIAS } from "@omniroute/open-sse/config/providerModels.ts";
 import {
   getProxyRefusalSeq,
@@ -15,6 +15,7 @@ import { isProxySkipRecentlyFailedEnabled } from "@/shared/utils/featureFlags";
 import { invalidateDbCache } from "./readCache";
 import { encrypt, decrypt } from "./encryption";
 import { getProxyRegistryGeneration, resolveProxyForScopeFromRegistry } from "./proxies";
+import { syncRotatingEgressExemptions } from "./proxies/rotatingEgress";
 import { isEgressBucketedLockScope } from "@omniroute/open-sse/config/providerErrorRules.ts";
 import { getComboModelProvider as getComboEntryProvider } from "@/lib/combos/steps";
 import {
@@ -26,6 +27,7 @@ import { decodeUserinfo } from "@/shared/utils/decodeUserinfo";
 import { type JsonRecord, toRecord } from "./settings/shared";
 import { resolveNoAuthSharedProviderProxy } from "./settings/noAuthProxyFallback";
 import { PROXY_BULK_IMPORT_LIMIT_DEFAULT } from "@/shared/constants/proxyBulkImport";
+import { createBankedResetAutoApplyDefaults } from "@/shared/constants/bankedResetAutoApply";
 import { DEFAULT_NEW_CONNECTION_PROXY_ENABLED } from "@/shared/constants/newConnectionProxy.mjs";
 
 /**
@@ -45,6 +47,8 @@ type ProxyResolutionResult = {
   level: string;
   levelId: string | null;
   source?: string;
+  // Present only when a pool's `session` strategy chose the member from a session key.
+  rotationStrategy?: "session";
 };
 // State observed when a resolution started; an entry is stored only if it still holds.
 type ProxyResolutionStamp = {
@@ -165,9 +169,34 @@ function applySessionAffinityLegacyFallback(settings: Record<string, unknown>): 
   }
 }
 
+/**
+ * Merge stored rows over the defaults. `databaseSettings` rows go first and only fill keys the
+ * defaults already know (#20191), so a `settings` row for the same key always wins.
+ */
+function applyStoredSettingRows(settings: Record<string, unknown>, rows: unknown[]): void {
+  const isFallbackRow = (row: unknown) => toRecord(row).namespace === "databaseSettings";
+  const ordered = [...rows.filter(isFallbackRow), ...rows.filter((row) => !isFallbackRow(row))];
+  for (const row of ordered) {
+    const record = toRecord(row);
+    const key = typeof record.key === "string" ? record.key : null;
+    const rawValue = typeof record.value === "string" ? record.value : null;
+    if (!key || rawValue === null || key.startsWith("_")) continue;
+    if (isFallbackRow(row) && !(key in settings)) continue;
+    try {
+      settings[key] = JSON.parse(rawValue);
+    } catch {
+      settings[key] = rawValue;
+    }
+  }
+}
+
 export async function getSettings() {
   const db = getDbInstance();
-  const rows = db.prepare("SELECT key, value FROM key_value WHERE namespace = 'settings'").all();
+  const rows = db
+    .prepare(
+      "SELECT namespace, key, value FROM key_value WHERE namespace IN ('settings', 'databaseSettings')"
+    )
+    .all() as Array<{ namespace?: string; key?: string; value?: string }>;
   const settings: Record<string, unknown> = {
     cloudEnabled: false,
     tailscaleEnabled: false,
@@ -176,10 +205,6 @@ export async function getSettings() {
     disableSessionStickiness: false,
     // Global connection-aware expansion fallback for group-B combo strategies is opt-in.
     connectionAwareExpansion: false,
-    // Keep combo targets whose known output ceiling is below the request's
-    // max_tokens instead of treating output_tokens as a hard compatibility
-    // mismatch; the upstream then applies its own ceiling.
-    outputLimitAdvisory: false,
     promptCacheAffinityEnabled: true,
     geminiPromptCacheMode: "off",
     comboStrategy: "fallback",
@@ -191,6 +216,11 @@ export async function getSettings() {
     // ProviderLimits/utils.tsx) — this is a personal view preference, not an
     // admin model-catalog edit. Ported from upstream decolua/9router#2371.
     quotaVisibility: {},
+    // Per-operator Quota Tracker provider group order (drag-to-reorder), written
+    // through by ProviderLimits/useProviderOrder. Empty = no server order (the
+    // dashboard keeps its localStorage order, else the built-in PROVIDER_ORDER).
+    // Display-only; never touches connection priority.
+    quotaProviderOrder: [],
     // #13917: operator-configurable ceiling for POST /api/settings/proxies/bulk-import.
     // Resolved through resolveProxyBulkImportLimit at both enforcement points.
     proxyBulkImportLimit: PROXY_BULK_IMPORT_LIMIT_DEFAULT,
@@ -275,8 +305,11 @@ export async function getSettings() {
     // Operators flip the kill-switch to false (or drop the prefix) via the
     // Settings UI; the change hot-reloads through `applyRuntimeSettings` →
     // `applyAuthzBypassSection` → `getAuthzBypassSnapshot()`.
+    // `/api/resilience/connections` is read-only JSON (no spawn): bypassable by
+    // default so Resilience > Connections loads on a remote dashboard. An install
+    // that already stored its own list keeps that list.
     localOnlyManageScopeBypassEnabled: true,
-    localOnlyManageScopeBypassPrefixes: ["/api/mcp/"],
+    localOnlyManageScopeBypassPrefixes: ["/api/mcp/", "/api/resilience/connections"],
     customBannedSignals: [],
     autoDisableBannedScope: "all",
     proxyEnabled: true,
@@ -320,6 +353,22 @@ export async function getSettings() {
     // connection on, since pinging burns a small amount of real quota (Hard Rule #20
     // spirit: never mutate/consume on the operator's behalf by default).
     codexAutoPing: { connections: {} },
+    // Opt-in auto-apply of banked resets (Codex credits, Claude grants, Claude weekly
+    // session reset). OFF and dry-run by default — never redeems on the operator's behalf
+    // until enabled. Stored values are merged with these defaults by
+    // mergeBankedResetAutoApplySettings (src/lib/usage/bankedResetPolicy.ts).
+    bankedResetAutoApply: createBankedResetAutoApplyDefaults(),
+    // Opt-in auto-spend of Codex reset credits that are about to expire. Spending a
+    // credit mutates upstream account state, so this is off by default (Hard Rule #20
+    // spirit: never consume on the operator's behalf until they opt in).
+    // `enabled` is the master switch; `connections` narrows it to specific ids
+    // (absent = every eligible Codex connection; `{}` = nobody). `maxPerDay` is a
+    // per-connection ceiling and `horizonHours` how close to expiry a credit must be.
+    codexSpendExpiringResetCredits: {
+      enabled: false,
+      horizonHours: 24,
+      maxPerDay: 1,
+    },
     // #8848: opt-in per-connection Claude proactive warmup (empty = off for everyone).
     claudeWarmup: { connections: {} },
     // Operator-set CLI client-version overrides for the Claude Code / Codex
@@ -327,17 +376,7 @@ export async function getSettings() {
     // override: resolution falls back to the env var, then the captured pin.
     cliVersionOverrides: {},
   };
-  for (const row of rows) {
-    const record = toRecord(row);
-    const key = typeof record.key === "string" ? record.key : null;
-    const rawValue = typeof record.value === "string" ? record.value : null;
-    if (!key || rawValue === null || key.startsWith("_")) continue;
-    try {
-      settings[key] = JSON.parse(rawValue);
-    } catch {
-      settings[key] = rawValue;
-    }
-  }
+  applyStoredSettingRows(settings, rows);
 
   for (const encryptedKey of ENCRYPTED_SETTING_KEYS) {
     if (typeof settings[encryptedKey] === "string") {
@@ -394,6 +433,13 @@ export async function updateSettings(
     }
   }
 
+  // Snapshot the state BEFORE the write, and wait for it: a snapshot started after the
+  // commit holds the new value, so it could not roll this change back. A failed routine
+  // snapshot is logged and must not block the settings write.
+  await backupDbFileAwaited("pre-write").catch((error: unknown) => {
+    console.error("[DB] Pre-write backup failed:", error instanceof Error ? error.message : error);
+  });
+
   const db = getDbInstance();
   const insert = db.prepare(
     "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('settings', ?, ?)"
@@ -410,7 +456,6 @@ export async function updateSettings(
     insert.run(SETTINGS_REVISION_KEY, JSON.stringify(currentRevision + 1));
   });
   tx();
-  backupDbFile("pre-write");
   invalidateDbCache("settings"); // Bust the read cache immediately
 
   // Bust proxy resolution cache when proxy toggle settings change
@@ -615,10 +660,14 @@ function requiresStableEgress(provider: string | null): boolean {
 // which re-invokes resolveProxyForScopeFromRegistry and applies the pool's own selection
 // strategy (round-robin advances, sticky holds until its window elapses, random reshuffles) —
 // no new strategy is introduced here.
+// One exception for an egress-bucketed provider: when its pool runs the `session` strategy
+// and the request carries a session key, each conversation already gets one stable member,
+// so the cascade re-runs to hash this key. grok-web stays pinned whatever the strategy.
 function isCachedPoolMemberDue(
   entry: ProxyResolutionCacheEntry,
   db: ReturnType<typeof getDbInstance>,
-  connectionId: string
+  connectionId: string,
+  sessionKey?: string | null
 ): boolean {
   const { result } = entry;
   if (result.source !== "registry" || result.proxy == null) return false;
@@ -626,14 +675,21 @@ function isCachedPoolMemberDue(
     .prepare("SELECT provider FROM provider_connections WHERE id = ?")
     .get(connectionId) as { provider?: string } | undefined;
   const provider = typeof row?.provider === "string" ? row.provider : null;
-  return !requiresStableEgress(provider);
+  if (!requiresStableEgress(provider)) return true;
+  return (
+    Boolean(sessionKey) &&
+    result.rotationStrategy === "session" &&
+    isEgressBucketedLockScope(provider)
+  );
 }
 
 export async function resolveProxyForConnection(
   connectionId: string,
   apiKeyId?: string,
-  providerId?: string
+  providerId?: string,
+  options?: { sessionKey?: string | null }
 ) {
+  const sessionKey = options?.sessionKey ?? null;
   const cacheKey = providerId
     ? `${connectionId}:${apiKeyId || ""}:${providerId}`
     : apiKeyId
@@ -645,13 +701,14 @@ export async function resolveProxyForConnection(
     refusalSeq: getProxyRefusalSeq(),
   };
   const db = getDbInstance();
+  syncRotatingEgressExemptions();
   const cached = proxyResolutionCache.get(cacheKey);
   if (
     cached &&
     cached.generation === stamp.generation &&
     cached.registryGeneration === stamp.registryGeneration &&
     !isCachedPoolMemberSetAside(cached) &&
-    !isCachedPoolMemberDue(cached, db, connectionId)
+    !isCachedPoolMemberDue(cached, db, connectionId, sessionKey)
   ) {
     return cached.result;
   }
@@ -772,7 +829,9 @@ export async function resolveProxyForConnection(
   }
 
   // Step 3: Account-level registry
-  const registryAccount = await resolveProxyForScopeFromRegistry("account", connectionId);
+  const registryAccount = await resolveProxyForScopeFromRegistry("account", connectionId, {
+    sessionKey,
+  });
   if (registryAccount?.proxy) {
     cacheProxyResolution(cacheKey, stamp, registryAccount);
     return registryAccount;
@@ -795,7 +854,8 @@ export async function resolveProxyForConnection(
     if (connectionProvider && connectionProxyEnabled) {
       const registryProvider = await resolveProxyForScopeFromRegistry(
         "provider",
-        connectionProvider
+        connectionProvider,
+        { sessionKey }
       );
       if (registryProvider?.proxy) {
         cacheProxyResolution(cacheKey, stamp, registryProvider);
@@ -826,7 +886,9 @@ export async function resolveProxyForConnection(
           );
           if (!usesProvider) continue;
 
-          const registryCombo = await resolveProxyForScopeFromRegistry("combo", comboId);
+          const registryCombo = await resolveProxyForScopeFromRegistry("combo", comboId, {
+            sessionKey,
+          });
           if (registryCombo?.proxy) {
             cacheProxyResolution(cacheKey, stamp, registryCombo);
             return registryCombo;
@@ -873,7 +935,7 @@ export async function resolveProxyForConnection(
   }
 
   // Step 9: Global registry
-  const registryGlobal = await resolveProxyForScopeFromRegistry("global");
+  const registryGlobal = await resolveProxyForScopeFromRegistry("global", null, { sessionKey });
   if (registryGlobal?.proxy) {
     cacheProxyResolution(cacheKey, stamp, registryGlobal);
     return registryGlobal;

@@ -16,6 +16,7 @@ import {
 } from "@/shared/utils/fetchTimeout";
 import { sanitizeErrorMessage } from "../../utils/error.ts";
 import { sleep } from "../../utils/sleep.ts";
+import { MAX_CALLER_POLL_TIMEOUT_MS } from "../../utils/pollBounds.ts";
 import {
   MAX_CONSECUTIVE_POLL_RETRIES,
   computePollRetryDelayMs,
@@ -107,6 +108,14 @@ export type VideoJobPreset = {
   statusFailed: string[];
   /** dot path into the poll response holding the finished video URL/array */
   resultPath: string;
+  /**
+   * Result location for providers whose finished poll response carries no URL at
+   * all (deAPI only serves the clip from `GET /v1/videos/{id}/content`). Contains
+   * {taskId} and optionally {model}; resolved against the job base URL and used
+   * instead of `resultPath`. Pair it with `resultNeedsAuth` when that route is
+   * gated by the provider key.
+   */
+  resultUrlTemplate?: string;
   /**
    * When true, the finished artifact is fetched with the provider credential and
    * stored locally, then reported as a URL on this gateway. Some providers publish
@@ -275,6 +284,40 @@ const VIDEO_JOB_PRESETS: Record<string, VideoJobPreset> = {
     resultFormat: "mp4",
     maxPolls: 180,
     pollIntervalMs: 2000,
+  },
+  // deAPI OpenAI-compatible gateway (https://docs.deapi.ai/openai-compatibility#video).
+  // POST /v1/videos → { id, status: "queued" }; GET /v1/videos/{id} moves through
+  // queued → in_progress → completed | failed and never carries a URL. The clip is
+  // served by the key-gated GET /v1/videos/{id}/content, so it is downloaded with the
+  // caller's deAPI key and re-served from this gateway. `seconds` is a string, as in
+  // the Sora contract; renders take minutes, hence the 5 s × 120 poll budget.
+  "deapi-video-job": {
+    id: "deapi-video-job",
+    displayName: "deAPI Video",
+    authHeaderName: "Authorization",
+    authScheme: "bearer",
+    baseUrlFallback: "https://oai.deapi.ai",
+    submit: {
+      method: "POST",
+      path: "/v1/videos",
+      buildBody: ({ model, prompt, duration, extras }) => ({
+        model,
+        prompt,
+        ...(typeof duration === "number" ? { seconds: String(duration) } : {}),
+        ...extras,
+      }),
+    },
+    taskIdPath: "id",
+    poll: { pathTemplate: "/v1/videos/{taskId}" },
+    statusPath: "status",
+    statusDone: ["completed"],
+    statusFailed: ["failed"],
+    resultPath: "url",
+    resultUrlTemplate: "/v1/videos/{taskId}/content",
+    resultNeedsAuth: true,
+    resultFormat: "mp4",
+    maxPolls: 120,
+    pollIntervalMs: 5000,
   },
 };
 
@@ -469,8 +512,18 @@ async function runVideoJobGeneration({
   }
 
   // Poll loop.
-  const maxPolls = maxPollsOverride ?? preset.maxPolls;
   const pollInterval = pollIntervalOverride ?? preset.pollIntervalMs;
+  // A preset has no deadline: its window is maxPolls x interval. Caller overrides of either
+  // may not stretch it past the larger of the preset's own window and the caller ceiling
+  // (CodeQL #1389); with no override this leaves the preset's maxPolls unchanged.
+  const windowCeilingMs = Math.max(
+    preset.maxPolls * preset.pollIntervalMs,
+    MAX_CALLER_POLL_TIMEOUT_MS
+  );
+  const maxPolls = Math.min(
+    maxPollsOverride ?? preset.maxPolls,
+    Math.max(1, Math.floor(windowCeilingMs / pollInterval))
+  );
 
   let consecutiveRetries = 0;
   let nextDelay = pollInterval;
@@ -478,9 +531,7 @@ async function runVideoJobGeneration({
     await sleep(nextDelay, signal);
     if (signal?.aborted) return abortedVideoResult();
     nextDelay = pollInterval;
-    const pollUrl = `${baseUrl}${preset.poll.pathTemplate
-      .replace("{taskId}", encodeURIComponent(taskId))
-      .replace("{model}", encodeURIComponent(model))}`;
+    const pollUrl = `${baseUrl}${fillJobPathTemplate(preset.poll.pathTemplate, taskId, model)}`;
     const pollResult = await fetchJson(pollUrl, {
       method: "GET",
       headers: buildJobHeaders(preset, credentials),
@@ -514,7 +565,9 @@ async function runVideoJobGeneration({
       readPath(pollResult.data, "state");
     const jobState = isDoneStatus(status, preset.statusDone, preset.statusFailed);
     if (jobState === "done") {
-      const url = readResultUrl(pollResult.data, preset.resultPath);
+      const url = preset.resultUrlTemplate
+        ? `${baseUrl}${fillJobPathTemplate(preset.resultUrlTemplate, taskId, model)}`
+        : readResultUrl(pollResult.data, preset.resultPath);
       if (!url) {
         return {
           success: false,
@@ -560,6 +613,13 @@ async function runVideoJobGeneration({
     status: 504,
     error: `Video job timed out after ${maxPolls} polls (${presetName})`,
   };
+}
+
+/** Substitute the URL-encoded job id and model into a preset path template. */
+function fillJobPathTemplate(template: string, taskId: string, model: string): string {
+  return template
+    .replace("{taskId}", encodeURIComponent(taskId))
+    .replace("{model}", encodeURIComponent(model));
 }
 
 function buildJobHeaders(preset: VideoJobPreset, credentials?: unknown): Record<string, string> {
@@ -652,7 +712,7 @@ async function storeAuthGatedResult({
   if (download.ok === false) {
     return { success: false, status: download.status, error: download.error };
   }
-  if (!download.base64) {
+  if (!download.buffer) {
     return {
       success: false,
       status: 502,
@@ -660,7 +720,7 @@ async function storeAuthGatedResult({
     };
   }
   const format = preset.resultFormat ?? "mp4";
-  const servedUrl = mediaSink.store(Buffer.from(download.base64, "base64"), format);
+  const servedUrl = mediaSink.store(download.buffer, format);
   if (!servedUrl) {
     return {
       success: false,
@@ -690,7 +750,7 @@ async function fetchJson(
     headers: Record<string, string>;
     body?: string;
     log?: LogLike;
-    /** Return the response body base64-encoded instead of parsing JSON. */
+    /** Return the response body as a Buffer instead of parsing JSON. */
     raw?: boolean;
     signal?: AbortSignal | null;
   }
@@ -711,7 +771,7 @@ async function fetchJson(
 }
 
 type FetchJsonResult =
-  | { ok: true; data?: unknown; base64?: string }
+  | { ok: true; data?: unknown; buffer?: Buffer }
   | { ok: false; status: number; error: string; retryAfterMs?: number };
 
 async function readFetchJsonResponse(
@@ -735,7 +795,7 @@ async function readFetchJsonResponse(
     if (buffer.length === 0) {
       return { ok: false, status: 502, error: `Empty media body from ${url}` };
     }
-    return { ok: true, base64: buffer.toString("base64") };
+    return { ok: true, buffer };
   }
   const data = await response.json();
   return { ok: true, data };

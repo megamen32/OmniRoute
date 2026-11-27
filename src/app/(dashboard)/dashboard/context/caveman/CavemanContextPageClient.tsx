@@ -177,15 +177,12 @@ export default function CavemanContextPageClient() {
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
       <PageHeader
         compact
-        title={
-          <span className="flex items-center gap-3">
-            <Icon name="compress" size={30} className="text-primary" />
-            {t("title")}
-          </span>
-        }
+        icon={<Icon name="compress" className="text-primary" />}
+        title={t("title")}
         description={t("description")}
         actions={
           <SegmentedControl
+            semantics="radio"
             aria-label={t("viewMode")}
             value={viewMode}
             onChange={(v) => setViewMode(v as "simple" | "advanced")}
@@ -200,7 +197,7 @@ export default function CavemanContextPageClient() {
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         {statCards.map(([label, value]) => (
           <Card key={label} padding="sm">
-            <p className="text-xs uppercase text-text-muted">{label}</p>
+            <p className="ci-eyebrow">{label}</p>
             <p className="mt-1 text-xl font-semibold text-text-main">{value}</p>
           </Card>
         ))}

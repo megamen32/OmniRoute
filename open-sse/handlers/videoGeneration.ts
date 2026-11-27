@@ -13,6 +13,7 @@ import { vertexGenerateVideo } from "../executors/vertexMedia.ts";
 import { handleGoogleFlowVideoGeneration } from "./videoGeneration/googleFlowHandler.ts";
 import { handleDeepinfraVideoGeneration } from "./videoGeneration/deepinfraHandler.ts";
 import { handleLeonardoVideoGeneration } from "./videoGeneration/leonardoHandler.ts";
+import { handleRenderhourVideoGeneration } from "./videoGeneration/renderhourHandler.ts";
 import { handleDashscopeVideoGeneration } from "./videoGeneration/dashscopeHandler.ts";
 import { handleMinimaxVideoGeneration } from "./videoGeneration/minimaxHandler.ts";
 import { handleNovitaVideoGeneration } from "./videoGeneration/novitaHandler.ts";
@@ -29,11 +30,11 @@ import {
 } from "./videoGeneration/job.ts";
 import { abortedVideoResult, POLL_ABORTED, pollJsonAfter } from "./videoGeneration/abort.ts";
 import { sleep } from "../utils/sleep.ts";
+import { clampVideoPollIntervalMs, clampPollTimeoutMs } from "../utils/pollBounds.ts";
 import {
   downloadResultVideo,
   extractRunwayFailureMessage,
   normalizeRunwayVideoResult,
-  resolvePositiveInteger,
   resultVideoErrorText,
   resolveRunwayDuration,
   resolveRunwayPromptImage,
@@ -134,12 +135,11 @@ function resolveVideoJobPollingOverrides(body: Record<string, unknown>): {
   pollIntervalMs?: number;
 } {
   const maxPolls = Number(body.max_polls);
-  const pollIntervalMs = Number(body.poll_interval_ms);
+  // 0 marks "not sent": the preset's own interval (2-5 s) then applies.
+  const pollIntervalMs = clampVideoPollIntervalMs(body.poll_interval_ms, 0);
   return {
     ...(Number.isFinite(maxPolls) && maxPolls > 0 ? { maxPolls: Math.floor(maxPolls) } : {}),
-    ...(Number.isFinite(pollIntervalMs) && pollIntervalMs > 0
-      ? { pollIntervalMs: Math.floor(pollIntervalMs) }
-      : {}),
+    ...(pollIntervalMs > 0 ? { pollIntervalMs } : {}),
   };
 }
 
@@ -192,6 +192,7 @@ export async function handleVideoGeneration({
   resolvedProvider = null,
   // #16372 — route-injected media sink (owner + public origin) for auth-gated job results.
   mediaSink = undefined,
+  prepareFalInput = null,
   signal = null,
 }) {
   if (signal?.aborted) return abortedVideoResult();
@@ -300,7 +301,16 @@ export async function handleVideoGeneration({
   }
 
   if (providerConfig.format === "fal-ai-video") {
-    return handleFalVideoGeneration({ model, provider, providerConfig, body, credentials, log });
+    return handleFalVideoGeneration({
+      prepareFalInput,
+      model,
+      provider,
+      providerConfig,
+      body,
+      credentials,
+      log,
+      signal,
+    });
   }
 
   if (providerConfig.format === "google-flow") {
@@ -326,6 +336,19 @@ export async function handleVideoGeneration({
 
   if (providerConfig.format === "kie-video") {
     return handleKieVideoGeneration({ model, provider, providerConfig, body, credentials, log });
+  }
+
+  if (providerConfig.format === "renderhour-video") {
+    return handleRenderhourVideoGeneration({
+      model,
+      provider,
+      providerConfig,
+      body,
+      credentials,
+      log,
+      signal,
+      recordCall: recordVideoJobCall,
+    });
   }
 
   if (providerConfig.format === "runwayml") {
@@ -843,8 +866,8 @@ async function handleKieVideoGeneration({
   } | null;
 }) {
   const startTime = Date.now();
-  const timeoutMs = Number(body.timeout_ms) > 0 ? Number(body.timeout_ms) : 300000;
-  const pollIntervalMs = Number(body.poll_interval_ms) > 0 ? Number(body.poll_interval_ms) : 2500;
+  const timeoutMs = clampPollTimeoutMs(body.timeout_ms, 300000);
+  const pollIntervalMs = clampVideoPollIntervalMs(body.poll_interval_ms, 2500);
   const token = credentials?.apiKey || credentials?.accessToken;
   const baseUrl = providerConfig.baseUrl.replace(/\/$/, "");
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
@@ -953,8 +976,8 @@ async function handleRunwayVideoGeneration({
 
   const ratio = resolveRunwayRatio(body);
   const duration = resolveRunwayDuration(body);
-  const timeoutMs = resolvePositiveInteger(body.timeout_ms, 300000);
-  const pollIntervalMs = resolvePositiveInteger(body.poll_interval_ms, 5000);
+  const timeoutMs = clampPollTimeoutMs(body.timeout_ms, 300000);
+  const pollIntervalMs = clampVideoPollIntervalMs(body.poll_interval_ms, 5000);
   const submitUrl = buildRunwayApiUrl(
     useImageToVideo ? "/image_to_video" : "/text_to_video",
     providerConfig.baseUrl

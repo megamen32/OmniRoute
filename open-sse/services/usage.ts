@@ -43,9 +43,10 @@ import {
 import { getCursorUsage } from "./usage/cursor.ts";
 import { getKimiUsage } from "./usage/kimi.ts";
 import { getCodexUsage } from "./usage/codex.ts";
-import { throttleQuotaFetch } from "./quotaFetchThrottle.ts";
 import { getClaudeUsage, getClaudePlanLabel } from "./usage/claude.ts";
-import { getKiroUsage } from "./usage/kiro.ts";
+// Re-exported for the quota saturation cache, which dates Claude plan-window readings.
+export { getClaudeUsageEndpointReadAt } from "./usage/claude.ts";
+import { getKiroUsage, buildKiroUsageResult, discoverKiroProfileArn } from "./usage/kiro.ts";
 // Re-exported para os testes kiro-* (importam de services/usage).
 export { buildKiroUsageResult, discoverKiroProfileArn } from "./usage/kiro.ts";
 import { getAdobeFireflyUsage } from "./usage/adobeFirefly.ts";
@@ -60,6 +61,7 @@ import { getPromptQlUsage } from "./usage/promptql.ts";
 import { getHyperAgentUsage } from "./usage/hyperagent.ts";
 import { getGitHubUsage, formatGitHubQuotaSnapshot, inferGitHubPlanName } from "./usage/github.ts";
 import { getCrofUsage } from "./usage/crof.ts";
+import { getMistralUsage } from "./usage/mistral.ts";
 import { getClinepassUsage } from "./usage/clinepass.ts";
 import { getNanoGptUsage } from "./usage/nanogpt.ts";
 import { getNanUsage } from "./usage/nan.ts";
@@ -94,9 +96,12 @@ import { getConolUsage } from "./conolUsage.ts";
 import { getSyntxUsage } from "./usage/syntx.ts";
 import { getAgentrouterUsage } from "./usage/agentrouter.ts";
 import { getKilocodeUsage } from "./usage/kilocode.ts";
+import { getMegabrainUsage } from "./usage/megabrain.ts";
 import { getChatPlaygroundUsage } from "./usage/chatplayground.ts";
 import { getTokenRouterUsage } from "./usage/tokenrouter.ts";
 import { getCloudflareAiUsage } from "./usage/cloudflareAi.ts";
+import { getXkiroUsage } from "./usage/xkiro.ts";
+import { getZedHostedUsage } from "./usage/zedHosted.ts";
 import { getMuseUsage } from "./usage/museCode.ts";
 import { getManagedZcodeUsage, getZcodeUsage } from "./usage/zcode.ts";
 
@@ -183,11 +188,8 @@ export async function getUsageForProvider(
         forceRefresh: options.forceRefresh === true,
       });
     case "codex":
-      // /me/status and the quota-cache refresh reach this fetch with no
-      // caller-side pacing. Gate the start here so those paths, and any later
-      // one, cannot burst the usage endpoint. Callers that already acquired the
-      // shared gate wait at most one more interval.
-      await throttleQuotaFetch();
+      // The Codex leaf gates at the actual fetch boundary, after proxy
+      // resolution, so lazy setup cannot consume part of the spacing interval.
       return await getCodexUsage(accessToken, providerSpecificData, id || "");
     case "cursor":
       return await getCursorUsage(accessToken || "", providerSpecificData, id || "");
@@ -221,6 +223,8 @@ export async function getUsageForProvider(
       return await getMiniMaxUsage(apiKey || "", provider);
     case "crof":
       return await getCrofUsage(apiKey || "");
+    case "mistral":
+      return await getMistralUsage(apiKey || "");
     case "clinepass":
       // Dual-auth: OAuth WorkOS token in `accessToken`, or a BYOK key in `apiKey`.
       return await getClinepassUsage(accessToken, apiKey);
@@ -308,6 +312,10 @@ export async function getUsageForProvider(
       return await getTokenRouterUsage(apiKey || "", providerSpecificData);
     case "kilocode":
       return await getKilocodeUsage(id, connection);
+    case "megabrain":
+    case "mb":
+      // Dual-auth: the device-code token in `accessToken`, or an mb-v1 key in `apiKey`.
+      return await getMegabrainUsage(accessToken || apiKey, id || undefined);
     case "devin-cli":
       // Devin CLI tokens live in `accessToken` (oauth import) or `apiKey`.
       return await getDevinCliUsage(apiKey || accessToken, id || "");
@@ -319,6 +327,12 @@ export async function getUsageForProvider(
     case "cloudflare-ai":
       // Daily neurons from GraphQL Analytics (needs Account Analytics: Read on the token).
       return await getCloudflareAiUsage(apiKey || "", providerSpecificData);
+    case "xkiro":
+      // Daily free tokens only; the paid wallet never counts as free allowance.
+      return await getXkiroUsage(id || "", apiKey || "");
+    case "zed-hosted":
+      // USD credit from the operator-pasted Orb billing portal link; display-only.
+      return await getZedHostedUsage(id || "", providerSpecificData);
     case "muse-code":
       // Muse Code has no usage/balance API. Return persisted subscription metadata.
       return await getMuseUsage(accessToken, providerSpecificData, id || "");

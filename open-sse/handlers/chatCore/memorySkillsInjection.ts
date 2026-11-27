@@ -9,6 +9,7 @@ import { injectSkillsWithMetadata } from "@/lib/skills/injection";
 import { buildMemoryToolsForProvider } from "@/lib/skills/memoryBuiltins";
 import { skillRegistry } from "@/lib/skills/registry";
 import { FORMATS } from "../../translator/formats.ts";
+import { chatStrictForResponses } from "../../translator/helpers/toolStrict.ts";
 import { detectCachingContext } from "../../services/compression/cachingAware.ts";
 
 type MemorySkillsLogger = { debug?: (...args: unknown[]) => void } | null | undefined;
@@ -44,6 +45,33 @@ function orderToolsForCaching<T>(tools: T[], clientToolNames: Set<string>): T[] 
   return [...fromClient, ...sortToolsByName(injected)];
 }
 
+/**
+ * Memory / skill builders emit Chat-shaped function tools (`{type, function: {...}}`).
+ * A Responses body declares them flat (`{type, name, parameters}`). The Chat shape only
+ * worked while a Responses -> Chat translation normalized it; on a native Responses
+ * passthrough it reaches the upstream, and strict ones reject it (Mistral /v1/responses:
+ * 400 "tools.0.FunctionTool.name: Field required"). Same mapping as the Chat -> Responses
+ * request translator (translator/request/openai-responses/toResponses.ts).
+ */
+function toResponsesFunctionTool(tool: unknown): unknown {
+  if (!tool || typeof tool !== "object") return tool;
+  const record = tool as Record<string, unknown>;
+  const fn = record.function;
+  if (record.type !== "function" || !fn || typeof fn !== "object") return tool;
+  const fnRecord = fn as Record<string, unknown>;
+  return {
+    type: "function",
+    name: fnRecord.name,
+    ...(typeof fnRecord.description === "string" ? { description: fnRecord.description } : {}),
+    parameters: fnRecord.parameters ?? { type: "object", properties: {} },
+    strict: chatStrictForResponses(fnRecord),
+  };
+}
+
+function shapeInjectedTools(tools: unknown[], sourceFormat: string): unknown[] {
+  return sourceFormat === FORMATS.OPENAI_RESPONSES ? tools.map(toResponsesFunctionTool) : tools;
+}
+
 export function getSkillsProviderForFormat(
   format: string
 ): "openai" | "anthropic" | "google" | "other" {
@@ -77,7 +105,16 @@ export async function injectMemoryAndSkills({
   log: MemorySkillsLogger;
 }): Promise<MemorySkillsInjectionResult> {
   const memorySettings = memoryOwnerId
-    ? await getMemorySettings().catch(() => DEFAULT_MEMORY_SETTINGS)
+    ? await getMemorySettings().catch((error) => {
+        // Defaults mean "memory off" for this request; leave a trace so that is not silent.
+        log?.debug?.(
+          "MEMORY",
+          `settings read failed, memory off for this request: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        return DEFAULT_MEMORY_SETTINGS;
+      })
     : null;
 
   // Tools the client sent keep their order: a later cap (upstreamBody) keeps the head of
@@ -166,7 +203,11 @@ export async function injectMemoryAndSkills({
         // #3890: when the client uses prompt caching (cache_control breakpoints), inject
         // memory cache-safely (before the last user message) so the per-query memory text
         // does not poison the cacheable prefix and force a cache miss on every turn.
-        const cacheSafe = detectCachingContext(body, { provider, targetFormat }).hasCacheControl;
+        // Automatic prefix caching (OpenAI, Codex, Azure) needs a byte-identical prefix from token 0,
+        // like explicit cache_control markers do, so it also keeps memory off the head of the prompt.
+        const cachingContext = detectCachingContext(body, { provider, targetFormat });
+        const cacheSafe =
+          cachingContext.hasCacheControl || cachingContext.usesAutomaticPrefixCaching;
         const injected = injectMemory(
           body as Parameters<typeof injectMemory>[0],
           memories,
@@ -201,8 +242,9 @@ export async function injectMemoryAndSkills({
         return [];
       })
     );
-    const newMemoryTools = buildMemoryToolsForProvider(
-      getSkillsProviderForFormat(sourceFormat)
+    const newMemoryTools = shapeInjectedTools(
+      buildMemoryToolsForProvider(getSkillsProviderForFormat(sourceFormat)),
+      sourceFormat
     ).filter((tool) => {
       const record = tool as Record<string, unknown>;
       const name = (record.function as Record<string, unknown> | undefined)?.name ?? record.name;
@@ -240,27 +282,44 @@ export async function injectMemoryAndSkills({
     // Memory builtins and registered Skills are only executed by the
     // non-streaming server-owned tool loop; stream clients execute tools
     // client-side, so we skip injection for stream requests.
-    await skillRegistry.loadFromDatabase(memoryOwnerId);
+    let skillsLoaded = true;
+    try {
+      await skillRegistry.loadFromDatabase(memoryOwnerId);
+    } catch (skillsErr) {
+      // Skills are optional extras: a failed load (one corrupt row) must not fail the request.
+      // The registry may still hold an earlier load's entries (a removed or changed skill), so
+      // this request injects no custom skill; client and memory tools are left as they are.
+      skillsLoaded = false;
+      log?.debug?.(
+        "SKILLS",
+        `Skills load skipped: ${skillsErr instanceof Error ? skillsErr.message : String(skillsErr)}`
+      );
+    }
     const existingTools = Array.isArray(body.tools) ? body.tools : [];
-    const { tools: mergedTools, injectedNames } = injectSkillsWithMetadata({
-      provider: getSkillsProviderForFormat(sourceFormat),
-      existingTools,
-      apiKeyId: memoryOwnerId,
-      model: typeof effectiveModel === "string" ? effectiveModel : undefined,
-      sourceFormat,
-      targetFormat,
-      backgroundReason,
-      messages: Array.isArray(body.messages)
-        ? body.messages
-        : Array.isArray(body.input)
-          ? body.input
-          : undefined,
-    });
+    const { tools: mergedTools, injectedNames } = !skillsLoaded
+      ? { tools: existingTools, injectedNames: [] as string[] }
+      : injectSkillsWithMetadata({
+          provider: getSkillsProviderForFormat(sourceFormat),
+          existingTools,
+          apiKeyId: memoryOwnerId,
+          model: typeof effectiveModel === "string" ? effectiveModel : undefined,
+          sourceFormat,
+          targetFormat,
+          backgroundReason,
+          messages: Array.isArray(body.messages)
+            ? body.messages
+            : Array.isArray(body.input)
+              ? body.input
+              : undefined,
+        });
 
     if (mergedTools.length > existingTools.length) {
       body = {
         ...body,
-        tools: mergedTools,
+        // Only the injected skills are reshaped; the client's tools keep their own form.
+        tools: mergedTools.map((tool) =>
+          existingTools.includes(tool) ? tool : shapeInjectedTools([tool], sourceFormat)[0]
+        ),
       };
       injectedCustomSkillNames.push(...injectedNames);
       log?.debug?.("SKILLS", `Injected ${mergedTools.length - existingTools.length} skills`);

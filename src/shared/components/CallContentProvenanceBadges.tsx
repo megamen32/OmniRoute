@@ -34,7 +34,7 @@ export function CallContentProvenanceBadges({
   if (keys.length === 0) return null;
   return (
     <div>
-      <div className="text-[10px] text-text-muted uppercase tracking-wider mb-1">
+      <div className="text-3xs text-text-muted uppercase tracking-wider mb-1">
         {t("contentProvenance")}
       </div>
       <div className="flex flex-wrap gap-1">
@@ -44,7 +44,7 @@ export function CallContentProvenanceBadges({
             data-testid={`content-provenance-${key}`}
             variant="warning"
             size="sm"
-            className="font-bold"
+            className="font-semibold"
           >
             {t(key)}
           </Badge>

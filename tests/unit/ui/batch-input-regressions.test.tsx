@@ -147,8 +147,11 @@ test.each([
     // so its controls are queried there instead of in the mount container.
     const el = document.body;
     async function next() {
-      const button = el.querySelector("button[data-wizard-next]") as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
+      const button = Array.from(el.querySelectorAll("button")).find(
+        (b) => b.textContent === "wizardNext"
+      )!;
+      expect(button).toBeDefined();
+      expect(button.getAttribute("aria-disabled")).toBeNull();
       await act(async () => button.click());
     }
     await select(el, 0, "openai");
@@ -185,5 +188,7 @@ test.each([
     }
     expect(onCreated).toHaveBeenCalledWith("batch-test");
   },
-  15000
+  // Hosted runner headroom: 15756 ms (run 45553583018) and 11717 ms (run 45567756509)
+  // against the previous 15000 ms limit.
+  30000
 );

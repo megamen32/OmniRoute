@@ -4,6 +4,8 @@
  * when clients request more than the model supports.
  */
 
+export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export interface ModelSpec {
   maxOutputTokens?: number;
   contextWindow?: number;
@@ -59,6 +61,11 @@ export interface ModelSpec {
   // priority #3 and the wiring's modelDefaultAuto branch were unreachable
   // except by a test constructing the body literal directly.
   defaultReasoningEffort?: "none" | "low" | "medium" | "high" | "auto";
+  // Gemini 3+ native reasoning control. Models that expose this list use
+  // generationConfig.thinkingConfig.thinkingLevel instead of legacy numeric
+  // thinkingBudget; Google rejects mixing the two controls.
+  geminiThinkingLevels?: GeminiThinkingLevel[];
+  defaultGeminiThinkingLevel?: GeminiThinkingLevel;
 }
 
 const BEDROCK_CLAUDE_ALIASES = (...modelIds: string[]) => [
@@ -165,6 +172,10 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     ...GPT_5_6_MODEL_SPEC,
     aliases: ["openai/gpt-6.1-sol"],
   },
+  "gpt-6.1-terra": {
+    ...GPT_5_6_MODEL_SPEC,
+    aliases: ["openai/gpt-6.1-terra"],
+  },
   // Public model limits; the Codex registry supplies its smaller OAuth window.
   // https://developers.openai.com/api/docs/models/gpt-6-astra
   "gpt-6-astra": {
@@ -245,6 +256,19 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     supportsThinking: false,
     supportsTools: true,
     supportsVision: true,
+  },
+
+  // Gemini 3.5 Flash-Lite uses Gemini 3 native thinking levels, not legacy
+  // numeric thinking budgets. Minimal is the upstream default and is intended
+  // for latency-sensitive, high-throughput micro tasks.
+  "gemini-3.5-flash-lite": {
+    maxOutputTokens: 65536,
+    contextWindow: 1048576,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    geminiThinkingLevels: ["minimal", "low", "medium", "high"],
+    defaultGeminiThinkingLevel: "minimal",
   },
 
   // Gemini 3.7 Flash tiers: high 24.5k, medium 8k, low 1k thinking tokens.
@@ -352,6 +376,28 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     supportsTools: true,
     supportsVision: true,
     aliases: ["gemini-4"],
+  },
+
+  // ── Gemini 4 Carbon ─────────────────────────────────────────────
+  "gemini-4-carbon": {
+    maxOutputTokens: 65536,
+    contextWindow: 1048576,
+    defaultThinkingBudget: 8192,
+    thinkingBudgetCap: 24576,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+  },
+
+  // ── Gemini 4 Hydrogen ────────────────────────────────────────────
+  "gemini-4-hydrogen": {
+    maxOutputTokens: 65536,
+    contextWindow: 1048576,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    geminiThinkingLevels: ["low", "medium", "high", "xhigh"],
+    defaultGeminiThinkingLevel: "high",
   },
 
   // Provider-neutral compatibility for providers that still serve Gemini 3.6.
@@ -530,7 +576,20 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     aliases: BEDROCK_CLAUDE_ALIASES("claude-opus-4-7", "claude-opus-4.7"),
   },
 
-  // ── Claude Fable 5.1 ────────────────────────────────────────────
+  // ── Claude Fable 5.2 / 5.1 ──────────────────────────────────────
+  "claude-fable-5-2": {
+    maxOutputTokens: 128000,
+    contextWindow: 1000000,
+    defaultThinkingBudget: 32000,
+    thinkingBudgetCap: 120000,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    rejectsThinkingDisabled: true,
+    adaptiveThinkingOnly: true,
+    rejectsForcedToolChoice: true,
+    aliases: BEDROCK_CLAUDE_ALIASES("claude-fable-5-2"),
+  },
   "claude-fable-5-1": {
     maxOutputTokens: 128000,
     contextWindow: 1000000,

@@ -1,7 +1,7 @@
 import type { RegistryEntry } from "../../shared.ts";
 
 /**
- * Models exposed by the local MiniMax Code CLI. The ids are the runtime's own
+ * Models exposed by the MiniMax Code product. The ids are the runtime's own
  * model ids: the run requests them as `minimax/<model id>`.
  */
 export const MINIMAX_CODE_MODELS = [
@@ -15,15 +15,19 @@ export const MINIMAX_CODE_MODELS = [
 ];
 
 /**
- * Local MiniMax Code backend. Authentication remains in the user's local
- * MiniMax Code profile; OmniRoute does not receive or persist the credential.
+ * MiniMax Code backend. A run goes to the managed MiniMax subscription
+ * gateway, which speaks the native tool protocol.
+ *
+ * Authentication stays in the user's local MiniMax Code profile: the provider
+ * reads that profile to authenticate a run and writes a rotated credential
+ * back to it, and OmniRoute stores no credential of its own.
  */
 export const minimaxCodeProvider: RegistryEntry = {
   id: "minimax-code",
   alias: "mmcode",
   format: "openai",
   executor: "minimax-code",
-  baseUrl: "minimax-code://cli/exec",
+  baseUrl: "minimax-code://gateway",
   authType: "none",
   authHeader: "none",
   models: MINIMAX_CODE_MODELS,

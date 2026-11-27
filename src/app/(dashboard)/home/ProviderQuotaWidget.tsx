@@ -77,7 +77,10 @@ function QuotaRow({ quota }: { quota: any }) {
     return (
       <div className="flex min-w-0 items-center justify-between gap-3 py-1.5">
         <span className="min-w-0 truncate text-xs font-medium text-text-main">{label}</span>
-        <span className="shrink-0 text-xs font-bold tabular-nums" style={{ color: colors.text }}>
+        <span
+          className="shrink-0 text-xs font-semibold tabular-nums"
+          style={{ color: colors.text }}
+        >
           {amount}
         </span>
       </div>
@@ -88,7 +91,10 @@ function QuotaRow({ quota }: { quota: any }) {
     <div className="flex min-w-0 flex-col gap-1 py-1.5" title={quota.modelKey || quota.name}>
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 truncate text-xs font-medium text-text-main">{label}</span>
-        <span className="shrink-0 text-xs font-bold tabular-nums" style={{ color: colors.text }}>
+        <span
+          className="shrink-0 text-xs font-semibold tabular-nums"
+          style={{ color: colors.text }}
+        >
           {quota.unlimited
             ? "∞"
             : translateUsageOrFallback(t, "percentLeft", `${percentage}% left`, {
@@ -96,8 +102,8 @@ function QuotaRow({ quota }: { quota: any }) {
               })}
         </span>
       </div>
-      {!quota.unlimited && <QuotaMiniBar percent={percentage} />}
-      {reset && <span className="text-[10px] text-text-muted">⏱ {reset}</span>}
+      {!quota.unlimited && <QuotaMiniBar percent={percentage} label={label} />}
+      {reset && <span className="text-3xs text-text-muted">⏱ {reset}</span>}
     </div>
   );
 }
@@ -115,7 +121,7 @@ function ConnectionQuotas({ connection, cache }: { connection: Connection; cache
 
   return (
     <div className="min-w-0">
-      {accountLabel && <p className="mb-1 text-[11px] text-text-muted truncate">{accountLabel}</p>}
+      {accountLabel && <p className="mb-1 text-xs text-text-muted truncate">{accountLabel}</p>}
       {quotas.length === 0 ? (
         <p className="py-1.5 text-xs italic text-text-muted">
           {cache?.message || t("noQuotaData")}
@@ -148,7 +154,7 @@ function ConnectionQuotas({ connection, cache }: { connection: Connection; cache
           icon={showOptional ? "expand_less" : "expand_more"}
           aria-expanded={showOptional}
           onClick={() => setShowOptional((current) => !current)}
-          className="mt-2 h-7 min-h-7 px-2 text-[11px]"
+          className="mt-2 h-7 min-h-7 px-2 text-2xs"
         >
           {showOptional
             ? t("showLessQuotas")
@@ -286,11 +292,9 @@ export default function ProviderQuotaWidget({
         <div className="flex items-center gap-2">
           <Icon name="account_balance" size={20} className="text-primary" />
           <div>
-            <h2 className="text-base font-semibold text-text-main">
-              {tr("providerQuota", "Provider Quota")}
-            </h2>
+            <h2 className="text-base text-text-main">{tr("providerQuota", "Provider Quota")}</h2>
             {updatedLabel && (
-              <p className="text-[11px] text-text-muted">
+              <p className="text-xs text-text-muted">
                 {tr("updatedShort", "Updated")} {updatedLabel}
               </p>
             )}
@@ -350,10 +354,10 @@ export default function ProviderQuotaWidget({
               <div className="flex min-w-0 items-center gap-2 lg:items-start">
                 <ProviderIcon providerId={provider} size={18} />
                 <div className="min-w-0">
-                  <h3 className="truncate text-sm font-semibold text-text-main">
+                  <h3 className="truncate text-sm text-text-main">
                     {PROVIDER_LABEL[provider] || provider}
                   </h3>
-                  <p className="text-[11px] text-text-muted">
+                  <p className="text-xs text-text-muted">
                     {providerConnections.length}{" "}
                     {providerConnections.length === 1 ? "account" : "accounts"}
                   </p>

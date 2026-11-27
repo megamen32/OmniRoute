@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { falSelectionEndpoint, isLegacyFalEndpoint } from "../config/falEndpoint.ts";
 /** Image generation handler for POST /v1/images/generations (OpenAI-compatible). */
 
 import {
@@ -23,6 +24,7 @@ import { mapImageSize } from "../translator/image/sizeMapper.ts";
 import { getCodexClientVersion, getCodexUserAgent } from "../config/codexClient.ts";
 import { isCodexFreePlan } from "../executors/codex/tools.ts";
 import { sleep } from "../utils/sleep.ts";
+import { clampPollIntervalMs, clampPollTimeoutMs } from "../utils/pollBounds.ts";
 import { codexReferenceImageUrl } from "./imageGeneration/providers/codexReferences.ts";
 export { shrinkCodexReferenceImage } from "./imageGeneration/providers/codexReferences.ts";
 import {
@@ -39,7 +41,7 @@ import {
   extractComfyOutputFiles,
   resolveComfyUiBaseUrl,
 } from "../utils/comfyuiClient.ts";
-import { fetchUntrustedRemoteImage } from "@/shared/network/remoteImageFetch";
+import { fetchUntrustedRemoteImage } from "../utils/remoteMediaFetch.ts";
 import {
   FetchTimeoutError,
   fetchWithTimeout,
@@ -47,6 +49,8 @@ import {
 } from "@/shared/utils/fetchTimeout";
 import { sanitizeErrorMessage, sanitizeUpstreamDetails } from "../utils/error.ts";
 
+import { hasRequestedOutputFormat, normalizeImageOutput } from "./imageGeneration/outputFormat.ts";
+import { prepareFalPreservedOutputOptions } from "./imageGeneration/providerOutputOptions.ts";
 import { handleSDWebUIImageGeneration } from "./imageGeneration/providers/sdWebUI.ts";
 import { handleHyperbolicImageGeneration } from "./imageGeneration/providers/hyperbolic.ts";
 import { handleHuggingFaceImageGeneration } from "./imageGeneration/providers/huggingface.ts";
@@ -66,10 +70,7 @@ import { buildXaiImageRequest } from "./imageGeneration/providers/xaiImage.ts";
 import { handleMaxaiImageGeneration } from "./imageGeneration/providers/maxaiImage.ts";
 import { handleAdobeFireflyImageGeneration } from "./imageGeneration/providers/adobeFirefly.ts";
 import { handleSyntxImageGeneration } from "./imageGeneration/providers/syntx.ts";
-import {
-  geminiInlineImagePart,
-  geminiReferenceImageError,
-} from "./imageGeneration/providers/geminiInline.ts";
+import * as geminiInline from "./imageGeneration/providers/geminiInline.ts";
 import { handleAlibabaImageGeneration } from "./imageGeneration/providers/alibabaImage.ts";
 import { handleAiHordeImageGeneration } from "./imageGeneration/providers/aihorde.ts";
 import * as codexImages from "./imageGeneration/providers/codexImages.ts";
@@ -78,6 +79,7 @@ import { handleMuseImageGeneration } from "./imageGeneration/providers/museImage
 import { handleM365ImageGeneration } from "./imageGeneration/providers/m365Image.ts";
 import { handleGeminiAiImageGeneration } from "./imageGeneration/providers/geminiAiStudio.ts";
 import { handleBlackForestLabsImageGeneration } from "./imageGeneration/providers/blackForestLabs.ts";
+import { handleRenderhourImageGeneration } from "./imageGeneration/providers/renderhour.ts";
 import {
   fanOutSingleImageCalls,
   IMAGE_FANOUT_MAX_N,
@@ -89,6 +91,7 @@ import {
   reportPollinationsAnonOutcome,
 } from "./imageGeneration/pollinationsAnonAuth.ts";
 import { fetchImageEndpoint } from "./imageGeneration/openAiImageFetch.ts";
+import { prepareImageGenerationOptions } from "./imageGeneration/generationOptions.ts";
 
 // Re-export so /v1/images/edits can dispatch Firefly reference-image edits.
 export { handleAdobeFireflyImageGeneration };
@@ -415,6 +418,9 @@ export async function handleImageGeneration({
   // #16260 — IMAGE_GENERATION_LONG_JOBS, injected by the routes (the flag lives in src/):
   // `{ resolveTimeoutMs }` for the OpenAI-compatible path. Null keeps the default behavior.
   longJobs = null,
+  // FAL_NATIVE_ENABLED, injected by the routes (the flag lives in src/). Null keeps the
+  // established Fal request shape; a preparer selects the schema-driven native path.
+  prepareFalInput = null,
   onCredentialsRefreshed = undefined,
 }) {
   // Retirement guards: the retired-provider sets hold bare provider ids only, so testing
@@ -535,6 +541,7 @@ export async function handleImageGeneration({
       signal,
       generateOne: (taskBody) =>
         handleImageGeneration({
+          prepareFalInput,
           body: taskBody,
           credentials,
           log,
@@ -663,12 +670,14 @@ export async function handleImageGeneration({
 
   if (providerConfig.format === "fal-ai") {
     return handleFalAIImageGeneration({
+      prepareFalInput,
       model,
       provider,
       providerConfig,
       body,
       credentials,
       log,
+      signal,
     });
   }
 
@@ -680,6 +689,18 @@ export async function handleImageGeneration({
       body,
       credentials,
       log,
+    });
+  }
+
+  if (providerConfig.format === "renderhour-image") {
+    return handleRenderhourImageGeneration({
+      model,
+      provider,
+      providerConfig,
+      body,
+      credentials,
+      log,
+      signal,
     });
   }
 
@@ -831,6 +852,7 @@ export async function handleImageGeneration({
       body,
       credentials,
       log,
+      signal,
     });
   }
 
@@ -987,8 +1009,8 @@ async function handleKieImageGeneration({
 }: KieImageOptions) {
   const startTime = Date.now();
   const token = credentials?.apiKey || credentials?.accessToken;
-  const timeoutMs = normalizePositiveNumber(body.timeout_ms, 300000);
-  const pollIntervalMs = normalizePositiveNumber(body.poll_interval_ms, 2500);
+  const timeoutMs = clampPollTimeoutMs(body.timeout_ms, 300000);
+  const pollIntervalMs = clampPollIntervalMs(body.poll_interval_ms, 2500);
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
   const size = typeof body.size === "string" ? body.size : undefined;
 
@@ -1217,19 +1239,11 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
     });
   }
 
-  const referenceError = geminiReferenceImageError(body);
-  if (referenceError) {
-    return saveImageErrorResult({
-      provider,
-      model,
-      status: 400,
-      startTime,
-      error: referenceError,
-      requestBody: logRequestBody,
-    });
+  const refs = geminiInline.buildGeminiImageUserParts(body, promptText);
+  if ("error" in refs) {
+    const err = { provider, model, status: 400, startTime, requestBody: logRequestBody };
+    return saveImageErrorResult({ ...err, error: refs.error, retryable: false });
   }
-
-  const inlineImage = geminiInlineImagePart(body);
   const antigravityBody = {
     project: projectId,
     requestId: `image_gen/${Date.now()}/${randomUUID()}/0`,
@@ -1237,7 +1251,7 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
       contents: [
         {
           role: "user",
-          parts: [...(inlineImage ? [inlineImage] : []), { text: promptText }],
+          parts: refs.parts,
         },
       ],
       generationConfig: {
@@ -1264,7 +1278,7 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
     const promptPreview = promptText.slice(0, 60);
     log.info(
       "IMAGE",
-      `antigravity/${model} (gemini) | prompt: "${promptPreview}..." | ${aspectRatio} ${imageSize ?? "default"}`
+      `antigravity/${model} (gemini) | prompt: "${promptPreview}..." | ${aspectRatio} ${imageSize ?? "default"} | refs: ${refs.referenceCount}`
     );
   }
 
@@ -1301,19 +1315,11 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
     const data = await response.json();
     const responseBody = data.response || data;
 
-    // Extract image data from Antigravity's wrapped Gemini response.
-    const images = [];
-    const candidates = responseBody.candidates || [];
-    for (const candidate of candidates) {
-      const parts = candidate.content?.parts || [];
-      for (const part of parts) {
-        if (part.inlineData) {
-          images.push({
-            b64_json: part.inlineData.data,
-            revised_prompt: parts.find((p) => p.text)?.text || promptText,
-          });
-        }
-      }
+    // Extract image data from Antigravity's wrapped Gemini response; text-only answers fail.
+    const extracted = geminiInline.extractGeminiImageResults(responseBody, promptText);
+    if (extracted.error) {
+      const err = { provider, model, status: 502, startTime, requestBody: logRequestBody };
+      return saveImageErrorResult({ ...err, error: sanitizeErrorMessage(extracted.error) });
     }
 
     saveCallLog({
@@ -1325,14 +1331,14 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
       duration: Date.now() - startTime,
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       requestBody: logRequestBody,
-      responseBody: { images_count: images.length },
+      responseBody: { images_count: extracted.images.length },
     }).catch(() => {});
 
     return {
       success: true,
       data: {
         created: Math.floor(Date.now() / 1000),
-        data: images,
+        data: extracted.images,
       },
     };
   } catch (err) {
@@ -1428,6 +1434,9 @@ async function handleOpenAIImageGeneration({
     Object.assign(upstreamBody, request.body);
   } else if (providerConfig.format !== "agnes-image") {
     // Pass optional parameters for ordinary OpenAI-compatible providers.
+    const output = prepareImageGenerationOptions(provider, body);
+    if ("error" in output) return { success: false, status: 400, error: output.error };
+    Object.assign(upstreamBody, output.options);
     if (body.n !== undefined) upstreamBody.n = body.n;
     if (body.size !== undefined) upstreamBody.size = body.size;
     if (body.quality !== undefined) upstreamBody.quality = body.quality;
@@ -1482,6 +1491,12 @@ async function handleOpenAIImageGeneration({
   const fetchOptions = longJobs
     ? { signal, timeoutMs: longJobs.resolveTimeoutMs(credentials?.providerSpecificData) }
     : { timeoutMs: getConfiguredTimeout() };
+  const outputFetchOptions =
+    typeof upstreamBody.output_format === "string" &&
+    providerConfig.format !== "xai-image" &&
+    providerConfig.format !== "agnes-image"
+      ? { ...fetchOptions, requestedOutputFormat: upstreamBody.output_format }
+      : fetchOptions;
 
   // Try primary URL
   let result = await fetchImageEndpoint(
@@ -1490,7 +1505,7 @@ async function handleOpenAIImageGeneration({
     requestBody,
     provider,
     log,
-    fetchOptions
+    outputFetchOptions
   );
 
   // Fallback for providers with fallbackUrl (e.g., Nebius)
@@ -1508,7 +1523,7 @@ async function handleOpenAIImageGeneration({
       requestBody,
       provider,
       log,
-      fetchOptions
+      outputFetchOptions
     );
   }
 
@@ -1759,18 +1774,20 @@ export async function handleOpenRouterImageEdit({
 }
 
 async function handleFalAIImageGeneration({
+  prepareFalInput,
   model,
   provider,
   providerConfig,
   body,
   credentials,
   log,
+  signal,
 }) {
   const startTime = Date.now();
   const token = credentials.apiKey || credentials.accessToken;
-  const falModel = model.startsWith("fal-ai/") ? model : `fal-ai/${model}`;
+  let falModel = /^(?:fal-ai|openai)\//.test(model) ? model : `fal-ai/${model}`;
   const { imageUrl, imageUrls } = extractImageInputs(body);
-  const upstreamBody: Record<string, unknown> = {
+  let upstreamBody: Record<string, unknown> = {
     prompt: body.prompt,
     sync_mode: body.sync_mode ?? true,
   };
@@ -1780,8 +1797,17 @@ async function handleFalAIImageGeneration({
   if (body.seed !== undefined) upstreamBody.seed = body.seed;
   if (body.style) upstreamBody.style = normalizeRecraftStyle(body.style);
 
+  const schemaInput =
+    prepareFalInput && (!isLegacyFalEndpoint(model) || body.fal_input !== undefined);
   const outputFormat = normalizeRequestedImageFormat(body, "png");
   if (outputFormat) upstreamBody.output_format = outputFormat;
+  // An explicit gif/svg is no longer downgraded to PNG on the legacy body (the native
+  // schema adapter below owns its endpoint's formats and replaces this body entirely).
+  const preserved = schemaInput ? null : prepareFalPreservedOutputOptions(body);
+  if (preserved) {
+    if ("error" in preserved) return { success: false, status: 400, error: preserved.error };
+    Object.assign(upstreamBody, preserved.options);
+  }
 
   if (model.includes("flux-pro/v1.1") && !model.includes("ultra")) {
     upstreamBody.image_size = mapFalImageSize(body.size, "landscape_4_3");
@@ -1814,14 +1840,29 @@ async function handleFalAIImageGeneration({
   }
 
   try {
-    const response = await fetch(`${providerConfig.baseUrl.replace(/\/$/, "")}/${falModel}`, {
+    if (prepareFalInput) {
+      falModel = falSelectionEndpoint(model);
+      if (schemaInput) {
+        upstreamBody = await prepareFalInput(
+          falModel,
+          falCompatibilityBody(body, imageUrls),
+          credentials,
+          signal
+        );
+      }
+    }
+    const url = `${providerConfig.baseUrl.replace(/\/$/, "")}/${falModel}`;
+    const request = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Key ${token}`,
       },
       body: JSON.stringify(upstreamBody),
-    });
+    };
+    const response = prepareFalInput
+      ? await fetchWithTimeout(url, { ...request, signal, redirect: "error" })
+      : await fetch(url, request);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -1838,7 +1879,14 @@ async function handleFalAIImageGeneration({
     }
 
     const payload = await response.json();
-    const images = await normalizeProviderImagePayload(payload, body, log, "b64_json");
+    // The native path honors an explicit `url`; the established path always returns base64.
+    const defaultFormat = prepareFalInput && body.response_format === "url" ? "url" : "b64_json";
+    const images = await normalizeProviderImagePayload(payload, body, log, defaultFormat);
+    // Only an explicit output_format request gets the detected container reported back.
+    const output =
+      hasRequestedOutputFormat(body) && typeof upstreamBody.output_format === "string"
+        ? normalizeImageOutput(payload, images, upstreamBody.output_format, log?.warn?.bind(log))
+        : { items: images, outputFormat: undefined };
     return saveImageSuccessResult({
       provider,
       model,
@@ -1846,18 +1894,28 @@ async function handleFalAIImageGeneration({
       requestBody: upstreamBody,
       responseBody: { images_count: images.length },
       created: payload.created,
-      images,
+      images: output.items,
+      outputFormat: output.outputFormat,
     });
   } catch (err) {
     if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
     return saveImageErrorResult({
       provider,
       model,
-      status: 502,
+      status: /Invalid fal input|Unsupported fal|(?:This|A) fal endpoint/.test(String(err.message))
+        ? 400
+        : 502,
       startTime,
       error: `Image provider error: ${sanitizeErrorMessage((err as Error).message || err)}`,
     });
   }
+}
+
+/** References reach the schema adapter once, under the name it maps per endpoint. */
+function falCompatibilityBody(body, imageUrls) {
+  if (imageUrls.length === 0) return body;
+  const { image: _image, image_url: _imageUrl, imageUrls: _camelCase, ...rest } = body;
+  return { ...rest, image_urls: imageUrls };
 }
 
 async function handleStabilityAIImageGeneration({
@@ -2935,11 +2993,11 @@ async function handleNanoBananaImageGeneration({
       return { success: false, status: 500, error: errorText };
     }
 
-    const timeoutMs = normalizePositiveNumber(
+    const timeoutMs = clampPollTimeoutMs(
       body.timeout_ms,
       normalizePositiveNumber(process.env.NANOBANANA_POLL_TIMEOUT_MS, 120000)
     );
-    const pollIntervalMs = normalizePositiveNumber(
+    const pollIntervalMs = clampPollIntervalMs(
       body.poll_interval_ms,
       normalizePositiveNumber(process.env.NANOBANANA_POLL_INTERVAL_MS, 2500)
     );

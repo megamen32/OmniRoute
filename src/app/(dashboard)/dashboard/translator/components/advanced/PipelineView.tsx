@@ -198,7 +198,7 @@ export default function PipelineView({
                 <span>
                   {tr(
                     "pipelineVisualizationHint",
-                    "Envie um request pelo Chat Tester para ver o pipeline em tempo real. Abaixo: exemplo estático."
+                    "Send a message to see how your request flows through detection → translation → provider call."
                   )}
                 </span>
               </div>
@@ -247,7 +247,7 @@ export default function PipelineView({
                       >
                         {/* Step number circle */}
                         <div
-                          className={`flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold shrink-0 ${statusNumberClass(step.status)}`}
+                          className={`flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold shrink-0 ${statusNumberClass(step.status)}`}
                           aria-hidden="true"
                         >
                           {step.status === "error" ? "!" : i + 1}
@@ -257,9 +257,7 @@ export default function PipelineView({
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-text-main">{step.name}</p>
                           {step.description && (
-                            <p className="text-[10px] text-text-muted truncate">
-                              {step.description}
-                            </p>
+                            <p className="text-xs text-text-muted truncate">{step.description}</p>
                           )}
                         </div>
 

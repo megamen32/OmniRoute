@@ -2,7 +2,8 @@
 // Extracted from open-sse/services/tokenRefresh.ts — see ../shared.ts for
 // provenance notes (ported idea from KooshaPari's PR #7338, redone on tip).
 import { PROVIDERS, OAUTH_ENDPOINTS } from "../../../config/constants.ts";
-import { runWithProxyContext } from "../../../utils/proxyFetch.ts";
+import { runCommittedWithProxyContext } from "../../../utils/proxyFetch.ts";
+import { sanitizeErrorMessage } from "../../../utils/errorSanitization.ts";
 import { buildFormParams, extractOAuthErrorCode } from "../shared.ts";
 
 /**
@@ -19,7 +20,7 @@ export async function refreshQoderToken(refreshToken, log, proxyConfig: unknown 
 
   const basicAuth = btoa(`${PROVIDERS.qoder.clientId}:${PROVIDERS.qoder.clientSecret}`);
 
-  const response = await runWithProxyContext(proxyConfig, () =>
+  const response = await runCommittedWithProxyContext(proxyConfig, () =>
     fetch(OAUTH_ENDPOINTS.qoder.token, {
       method: "POST",
       headers: {
@@ -40,7 +41,8 @@ export async function refreshQoderToken(refreshToken, log, proxyConfig: unknown 
     const errorText = await response.text();
     log?.error?.("TOKEN_REFRESH", "Failed to refresh Qoder token", {
       status: response.status,
-      error: errorText,
+      // The OAuth server can echo the refresh token or client secret back in its error body.
+      error: sanitizeErrorMessage(errorText),
     });
     const code = extractOAuthErrorCode(errorText);
     if (code === "invalid_grant" || code === "invalid_request") {

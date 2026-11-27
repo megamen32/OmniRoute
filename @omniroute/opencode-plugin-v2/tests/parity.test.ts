@@ -192,6 +192,11 @@ describe("v1-vs-v2 catalog parity", () => {
       const draft2 = fakeDraft();
       await publishCatalog(draft2, TEST_OPTS, { fetcher, combosFetcher });
       assert.ok(draft2.models.has("omniroute/Good Combo"), "combo keyed by its name in v2");
+      assert.equal(
+        draft2.models.get("omniroute/Combo Fast")?.name,
+        "combo - Combo Fast",
+        "combo display name uses the new format"
+      );
       assert.ok(
         draft2.models.has("omniroute/good-combo"),
         "raw model keeps its id key alongside the combo"
@@ -221,9 +226,25 @@ describe("v1-vs-v2 catalog parity", () => {
         providerId: "omniroute",
         baseURL: TEST_OPTS.baseURL,
       });
+      const expectedPayload = JSON.parse(
+        JSON.stringify({ ...(expected as object), providerID: undefined, name: undefined })
+      );
+      // Documented exclusion: v1 filled a missing gateway `max_output_tokens`
+      // with `limit.output: 0`; v2 leaves `limit.output` out instead of
+      // publishing a zero output limit the gateway never stated.
+      if (typeof entry.max_output_tokens !== "number") {
+        assert.equal(expectedPayload.limit.output, 0, `v1 recorded a zero output for ${entry.id}`);
+        assert.equal(
+          "output" in viaShared.limit,
+          false,
+          `v2 omits limit.output for ${entry.id} when the gateway does not state it`
+        );
+        delete expectedPayload.limit.output;
+      }
+
       assert.deepEqual(
-        JSON.parse(JSON.stringify({ ...viaShared, providerID: undefined })),
-        JSON.parse(JSON.stringify({ ...(expected as object), providerID: undefined })),
+        JSON.parse(JSON.stringify({ ...viaShared, providerID: undefined, name: undefined })),
+        expectedPayload,
         `model mapper parity for ${entry.id}`
       );
     }
@@ -251,6 +272,8 @@ describe("v1-vs-v2 catalog parity", () => {
       );
       delete (viaShared as { id?: unknown }).id;
       delete (exp as { id?: unknown }).id;
+      delete (viaShared as { name?: unknown }).name;
+      delete (exp as { name?: unknown }).name;
       assert.deepEqual(viaShared, exp, `combo mapper parity (minus id) for ${combo.id}`);
       assert.notEqual(sharedId, expectedId, `v1-vs-v2 id divergence documented for ${combo.id}`);
     }

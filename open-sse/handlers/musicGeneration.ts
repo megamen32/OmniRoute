@@ -16,6 +16,7 @@
 
 import { getMusicProvider, parseMusicModel } from "../config/musicRegistry.ts";
 import { kieExecutor } from "../executors/kie.ts";
+import { clampPollIntervalMs, clampPollTimeoutMs } from "../utils/pollBounds.ts";
 import { vertexGenerateMusic } from "../executors/vertexMedia.ts";
 import {
   submitComfyWorkflow,
@@ -36,8 +37,9 @@ import {
   UPSTREAM_MEDIA_LIMITS,
   downloadUpstreamMedia,
   upstreamMediaErrorText,
-} from "@/shared/network/remoteImageFetch";
+} from "../utils/remoteMediaFetch.ts";
 import { handleFalMusicGeneration } from "./mediaGeneration/fal.ts";
+import { handleGeminiMusicGeneration } from "./mediaGeneration/geminiMusic.ts";
 import { handleSyntxMusicGeneration } from "./syntxAudio.ts";
 import { handleMinimaxMusicGeneration } from "./mediaGeneration/minimaxMusic.ts";
 import { handleElevenLabsMusicGeneration } from "./mediaGeneration/elevenLabsMusic.ts";
@@ -90,7 +92,13 @@ function normalizeKieMusicTracks(recordData: unknown): Array<Record<string, unkn
 /**
  * Handle music generation request
  */
-export async function handleMusicGeneration({ body, credentials, log, signal = null }) {
+export async function handleMusicGeneration({
+  body,
+  credentials,
+  log,
+  signal = null,
+  prepareFalInput = null,
+}) {
   const { provider, model } = parseMusicModel(body.model);
 
   if (!provider) {
@@ -134,11 +142,32 @@ export async function handleMusicGeneration({ body, credentials, log, signal = n
   }
 
   if (providerConfig.format === "fal-ai-music") {
-    return handleFalMusicGeneration({ model, provider, providerConfig, body, credentials, log });
+    return handleFalMusicGeneration({
+      prepareFalInput,
+      model,
+      provider,
+      providerConfig,
+      body,
+      credentials,
+      log,
+      signal,
+    });
   }
 
   if (providerConfig.format === "elevenlabs-music") {
     return handleElevenLabsMusicGeneration({ model, body, credentials });
+  }
+
+  if (providerConfig.format === "gemini-lyria") {
+    return handleGeminiMusicGeneration({
+      model,
+      provider,
+      providerConfig,
+      body,
+      credentials,
+      log,
+      signal,
+    });
   }
 
   if (providerConfig.format === "comfyui") {
@@ -333,8 +362,8 @@ async function handleKieMusicGeneration({
   } | null;
 }) {
   const startTime = Date.now();
-  const timeoutMs = Number(body.timeout_ms) > 0 ? Number(body.timeout_ms) : 300000;
-  const pollIntervalMs = Number(body.poll_interval_ms) > 0 ? Number(body.poll_interval_ms) : 2500;
+  const timeoutMs = clampPollTimeoutMs(body.timeout_ms, 300000);
+  const pollIntervalMs = clampPollIntervalMs(body.poll_interval_ms, 2500);
   const token = credentials?.apiKey || credentials?.accessToken;
   const baseUrl = providerConfig.baseUrl.replace(/\/$/, "");
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");

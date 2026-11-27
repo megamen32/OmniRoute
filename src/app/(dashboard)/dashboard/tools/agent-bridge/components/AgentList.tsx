@@ -88,13 +88,14 @@ export function AgentList({
     <Card padding="none" className="overflow-hidden">
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-4">
-        <h2 className="ci-heading mr-auto text-sm">
+        <h2 className="ci-heading mr-auto" data-size="sm">
           {t("agentListTitle") || "IDE Agents"}{" "}
           <span className="font-normal text-text-muted">({targets.length})</span>
         </h2>
 
         {/* Filter */}
         <SegmentedControl
+          semantics="radio"
           size="sm"
           aria-label={t("agentListTitle") || "IDE Agents"}
           value={filter}

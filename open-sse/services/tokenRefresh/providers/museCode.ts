@@ -1,7 +1,8 @@
 import { MUSE_CODE_MINT_URL, isMuseDcaToken } from "../../../config/museCode.ts";
 import { MuseCodeMintError, mintMuseApiKey } from "../../museCodeAuth.ts";
-import { runWithProxyContext } from "../../../utils/proxyFetch.ts";
+import { runCommittedWithProxyContext } from "../../../utils/proxyFetch.ts";
 import type { RefreshLogger } from "../shared.ts";
+import { isTransientRefreshError } from "../transientError.ts";
 
 /**
  * Muse Code has no refresh-token grant. CLIProxyAPI remints the inference key
@@ -32,13 +33,13 @@ export async function refreshMuseCodeToken(
   }
 
   try {
-    const minted = await runWithProxyContext(proxyConfig, () =>
+    const minted = await runCommittedWithProxyContext(proxyConfig, () =>
       mintMuseApiKey(dcaToken, MUSE_CODE_MINT_URL)
     );
     return {
       accessToken: minted.apiKey,
       refreshToken: dcaToken,
-      expiresIn: undefined,
+      expiresAt: null,
       providerSpecificData: {
         ...(providerSpecificData && typeof providerSpecificData === "object"
           ? providerSpecificData
@@ -57,17 +58,12 @@ export async function refreshMuseCodeToken(
       },
     };
   } catch (err) {
-    if (
-      err instanceof MuseCodeMintError &&
-      (err.status === 401 || err.status === 403)
-    ) {
-      log?.warn?.(
-        "TOKEN_REFRESH",
-        "Muse Code refresh 401 — OIDC token invalid, re-login required"
-      );
+    if (err instanceof MuseCodeMintError && (err.status === 401 || err.status === 403)) {
+      log?.warn?.("TOKEN_REFRESH", "Muse Code refresh 401 — OIDC token invalid, re-login required");
       return { error: "unrecoverable_refresh_error", code: "invalid_oidc_token" };
     }
     log?.warn?.("TOKEN_REFRESH", `Muse Code remint failed: ${(err as Error)?.message || "error"}`);
+    if (isTransientRefreshError(err)) throw err;
     return null;
   }
 }

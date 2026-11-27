@@ -1,5 +1,6 @@
 "use client";
 
+import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Toggle from "@/shared/components/Toggle";
 
@@ -25,6 +26,7 @@ interface LimitsTabProps {
   setUsageLimitEnabled: (enabled: boolean) => void;
   setDailyUsageLimitUsd: (val: string) => void;
   setWeeklyUsageLimitUsd: (val: string) => void;
+  setFiveHourUsageLimitUsd: (val: string) => void;
   errors?: string[];
 }
 
@@ -34,7 +36,7 @@ function MaxSessionsField({ formState, setMaxSessions }: LimitsSectionProps<"set
   const t = useTranslations("apiManager");
 
   return (
-    <div className="flex items-start justify-between gap-3 p-4 rounded-lg border border-border bg-surface/40">
+    <Card.Section className="flex items-start justify-between gap-3">
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium text-text-main">{t("maxActiveSessions")}</p>
         <p className="text-xs text-text-muted">{t("maxActiveSessionsDescription")}</p>
@@ -52,7 +54,7 @@ function MaxSessionsField({ formState, setMaxSessions }: LimitsSectionProps<"set
           }}
         />
       </div>
-    </div>
+    </Card.Section>
   );
 }
 
@@ -63,7 +65,7 @@ function ThrottleDelayField({
   const t = useTranslations("apiManager");
 
   return (
-    <div className="flex items-start justify-between gap-3 p-4 rounded-lg border border-border bg-surface/40">
+    <Card.Section className="flex items-start justify-between gap-3">
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium text-text-main">{t("throttleDelay")}</p>
         <p className="text-xs text-text-muted">{t("throttleDelayDescription")}</p>
@@ -83,9 +85,9 @@ function ThrottleDelayField({
             );
           }}
         />
-        <p className="text-[10px] text-text-muted mt-1 text-right">milliseconds</p>
+        <p className="text-3xs text-text-muted mt-1 text-right">milliseconds</p>
       </div>
-    </div>
+    </Card.Section>
   );
 }
 
@@ -98,7 +100,7 @@ function CustomRateLimits({
   const t = useTranslations("apiManager");
 
   return (
-    <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-surface/40">
+    <Card.Section className="flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <p className="text-sm font-medium text-text-main">{t("apiManagerCustomRateLimits")}</p>
@@ -145,10 +147,10 @@ function CustomRateLimits({
               />
               <span className="text-sm text-text-muted shrink-0">sec</span>
               <Button
-                variant="ghost"
+                variant="destructive-ghost"
                 size="icon"
                 onClick={() => removeRateLimit(index)}
-                className="text-error shrink-0"
+                className="shrink-0"
                 title={t("apiManagerRemoveLimitTitle")}
                 aria-label={t("apiManagerRemoveLimitTitle")}
                 icon="delete"
@@ -157,7 +159,7 @@ function CustomRateLimits({
           ))}
         </div>
       )}
-    </div>
+    </Card.Section>
   );
 }
 
@@ -244,7 +246,7 @@ function ScheduleDetails({
         placeholder={t("apiManagerTimezonePlaceholder")}
         hint={t("scheduleTimezoneHint")}
         className="max-w-sm"
-        inputClassName="font-mono"
+        mono
       />
     </div>
   );
@@ -261,7 +263,7 @@ function AccessScheduleSection({
   const t = useTranslations("apiManager");
 
   return (
-    <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-surface/40">
+    <Card.Section className="flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <p className="text-sm font-medium text-text-main">{t("accessSchedule")}</p>
@@ -284,7 +286,7 @@ function AccessScheduleSection({
           setScheduleTz={setScheduleTz}
         />
       )}
-    </div>
+    </Card.Section>
   );
 }
 
@@ -303,10 +305,9 @@ export default function LimitsTab({
   setUsageLimitEnabled,
   setDailyUsageLimitUsd,
   setWeeklyUsageLimitUsd,
+  setFiveHourUsageLimitUsd,
   errors,
 }: LimitsTabProps) {
-  const tc = useTranslations("common");
-
   return (
     <div className="flex flex-col gap-5">
       <TabErrorList errors={errors} />
@@ -336,18 +337,18 @@ export default function LimitsTab({
       />
 
       {/* Usage Limit Settings */}
-      <div className="p-4 rounded-lg border border-border bg-surface/40">
+      <Card.Section>
         <UsageLimitSettings
           enabled={formState.usageLimitEnabled}
           dailyLimitUsd={formState.dailyUsageLimitUsd}
           weeklyLimitUsd={formState.weeklyUsageLimitUsd}
-          enabledLabel={tc("enabled")}
-          disabledLabel={tc("disabled")}
+          fiveHourLimitUsd={formState.fiveHourUsageLimitUsd}
           onEnabledChange={setUsageLimitEnabled}
           onDailyLimitUsdChange={setDailyUsageLimitUsd}
           onWeeklyLimitUsdChange={setWeeklyUsageLimitUsd}
+          onFiveHourLimitUsdChange={setFiveHourUsageLimitUsd}
         />
-      </div>
+      </Card.Section>
     </div>
   );
 }

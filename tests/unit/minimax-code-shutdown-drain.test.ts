@@ -22,6 +22,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTempDataDir } from "../_setup/tempDataDir.ts";
 
@@ -30,8 +32,6 @@ process.env.API_KEY_SECRET = process.env.API_KEY_SECRET || "minimax-drain-secret
 
 const { MinimaxCodeExecutor } = await import("../../open-sse/executors/minimax-code.ts");
 const { shouldSkipConnDisable } = await import("../../open-sse/services/combo/comboPredicates.ts");
-
-const fixture = join(process.cwd(), "tests/fixtures/fake-mcode-exec.mjs");
 
 function requestBody() {
   return {
@@ -48,8 +48,6 @@ function setDraining(shuttingDown: boolean) {
 }
 
 async function writeAuthProfile(records: Record<string, unknown>): Promise<string> {
-  const { mkdtemp, writeFile } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
   const dir = await mkdtemp(join(tmpdir(), "mmcode-drain-"));
   const authFile = join(dir, "auth.json");
   await writeFile(authFile, JSON.stringify({ schemaVersion: 1, records }));
@@ -71,11 +69,6 @@ function liveRecord(accessToken: string) {
 /** A gateway transport that dies the way a teardown kills it. */
 function unreachableGatewayExecutor(authFile: string) {
   return new MinimaxCodeExecutor({
-    command: process.execPath,
-    args: [fixture],
-    cwd: process.cwd(),
-    timeoutMs: 10_000,
-    transport: "gateway",
     authFile,
     fetchImpl: async () => {
       throw new Error("fetch failed");
@@ -92,11 +85,6 @@ function unreachableGatewayExecutor(authFile: string) {
  */
 function gatewayAnsweringExecutor(authFile: string, status: number) {
   return new MinimaxCodeExecutor({
-    command: process.execPath,
-    args: [fixture],
-    cwd: process.cwd(),
-    timeoutMs: 10_000,
-    transport: "gateway",
     authFile,
     fetchImpl: async () =>
       new Response("upstream failure", { status, headers: { "content-type": "text/plain" } }),
@@ -168,14 +156,14 @@ test("the 499 answer is exempt from the connection cooldown, the 502 was not", a
   );
 });
 
-test("an unreachable gateway outside a drain falls back to the local CLI", async () => {
+test("an unreachable gateway outside a drain is a 502 — the model is unavailable", async () => {
   const authFile = await writeAuthProfile({ live: liveRecord("access-token") });
   setDraining(false);
   const response = await runGateway(unreachableGatewayExecutor(authFile));
 
-  // Outside a drain the local CLI is the fallback of the gateway: the request
-  // is answered by the CLI instead of failing with the 502 of the transport.
-  assert.equal(response.status, 200);
+  // Outside a drain the transport failure is a genuine outage of the upstream:
+  // the answer is the 502 of the transport, and it stays in the model lockout.
+  assert.equal(response.status, 502);
 });
 
 test("a gateway that answers 502 keeps its 502 outside a drain", async () => {
@@ -204,11 +192,6 @@ test("a refusal that belongs to the request keeps its own status while draining"
   const authFile = await writeAuthProfile({ live: liveRecord("access-token") });
   setDraining(true);
   const executor = new MinimaxCodeExecutor({
-    command: process.execPath,
-    args: [fixture],
-    cwd: process.cwd(),
-    timeoutMs: 10_000,
-    transport: "gateway",
     authFile,
     // The gateway answers a refusal with the error shape.
     fetchImpl: async () =>

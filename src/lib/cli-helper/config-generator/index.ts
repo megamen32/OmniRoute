@@ -95,6 +95,10 @@ const PATH_AWARE_GENERATORS: Record<
   opencode: generateOpencodeConfig,
   codex: generateCodexConfig,
   whycodes: generateWhyCodesConfig,
+  claude: generateClaudeConfig,
+  cline: generateClineConfig,
+  kilo: generateKilocodeConfig,
+  continue: generateContinueConfig,
 };
 
 export async function generateConfig(
@@ -124,6 +128,13 @@ export async function generateConfig(
     const content = pathAware
       ? await pathAware({ ...options, configPath })
       : await generate(options);
+
+    // The rich hermes-agent generator returns `{ yaml, error }`, not a string.
+    // Surface its refusal instead of passing the object on as file content.
+    const refusal = (content as unknown as { error?: unknown } | null)?.error;
+    if (typeof content !== "string" && typeof refusal === "string" && refusal) {
+      return { success: false, configPath: "", error: refusal };
+    }
 
     let migration: string | undefined;
     if (canonicalToolId === "codex") {

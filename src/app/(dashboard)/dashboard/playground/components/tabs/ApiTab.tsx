@@ -1,6 +1,8 @@
 "use client";
 
 import Icon from "@/shared/components/Icon";
+import Notice from "@/shared/components/Notice";
+import { Alert } from "@omniroute/ui-kit/alert";
 import { Spinner } from "@/shared/components/Loading";
 
 // src/app/(dashboard)/dashboard/playground/components/tabs/ApiTab.tsx
@@ -10,9 +12,11 @@ import { Spinner } from "@/shared/components/Loading";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useTranslations } from "next-intl";
-// Barrel import kept on purpose: tests/unit/ui/playground-api-tab.test.tsx mocks "@/shared/components".
-import { Card, Button, Select, Badge } from "@/shared/components";
+import Badge from "@/shared/components/Badge";
+import Button from "@/shared/components/Button";
+import Card from "@/shared/components/Card";
 import Input from "@/shared/components/Input";
+import Select from "@/shared/components/Select";
 import { ALIAS_TO_ID } from "@/shared/constants/providers";
 import { pickDisplayValue } from "@/shared/utils/maskEmail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
@@ -490,13 +494,13 @@ export default function ApiTab(_props: ApiTabProps) {
   return (
     <div className="space-y-5 p-4 overflow-y-auto">
       {/* Info Banner */}
-      <div className="flex items-start gap-3 px-4 py-3 rounded-lg bg-primary/5 border border-primary/10 text-sm text-text-muted">
-        <Icon name="science" size={20} className="text-primary mt-0.5" />
-        <div>
-          <p className="font-medium text-text-main mb-0.5">{t("title")}</p>
-          <p>{t("description")}</p>
-        </div>
-      </div>
+      <Alert
+        variant="info"
+        dismissible={false}
+        icon={<Icon name="science" size={18} />}
+        title={t("title")}
+        description={t("description")}
+      />
 
       {/* Controls */}
       <Card>
@@ -596,7 +600,7 @@ export default function ApiTab(_props: ApiTabProps) {
           <div className="p-4 space-y-3">
             <div className="flex items-center gap-2">
               <Icon name="attach_file" size={18} className="text-text-muted" />
-              <h3 className="text-sm font-semibold text-text-main">
+              <h3 className="ci-heading" data-size="sm">
                 {isTranscriptionEndpoint ? t("audioFile") : t("attachImages")}
               </h3>
               {isTranscriptionEndpoint && (
@@ -691,7 +695,9 @@ export default function ApiTab(_props: ApiTabProps) {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Icon name="upload" size={18} className="text-text-muted" />
-                <h3 className="text-sm font-semibold text-text-main">{t("request")}</h3>
+                <h3 className="ci-heading" data-size="sm">
+                  {t("request")}
+                </h3>
                 <Badge variant="info" size="sm">
                   POST {ENDPOINT_PATHS[selectedEndpoint]}
                 </Badge>
@@ -701,7 +707,7 @@ export default function ApiTab(_props: ApiTabProps) {
                   variant="ghost"
                   size="icon-sm"
                   onClick={() => void handleCopy(requestBody)}
-                  className="text-text-muted"
+                  tone="muted"
                   title={t("copy")}
                   aria-label={t("copy")}
                   icon="content_copy"
@@ -715,7 +721,7 @@ export default function ApiTab(_props: ApiTabProps) {
                       (template as Record<string, unknown>).model = selectedModel;
                     setRequestBody(JSON.stringify(template, null, 2));
                   }}
-                  className="text-text-muted"
+                  tone="muted"
                   title={t("resetToDefault")}
                   aria-label={t("resetToDefault")}
                   icon="restart_alt"
@@ -723,10 +729,9 @@ export default function ApiTab(_props: ApiTabProps) {
               </div>
             </div>
             {isTranscriptionEndpoint && (
-              <p className="text-xs text-text-muted bg-warning/10 border border-warning/20 rounded px-2 py-1.5 flex items-start gap-1">
-                <Icon name="info" size={12} className="text-warning mt-0.5" />
+              <Notice variant="warning" icon="info">
                 {t("transcriptionHint")}
-              </p>
+              </Notice>
             )}
             <div className="border border-border rounded-lg overflow-hidden">
               <Editor
@@ -754,7 +759,9 @@ export default function ApiTab(_props: ApiTabProps) {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Icon name="download" size={18} className="text-text-muted" />
-                <h3 className="text-sm font-semibold text-text-main">{t("response")}</h3>
+                <h3 className="ci-heading" data-size="sm">
+                  {t("response")}
+                </h3>
                 {responseStatus !== null && (
                   <Badge
                     variant={responseStatus >= 200 && responseStatus < 300 ? "success" : "error"}
@@ -773,7 +780,7 @@ export default function ApiTab(_props: ApiTabProps) {
                   variant="ghost"
                   size="icon-sm"
                   onClick={() => void handleCopy(responseBody)}
-                  className="text-text-muted"
+                  tone="muted"
                   title={t("copy")}
                   aria-label={t("copy")}
                   icon="content_copy"
@@ -797,7 +804,7 @@ export default function ApiTab(_props: ApiTabProps) {
                 <ImageResultsInline images={imageData} />
               ) : transcriptionText !== null ? (
                 <div className="p-4 space-y-2">
-                  <p className="text-xs text-text-muted font-medium uppercase tracking-wider">
+                  <p className="ci-eyebrow" data-weight="medium">
                     {t("transcription")}
                   </p>
                   <div className="bg-surface/50 rounded p-3 text-sm text-text-main leading-relaxed whitespace-pre-wrap">

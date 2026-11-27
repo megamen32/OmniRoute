@@ -6,6 +6,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { Card, Button, CardSkeleton } from "@/shared/components";
+import FalNativeGate from "./components/FalNativeGate";
 import ProviderTosNotice from "@/shared/components/ProviderTosNotice";
 import {
   NOAUTH_PROVIDERS,
@@ -16,6 +17,7 @@ import {
   isClaudeCodeCompatibleProvider,
   supportsApiKeyOnFreeProvider,
   supportsDualAuthProvider,
+  supportsDeviceCodeLogin,
 } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import {
@@ -46,6 +48,7 @@ import { useProviderSettings } from "./hooks/useProviderSettings";
 import { useProviderModels } from "./hooks/useProviderModels";
 import { useCommandCodeAuth } from "./hooks/useCommandCodeAuth";
 import { useConnectionAutoSync } from "./hooks/useConnectionAutoSync";
+import { useConnectionHealthCheck } from "./hooks/useConnectionHealthCheck";
 import { useExternalLinkFlow } from "./hooks/useExternalLinkFlow";
 import { useAuthFileHandlers } from "./hooks/useAuthFileHandlers";
 import { useModelImportHandlers } from "./hooks/useModelImportHandlers";
@@ -60,7 +63,9 @@ import ProviderModelsSection from "./components/ProviderModelsSection";
 import CustomModelsSection from "./components/CustomModelsSection";
 import ConnectionsListPanel from "./components/ConnectionsListPanel";
 import CoolingConnectionsPanel from "./components/CoolingConnectionsPanel";
+import { KEYCHAIN_IMPORT_ONLY_PROVIDERS } from "@/shared/constants/keychainImportOnly";
 import ConnectionsHeaderToolbar from "./components/ConnectionsHeaderToolbar";
+import { ChatGptPlanNotice } from "@/shared/components/ChatGptPlanUi";
 import { ConnectionPinTip } from "./components/ConnectionIdChip";
 import VolcengineConnectModal from "./components/VolcengineConnectModal";
 import ProviderAccountRoutingCard from "../../settings/components/ProviderAccountRoutingCard";
@@ -298,12 +303,20 @@ export default function ProviderDetailPageClient() {
     referralUrl
   );
   const oauthProviderId = resolveProviderOAuthBackendId(providerId, providerInfo);
+  const isKeychainImportOnly = KEYCHAIN_IMPORT_ONLY_PROVIDERS.has(providerId);
+  // Keychain-import-only providers (zed) never get the OAuth add flow (#20573).
+  // copilot-m365-web is not keychain-only, so it stays first and unconditional.
   const providerSupportsOAuth =
     providerId === "zcode" ||
     providerId === "copilot-m365-web" ||
-    providerInfo?.toggleAuthType === "oauth" ||
-    providerInfo?.toggleAuthType === "free" ||
-    oauthProviderId !== providerId;
+    (!isKeychainImportOnly &&
+      (providerInfo?.toggleAuthType === "oauth" ||
+        providerInfo?.toggleAuthType === "free" ||
+        oauthProviderId !== providerId ||
+        // A no-auth provider can still offer a dashboard sign-in: MiniMax Code
+        // takes an account code here and writes the credential into the local
+        // MiniMax Code profile.
+        supportsDeviceCodeLogin(providerId)));
   const subscriptionRisk = providerInfo?.subscriptionRisk === true;
 
   // ── Phase 1t.3: connection gate + risk-notice modal state ───────────────
@@ -350,6 +363,12 @@ export default function ProviderDetailPageClient() {
     usesCuratedModelsOnly,
   ]);
   const isUpstreamProxyProvider = providerInfo?.category === "upstream-proxy";
+  // A no-auth provider can still offer a dashboard sign-in: MiniMax Code takes
+  // an account code here and writes the credential into the local MiniMax Code
+  // profile. Declared after the three flags it reads (const TDZ).
+  const showAccountRouting =
+    !isUpstreamProxyProvider &&
+    (!isFreeNoAuth || providerSupportsPat || supportsDeviceCodeLogin(providerId));
   const compatibleSupportsModelImport = compatibleProviderSupportsModelImport(providerId);
 
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
@@ -395,6 +414,7 @@ export default function ProviderDetailPageClient() {
       await Promise.all([fetchConnections(), fetchProviderModelMeta()]);
     }
   );
+  const handleToggleConnectionHealthCheck = useConnectionHealthCheck(setConnections, notify, t);
 
   // ── model-related effects (loading gate) ────────────────────────────────
   useEffect(() => {
@@ -421,6 +441,12 @@ export default function ProviderDetailPageClient() {
   }, [searchParams, gateConnectionFlow, openApiKeyAddFlow]);
 
   const openPrimaryAddFlow = useCallback(() => {
+    // Keychain-import-only providers (zed) have no OAuth/API-key add flow: the
+    // import card is the single path, so bring it into view (#20573).
+    if (KEYCHAIN_IMPORT_ONLY_PROVIDERS.has(providerId)) {
+      document.getElementById("keychain-import-card")?.scrollIntoView?.({ behavior: "smooth" });
+      return;
+    }
     if (providerId === "kimi-coding") return setShowKimiAuthMethodModal(true);
     if (isOAuth) {
       setShowOAuthModal(true);
@@ -520,7 +546,11 @@ export default function ProviderDetailPageClient() {
   } = useAuthFileHandlers({ parseApiErrorMessage, getAttachmentFilename, notify, t });
 
   // Phase 1e: compat-state derivations
-  const compat = useModelCompatState(modelMeta.customModels, modelMeta.modelCompatOverrides);
+  const compat = useModelCompatState(
+    modelMeta.customModels,
+    modelMeta.modelCompatOverrides,
+    providerId
+  );
   // Combo membership for every model on this provider — drives the small
   // "used in combo X" badge behind each model row (#16216).
   const comboUsage = useModelComboUsage(providerId);
@@ -609,7 +639,9 @@ export default function ProviderDetailPageClient() {
       <ProviderTosNotice providerId={providerId} />
 
       {providerId === "zed" && (
-        <ZedImportCard fetchConnections={fetchConnections} notify={notify} />
+        <div id="keychain-import-card">
+          <ZedImportCard fetchConnections={fetchConnections} notify={notify} />
+        </div>
       )}
       {providerId === "cursor" && <CursorAgentNudge />}
       {isCompatible && providerNode && (
@@ -646,12 +678,19 @@ export default function ProviderDetailPageClient() {
         />
       )}
       {!isUpstreamProxyProvider && <ProviderRetryDelaySelect providerId={providerId} />}
-      {!isUpstreamProxyProvider && (!isFreeNoAuth || providerSupportsPat) && (
+      {showAccountRouting && (
         <Card>
           <ProviderAccountRoutingCard
             providerKey={providerId}
             connectionCount={connections.length}
           />
+          {providerId === "chatgpt" && (
+            <ChatGptPlanNotice
+              connected={connections.some(
+                (connection) => connection.isActive !== false && connection.testStatus === "active"
+              )}
+            />
+          )}
           <ConnectionsHeaderToolbar
             providerId={providerId}
             providerInfo={providerInfo}
@@ -772,6 +811,7 @@ export default function ProviderDetailPageClient() {
                 handleToggleCodexPaidCredits={handleToggleCodexPaidCredits}
                 canAutoSync={!usesCuratedModelsOnly && compatibleSupportsModelImport}
                 handleToggleConnectionAutoSync={handleToggleConnectionAutoSync}
+                handleToggleConnectionHealthCheck={handleToggleConnectionHealthCheck}
                 handleToggleCliproxyapiMode={handleToggleCliproxyapiMode}
                 handleSetUpstreamProxyMode={handleSetUpstreamProxyMode}
                 upstreamProxyMode={upstreamProxyMode}
@@ -811,11 +851,17 @@ export default function ProviderDetailPageClient() {
         </Card>
       )}
       {isUpstreamProxyProvider && <UpstreamProxyCard t={t} />}
+      {providerId === "fal-ai" && (
+        <FalNativeGate
+          key={selectedConnection?.id ?? connections[0]?.id ?? "none"}
+          connectionId={selectedConnection?.id ?? connections[0]?.id ?? null}
+        />
+      )}
 
       {/* Models — hidden for search providers (they don't have models) */}
       {!isSearchProvider && !isUpstreamProxyProvider && (
         <Card>
-          <h2 className="text-lg font-semibold mb-4">{t("availableModels")}</h2>
+          <h2 className="text-lg mb-4">{t("availableModels")}</h2>
           <ProviderModelsSection
             providerId={providerId}
             providerAlias={providerAlias}

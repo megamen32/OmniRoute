@@ -53,9 +53,8 @@ OmniRoute has three distinct but related resilience mechanisms. Each has a diffe
 | ------- | ----------- | ----------- | ------------- |
 | OAuth   | 5 failures  | 8 failures  | 60s           |
 | API-key | 7 failures  | 12 failures | 30s           |
-| Local   | derived     | 2 failures  | 15s           |
 
-`degradationThreshold` controls when a provider enters `DEGRADED`; `failureThreshold` controls when it opens and is skipped. Local provider profiles are not exposed on the Resilience settings page yet.
+`degradationThreshold` controls when a provider enters `DEGRADED`; `failureThreshold` controls when it opens and is skipped. `PROVIDER_PROFILES.local` (2 failures / 15s) is defined in `open-sse/config/constants.ts` but **not wired yet**: `getProviderCategory()` returns only `oauth` or `apikey`, so local providers use the OAuth or API-key profile.
 
 **Trip codes:** only provider-level statuses `[408, 500, 502, 503, 504]`. Do NOT trip for account-level errors (most 401/403/429 — those belong to cooldown or lockout).
 
@@ -235,6 +234,69 @@ connection** (Edit connection → Claude section → `lowPriorityMode` / `autoLi
 
 Regression guards: `tests/unit/claude-low-priority-mode.test.ts`,
 `tests/unit/claude-limit-reset.test.ts`, `tests/unit/claude-low-priority-executor.test.ts`.
+
+### Auto-apply banked resets
+
+**Scope:** Codex and Claude subscription (OAuth) connections. **Opt-in**: the
+`bankedResetAutoApply` setting is off and in `dry-run` mode by default
+(Settings → AI → Auto-apply banked resets).
+
+**Purpose:** spend banked resets on their own when an account hits a usage wall, instead of
+waiting for an operator to press "Redeem" on the Provider Limits page.
+
+| Credit type (`creditTypes`) | What is redeemed                          | Where it runs                                                   |
+| --------------------------- | ----------------------------------------- | --------------------------------------------------------------- |
+| `codexCredits`              | Codex reset credits                       | background job, every 60 s                                      |
+| `claudeCredits`             | Claude banked grants (`GRANT` credits)    | background job, every 60 s                                      |
+| `claudeSessionReset`        | Claude weekly session-limit reset (above) | request path, through the same policy as the per-account toggle |
+
+**Implementation:**
+
+- Pure decision (one rule set for both paths): `src/lib/usage/bankedResetPolicy.ts::decideBankedReset()`
+- Background job: `src/lib/services/bankedResetAutoApply.ts` (started in `src/instrumentation-node.ts`)
+- Claude request-path gate: `src/lib/usage/claudeSessionResetPolicy.ts`, registered through
+  `setClaudeLimitResetPolicy()` in `open-sse/services/claudeLimitReset.ts`
+- History, caps and webhook: `src/lib/usage/bankedResetAudit.ts`
+- History API: `GET /api/settings/banked-reset-auto/history?limit=50` (management auth)
+
+**Decision order** (the first failing rule is the recorded reason):
+
+1. Feature off, credit type off, or account out of scope (`accountScope` `all` / `selected`
+   plus the per-account `connections` map).
+2. Outside the optional UTC schedule (`startHourUtc` > `endHourUtc` crosses midnight).
+3. Caps over the last 24 h: `maxPerAccountPerDay` (1), `maxPerDay` (3), and
+   `minSpacingMinutes` (30) between any two redemptions.
+4. Trigger: a walled `session` or `weekly` window (read from
+   `getQuotaWindowStatus().reachedThreshold`, not `isAccountQuotaExhausted()`, which only
+   reports an account with every window spent), or a credit expiring within
+   `expiringCreditHours` (24) on an account that has used at least
+   `expiringCreditMinUsedPercent` (50).
+5. Natural-reset guard: skip when the walled 5-hour window resets within
+   `sessionResetGuardMinutes` (90), or the walled weekly window within
+   `weeklyResetGuardHours` (12).
+6. Weekly floor: skip a 5-hour reset when weekly remaining is below `weeklyFloorPercent` (10).
+7. `last-resort` mode: skip while another in-scope account of the same provider has at least
+   `poolHeadroomPercent` (10) left in both windows. Expiring-credit triggers bypass this.
+8. `dry-run` records a row and redeems nothing; `last-resort` and `eager` redeem.
+
+Missing quota data never unlocks a redemption: an unknown reset time or weekly usage skips.
+
+**Claude session reset:** with the feature off, or `claudeSessionReset` off, the per-account
+`autoLimitReset` toggle decides exactly as before. With both on, the feature replaces the
+per-account toggles: an in-scope account may claim only when the policy allows it, and in
+`dry-run` mode no claim is made.
+
+**Safety:** the job redeems at most one credit per tick, decides before listing credits (a
+skipped account is never listed), uses idempotency keys
+`auto-reset:<connectionId>:<yyyy-mm-dd>:<n>`, and backs an account off for 1 h after a
+failed listing or redemption. Every redemption, failure and dry-run decision is written to
+`audit_log` (`action: "bankedReset.redeem"`, no tokens or credit ids); the caps are counted
+from those rows, so they survive restarts. Successful redemptions also fire the
+`provider.reset_redeemed` webhook.
+
+Regression guards: `tests/unit/banked-reset-policy.test.ts`,
+`tests/unit/banked-reset-auto-apply.test.ts`, `tests/unit/claude-limit-reset-policy-gate.test.ts`,
+`tests/unit/banked-reset-history-route.test.ts`.
 
 ### Session affinity (#7274)
 
@@ -483,7 +545,9 @@ returning the 429 — this covers Gemini-class TPM/RPM windows (~60s retry-after
 on multi-model combos, e.g. both targets of a 2-model combo hitting a per-model
 rate limit. Bounded by `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
 `budgetMs`) in **Settings → Resilience**. It never waits on `quota_exhausted`
-(locked until midnight) or auth/not-found reasons.
+(locked until midnight) or auth/not-found reasons. With `comboTimeoutMs` set, a
+wait that cannot finish before that deadline does not start (#18998): the combo
+answers at once with its terminal response instead of a `COMBO_TIMEOUT` 504.
 
 A combo can opt out with `config.comboCooldownWaitEnabled: false`. Only literal
 `false` disables these shared combo waits (post-dispatch cooldown and pre-dispatch
@@ -953,11 +1017,31 @@ rate limit is the same signal as an exhausted quota. Honest limits:
 
 ## Other Resilience Features
 
-- **20 routing strategies** (priority, weighted, round-robin, context-relay, fill-first, p2c, random, least-used, cost-optimized, reset-aware, reset-window, headroom, quota-weighted, strict-random, auto, lkgp, context-optimized, cache-optimized, fusion, pipeline) — see [AUTO-COMBO.md](../routing/AUTO-COMBO.md).
+- **22 routing strategies** (priority, weighted, round-robin, context-relay, fill-first, p2c, random, least-used, cost-optimized, reset-aware, reset-window, expiry-first, headroom, quota-weighted, strict-random, auto, lkgp, context-optimized, cache-optimized, fusion, pipeline, jev) — see [AUTO-COMBO.md](../routing/AUTO-COMBO.md).
 - **Reset-aware routing** (v3.8.0) — prioritizes connections by quota reset time.
 - **Background mode degradation** — Responses API `background: true` degraded to sync with warning.
 - **Dynamic tool limit detection** — backs off providers when tool count limits hit.
 - **Emergency fallback** — controlled by `OMNIROUTE_EMERGENCY_FALLBACK`; operators can override it from the Feature Flags page without a restart.
+
+---
+
+## When OmniRoute itself is unreachable
+
+The provider circuit breaker, connection cooldown, and model lockout all run inside the
+gateway. If the client cannot reach the gateway, it gets a connection error. OmniRoute cannot
+intercept that failure. The client decides whether to retry and what message to show.
+
+OmniRoute currently provides no client-side fallback and defines no policy for it. Configure
+any alternate route in the client or in front of the gateway.
+
+- `GET /api/health` checks liveness without authentication.
+- `GET /api/health/ping` checks readiness, including whether the database responds.
+- `GET /api/monitoring/health` gives authenticated callers a deeper health overview.
+- `omniroute launch <tool>` probes `/api/monitoring/health` before starting the client. It can
+  start a local gateway automatically. With `--no-start`, an unreachable gateway results in
+  `GatewayUnreachable` and exit code `69`.
+
+To disconnect a client from OmniRoute, follow [Revert client configuration](../guides/UNINSTALL.md#revert-client-configuration).
 
 ---
 
@@ -1020,10 +1104,16 @@ breaker runs on `circuitBreakerThreshold` / `circuitBreakerReset`:
 | ------- | ----------: | -----------------------------------: | ----------------------------: |
 | OAuth   |         `5` |                                  `8` |                         `60s` |
 | API key |         `7` |                                 `12` |                         `30s` |
-| Local   |   (derived) |                                  `2` |                         `15s` |
+
+A `local` profile (`2` failures / `15s`) also exists in `PROVIDER_PROFILES`, but it is not
+wired into the breaker: `buildProviderProfile()` (`open-sse/services/accountFallback.ts`) only
+accepts `oauth` or `apikey`, and `getProviderCategory()`
+(`open-sse/config/providerRegistry.ts`) returns one of those two (unregistered providers get
+`apikey`).
 
 `PROVIDER_PROFILES` also defines `providerFailureThreshold` (10/15/2),
-`providerFailureWindowMs` (15/30/5 min) and `providerCooldownMs` (5/10/1 min): these power the
+`providerFailureWindowMs` (15/30/5 min) and `providerCooldownMs` (5/10/1 min) — OAuth/API
+key/local, where the local values are inert for the same reason as above: these power the
 **window gate of the opt-in global Provider Cooldown** (`PROVIDER_COOLDOWN_ENABLED`, default
 off) — a provider-level entry in `open-sse/services/providerCooldownTracker.ts` only counts as
 cooling after `providerFailureThreshold` failures inside `providerFailureWindowMs`, and then

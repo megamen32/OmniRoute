@@ -13,11 +13,11 @@ export function HeroStat({
 }) {
   return (
     <div className="text-center">
-      <div className="text-[10px] uppercase tracking-wide text-text-muted font-semibold truncate">
+      <div className="ci-eyebrow truncate" data-size="3xs" data-weight="medium">
         {label}
       </div>
       <div
-        className={`text-2xl font-bold tabular-nums leading-tight ${accent || "text-text-main"}`}
+        className={`text-2xl font-semibold tabular-nums leading-tight ${accent || "text-text-main"}`}
       >
         {value}
       </div>
@@ -28,10 +28,10 @@ export function HeroStat({
 export function SyncMini({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-border/30 bg-bg/40 px-2 py-1.5">
-      <p className="text-[9px] uppercase tracking-wide text-text-muted font-semibold truncate">
+      <p className="ci-eyebrow truncate" data-size="3xs" data-weight="medium">
         {label}
       </p>
-      <p className="text-[11px] font-medium text-text-main mt-0.5 truncate" title={value}>
+      <p className="text-2xs font-medium text-text-main mt-0.5 truncate" title={value}>
         {value}
       </p>
     </div>

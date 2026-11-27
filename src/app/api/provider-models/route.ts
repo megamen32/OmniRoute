@@ -38,6 +38,7 @@ import {
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { getRegisteredEndpointAdapterStatuses } from "@/lib/providerModels/endpointAdapterAvailability";
 import { isHiddenForModality } from "@/shared/utils/modelVisibility";
+import { clearHealthCheckHiddenMarks } from "@/lib/db/modelHealthAutoHidden";
 export const dynamic = "force-dynamic";
 import { providerModelMutationSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
@@ -94,6 +95,11 @@ async function setHiddenByStoredIds(
     if (!updatedModel) {
       mergeModelCompatOverride(provider, modelId, { isHidden, modality });
     }
+    // #11777: a manual hide/unhide makes the user the owner of the visibility state,
+    // so the scheduled health check must never restore this model on its own. Clear
+    // the mark per completed write: if a later model in the batch throws, the ones
+    // already written keep their user ownership.
+    clearHealthCheckHiddenMarks(provider, [requestedId, modelId]);
   }
   return Array.from(new Set([...modelIds, ...normalizedIds]));
 }
@@ -347,6 +353,7 @@ export async function PUT(request) {
       contextWindowOverride,
       maxOutputTokenOverride,
       supportsVision,
+      thinkingReplay,
       generationConfig,
       isFree,
     } = validation.data;
@@ -395,13 +402,16 @@ export async function PUT(request) {
       }
     }
 
-    // A body whose only mutable key is `contextWindowOverride` edits the
-    // `model_context_overrides` record alone. It must not upsert a customModels
-    // row: that would turn a native/synced catalog model into a "custom" one
+    // A body whose only mutable keys are `contextWindowOverride` and/or
+    // `thinkingReplay` edits overlay records alone (`model_context_overrides`,
+    // the modelCompatOverrides entry). It must not upsert a customModels row:
+    // that would turn a native/synced catalog model into a "custom" one
     // (/v1/models overlay, apiFormat flip, availability under a live catalog).
     const contextOnly =
-      "contextWindowOverride" in raw &&
-      Object.keys(raw).every((k) => ["provider", "modelId", "contextWindowOverride"].includes(k));
+      ("contextWindowOverride" in raw || "thinkingReplay" in raw) &&
+      Object.keys(raw).every((k) =>
+        ["provider", "modelId", "contextWindowOverride", "thinkingReplay"].includes(k)
+      );
 
     const model = await updateCustomModel(provider, storedModelId, updates, {
       createIfMissing:
@@ -430,6 +440,7 @@ export async function PUT(request) {
             "apiFormat",
             "targetFormat",
             "supportsVision",
+            "thinkingReplay",
           ].includes(k)
         ) &&
         ("normalizeToolCallId" in raw ||
@@ -440,7 +451,8 @@ export async function PUT(request) {
           "maxOutputTokenOverride" in raw ||
           "apiFormat" in raw ||
           "targetFormat" in raw ||
-          "supportsVision" in raw);
+          "supportsVision" in raw ||
+          "thinkingReplay" in raw);
       if (compatOnly) {
         const knownProvider =
           !!provider &&
@@ -487,6 +499,9 @@ export async function PUT(request) {
               ? supportsVision
               : undefined;
         }
+        if ("thinkingReplay" in raw && thinkingReplay !== undefined) {
+          patch.thinkingReplay = thinkingReplay;
+        }
         if (Object.keys(patch).length > 0) {
           mergeModelCompatOverride(provider, storedModelId, patch);
         }
@@ -503,6 +518,12 @@ export async function PUT(request) {
         { error: { message: "Model not found", type: "not_found" } },
         { status: 404 }
       );
+    }
+
+    // thinkingReplay has no customModels home: the translator reads it from the
+    // modelCompatOverrides entry only, so persist it there for custom rows too.
+    if ("thinkingReplay" in raw && thinkingReplay !== undefined) {
+      mergeModelCompatOverride(provider, storedModelId, { thinkingReplay });
     }
 
     return Response.json({

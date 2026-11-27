@@ -40,6 +40,7 @@ import {
   isFreeVariantModel,
 } from "../services/openrouterFreeWindow.ts";
 import { gateOutboundRequest } from "../services/wafRateLimit.ts";
+import { readErrorBodyText } from "../utils/error.ts";
 import { ClaudeUsageLimitGuard } from "./claudeUsageLimit.ts";
 import {
   INTRA_RETRY_MAX_HINT_MS,
@@ -50,9 +51,17 @@ import type { PoolConfig } from "../services/sessionPool/types.ts";
 import type { Session } from "../services/sessionPool/session.ts";
 import { SessionPool } from "../services/sessionPool/sessionPool.ts";
 import { PoolRegistry } from "../services/sessionPool/poolRegistry.ts";
+import {
+  PROXY_FETCH_NO_REPLAY,
+  type FetchWithDispatcherOptions,
+} from "../utils/proxyFetchTransportSupport.ts";
 import { resolveKeyForRequest } from "../services/apiKeyRotator.ts";
 import type { KeyHealth } from "../services/apiKeyRotator.ts";
-import { getOpenAICompatibleType, isClaudeCodeCompatible } from "../services/provider.ts";
+import {
+  getOpenAICompatibleType,
+  getTargetFormat,
+  isClaudeCodeCompatible,
+} from "../services/provider.ts";
 import { usesCcWireImage } from "../services/ccWireImageBuiltins.ts";
 import { getForcedReasoningEffort } from "../utils/reasoningRuleContext.ts";
 import {
@@ -87,8 +96,10 @@ import {
   fixToolAdjacency,
   stripTrailingAssistantOrphanToolUse,
   stripTrailingAssistantForProvider,
+  stripTrailingAssistantInputForProvider,
 } from "../services/contextManager.ts";
 import {
+  normalizeClaudeFinalAssistantWhitespace,
   requiresUserLastMessage,
   stripTrailingAssistantTurns,
 } from "../services/assistantPrefill.ts";
@@ -122,6 +133,7 @@ import { applyPeerTraceHeader } from "@/shared/resilience/peerRouting";
 import { applyClineProtocolHeaders } from "@/shared/utils/clineAuth";
 import { isProbeContext } from "@/shared/utils/probeOrigin";
 import { assertDispatchUrlAllowed, dispatchGuarded } from "./dispatchPin.ts";
+import { dispatchWithGzipBody } from "./base/gzipRequestBody.ts";
 // Header helpers extracted to a pure leaf; re-exported for external importers
 // (executors + tests) that import them from "./base.ts".
 export {
@@ -148,7 +160,10 @@ import {
   clampTopLevelMaxTokens,
   getLearnedMaxTokensCap,
 } from "../services/learnedMaxTokensCaps.ts";
-import { applyFieldDowngradeRecovery } from "./base/fieldDowngradeRecovery.ts";
+import {
+  applyFieldDowngradeRecovery,
+  reapplyStrippedFields,
+} from "./base/fieldDowngradeRecovery.ts";
 import { applyAdvisorUndecryptableRecovery } from "./base/advisorRecovery.ts";
 import { stripRedactThinkingBetaForVisibleThinking } from "./base/redactThinkingBeta.ts";
 
@@ -229,6 +244,8 @@ export type ExecuteInput = {
   ) => Promise<void> | void;
   /** When true, skip the intra-URL 429 retry in execute() so the caller handles fallback. */
   skipUpstreamRetry?: boolean;
+  /** Custom OpenAI-compatible node: transport recovery resends only a pre-send failure. */
+  nonReplayableRequest?: boolean;
   /** In-process capability; never accepted from an HTTP body or client header. */
   validationDispatch?: StrictValidationDispatch;
   /** Request-scoped id for log attribution; absent off the chat path, never fabricated. */
@@ -767,6 +784,7 @@ export class BaseExecutor {
       upstreamExtraHeaders,
       clientHeaders,
       skipUpstreamRetry = false,
+      nonReplayableRequest = false,
       onCredentialsRefreshed,
       contextEditing,
     } = input;
@@ -976,6 +994,10 @@ export class BaseExecutor {
       if (advisorResultsReplaced) {
         transformedBody = replaceRedactedAdvisorResults(transformedBody).body;
       }
+      // Fields an upstream already rejected with a 400 in this execute() stay stripped
+      // on a re-run or fallback URL; strippedFields blocks a second strip-and-retry.
+      // Applied again after the Claude block below, which can re-add a stripped field.
+      reapplyStrippedFields(transformedBody, strippedFields);
 
       // Re-synchronize skills beta with the finalized transformed body (#14200):
       syncSkillsBeta(headers, this.provider, transformedBody, usesClaudeCodeProtocol);
@@ -1037,17 +1059,20 @@ export class BaseExecutor {
               model,
               requestCredentials,
               (url, init) =>
-                observeProviderHttpSend(
-                  {
-                    provider: this.provider,
-                    model:
-                      typeof (serializedBody as Record<string, unknown> | null)?.model === "string"
-                        ? String((serializedBody as Record<string, unknown>).model)
-                        : model,
-                    connectionId: requestCredentials?.connectionId ?? null,
-                    endpoint: "unknown",
-                  },
-                  () => this.dispatchRequest(url, init, requestCredentials)
+                dispatchWithGzipBody(this.provider, url, init, (gzipUrl, gzipInit) =>
+                  observeProviderHttpSend(
+                    {
+                      provider: this.provider,
+                      model:
+                        typeof (serializedBody as Record<string, unknown> | null)?.model ===
+                        "string"
+                          ? String((serializedBody as Record<string, unknown>).model)
+                          : model,
+                      connectionId: requestCredentials?.connectionId ?? null,
+                      endpoint: "unknown",
+                    },
+                    () => this.dispatchRequest(gzipUrl, gzipInit, requestCredentials)
+                  )
                 )
             )(requestUrl, optionsWithSignal);
           } finally {
@@ -1419,6 +1444,9 @@ export class BaseExecutor {
         // user message. Both are idempotent on clean histories.
         {
           const tb = transformedBody as Record<string, unknown>;
+          if (Array.isArray(tb?.input)) {
+            tb.input = stripTrailingAssistantInputForProvider(tb.input, this.provider);
+          }
           if (Array.isArray(tb?.messages)) {
             const fixed = fixToolPairs(tb.messages as Record<string, unknown>[]);
             // fixToolAdjacency enforces Claude's strict adjacency rule
@@ -1436,6 +1464,14 @@ export class BaseExecutor {
             // trailing text-only assistant turn with 400. Strip here so combo
             // failover does not burn the next account on the same body.
             tb.messages = stripTrailingAssistantForProvider(stripped, this.provider);
+            // Anthropic reads an assistant-last turn as a prefill and 400s on trailing whitespace.
+            // Select by the outbound format: generic anthropic-compatible-* relays send it too.
+            if (
+              isClaude ||
+              getTargetFormat(this.provider, requestCredentials?.providerSpecificData) === "claude"
+            ) {
+              tb.messages = normalizeClaudeFinalAssistantWhitespace(tb.messages as JsonRecord[]);
+            }
             // Per-connection opt-in for relays that ban assistant prefill.
             if (requiresUserLastMessage(requestCredentials?.providerSpecificData)) {
               const userLast = stripTrailingAssistantTurns(tb.messages as JsonRecord[]);
@@ -1496,6 +1532,7 @@ export class BaseExecutor {
           connectionOptedIn: ccRequestDefaults.redactThinking === true,
           claudeOAuth: this.provider === "claude" && hasClaudeOAuthToken,
         });
+        reapplyStrippedFields(transformedBody, strippedFields);
         stripInternalBodyFields(transformedBody);
 
         const shouldFingerprint =
@@ -1529,7 +1566,12 @@ export class BaseExecutor {
         applyPeerTraceHeader(finalHeaders, clientHeaders, url);
         // Rides `anthropic-usage-limit: slow` once this account accepted the offer.
         const claudeSentSlow = claudeUsageLimit.applyHeader(finalHeaders, activeCredentials);
-        const serializedBody = parseSerializedBody(bodyString);
+        // Without a fingerprint or CCH signing the wire string is exactly
+        // JSON.stringify(transformedBody), so the live object already has the wire
+        // content (and its _toolNameMap); a parse-back would only copy it per attempt.
+        const wireIsLiveJson =
+          !shouldFingerprint && !(usesClaudeCodeProtocol || this.provider === "claude");
+        const serializedBody = wireIsLiveJson ? transformedBody : parseSerializedBody(bodyString);
         // #4307 — Preserve the non-enumerable tool-name cloak/remap reverse map
         // (`_toolNameMap`, set on the live `transformedBody` by
         // remapToolNamesInRequest / cloakThirdPartyToolNames) that the JSON
@@ -1560,10 +1602,11 @@ export class BaseExecutor {
           }
         }
         copilotIdentity.pin(finalHeaders);
-        const fetchOptions: RequestInit = {
+        const fetchOptions: FetchWithDispatcherOptions = {
           method: "POST",
           headers: finalHeaders,
           body: bodyString,
+          ...(nonReplayableRequest ? { [PROXY_FETCH_NO_REPLAY]: true } : {}),
         };
 
         // OpenRouter `:free`-variant local window (#6842): record every dispatch
@@ -1608,10 +1651,7 @@ export class BaseExecutor {
           typeof transformedBody === "object" &&
           (transformedBody as Record<string, unknown>).context_management !== undefined
         ) {
-          const errText = await response
-            .clone()
-            .text()
-            .catch(() => "");
+          const errText = await readErrorBodyText(response.clone()).catch(() => "");
           if (/context[_-]management|context editing/i.test(errText)) {
             contextEditingDisabled = true;
             delete (transformedBody as Record<string, unknown>).context_management;
@@ -1641,10 +1681,7 @@ export class BaseExecutor {
           transformedBody &&
           typeof transformedBody === "object"
         ) {
-          const errText = await response
-            .clone()
-            .text()
-            .catch(() => "");
+          const errText = await readErrorBodyText(response.clone()).catch(() => "");
           const upstreamMax = parseThinkingBudgetMax(errText);
           if (upstreamMax !== null) {
             const currentBudget = readNestedThinkingBudget(transformedBody);
@@ -1668,7 +1705,11 @@ export class BaseExecutor {
         }
 
         const serializeRetryBody = async (b: unknown) => {
-          let retryBody = JSON.stringify(b);
+          // A retry goes out with the same body-field order as the first send: the order is part of
+          // the CLI fingerprint (see above), and the live body keeps the client's order.
+          let retryBody = shouldFingerprint
+            ? applyFingerprint(fingerprintProvider, {}, b as Record<string, unknown>).bodyString
+            : JSON.stringify(b);
           if (usesClaudeCodeProtocol || this.provider === "claude") {
             retryBody = await signRequestBody(retryBody);
           }
@@ -1786,14 +1827,12 @@ export class BaseExecutor {
         // same URL with exponential backoff before falling through to the
         // 429/401/fallback chain. See docs/security/AGENTROUTER_WAF.md.
         if (
+          this.provider === "agentrouter" &&
           !skipUpstreamRetry &&
           response.status === HTTP_STATUS.BAD_REQUEST &&
           (retryAttemptsByUrl[urlIndex] ?? 0) < BaseExecutor.WAF_RETRY_CONFIG.maxAttempts
         ) {
-          const wafErrText = await response
-            .clone()
-            .text()
-            .catch(() => "");
+          const wafErrText = await readErrorBodyText(response.clone()).catch(() => "");
           if (/content[_-]blocked/i.test(wafErrText)) {
             retryAttemptsByUrl[urlIndex] = (retryAttemptsByUrl[urlIndex] ?? 0) + 1;
             const wafAttempt = retryAttemptsByUrl[urlIndex];

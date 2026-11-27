@@ -1,7 +1,9 @@
 import { register } from "../registry.ts";
+import { cacheCreationFields, mergeCacheCreationFields } from "../../utils/cacheWriteUsage.ts";
 import { FORMATS } from "../formats.ts";
 import { initThinkState, applyThinkTag, flushThinkBuffer } from "../../utils/thinkTagParser.ts";
 import { storeClaudeThinkingBlocks } from "../../services/claudeThinkingStore.ts";
+import { chargeRetained } from "../../utils/streamRetainedBudget.ts";
 
 type OpenAIUsage = {
   prompt_tokens: number;
@@ -11,6 +13,7 @@ type OpenAIUsage = {
   prompt_tokens_details?: {
     cached_tokens?: number;
     cache_creation_tokens?: number;
+    cache_creation?: unknown;
     // false: cache_creation_tokens is not included in prompt_tokens (#2215).
     cache_creation_in_prompt?: boolean;
   };
@@ -113,6 +116,7 @@ export function claudeToOpenAIResponse(chunk, state) {
         if (inputTokens > 0 || outputTokens > 0 || cacheRead > 0 || cacheCreation > 0) {
           const billableInputTokens = inputTokens + cacheRead;
           state.usage = {
+            ...cacheCreationFields(startUsage),
             prompt_tokens: billableInputTokens,
             completion_tokens: outputTokens,
             input_tokens: billableInputTokens,
@@ -190,17 +194,21 @@ export function claudeToOpenAIResponse(chunk, state) {
         }
       } else if (delta?.type === "thinking_delta" && delta.thinking) {
         const tracked = thinkingBlocksOf(state).get(chunk.index);
-        if (tracked?.type === "thinking") tracked.thinking += delta.thinking;
+        if (tracked?.type === "thinking" && chargeRetained(state, delta.thinking.length)) {
+          tracked.thinking += delta.thinking;
+        }
         // Map Claude thinking_delta → OpenAI reasoning_content
         // Clients (Claude Code, Cursor, etc.) display reasoning_content as the thinking panel
         results.push(createChunk(state, { reasoning_content: delta.thinking }));
       } else if (delta?.type === "signature_delta" && typeof delta.signature === "string") {
         // Never emitted to the client; kept only for continuity.
         const tracked = thinkingBlocksOf(state).get(chunk.index);
-        if (tracked?.type === "thinking") tracked.signature += delta.signature;
+        if (tracked?.type === "thinking" && chargeRetained(state, delta.signature.length)) {
+          tracked.signature += delta.signature;
+        }
       } else if (delta?.type === "input_json_delta" && delta.partial_json) {
         const toolCall = state.toolCalls.get(chunk.index);
-        if (toolCall) {
+        if (toolCall && chargeRetained(state, delta.partial_json.length)) {
           toolCall.function.arguments += delta.partial_json;
           results.push(
             createChunk(state, {
@@ -242,6 +250,17 @@ export function claudeToOpenAIResponse(chunk, state) {
         // were collected.
         state.pendingThinkClose = true;
         state.inThinkingBlock = false;
+      }
+      // #20152: a tool with no parameters gets no input_json_delta, which would leave
+      // arguments as "" (not valid JSON). Close it with "{}" like the non-streaming path.
+      const stoppedToolCall = state.toolCalls?.get(chunk.index);
+      if (stoppedToolCall && !stoppedToolCall.function.arguments) {
+        stoppedToolCall.function.arguments = "{}";
+        results.push(
+          createChunk(state, {
+            tool_calls: [{ index: stoppedToolCall.index, function: { arguments: "{}" } }],
+          })
+        );
       }
       state.textBlockStarted = false;
       state.thinkingBlockStarted = false;
@@ -297,6 +316,7 @@ export function claudeToOpenAIResponse(chunk, state) {
             ? inputTokens + cacheReadTokens
             : previousInputTokens;
         state.usage = {
+          ...mergeCacheCreationFields(previousUsage, chunk.usage),
           prompt_tokens: billableInputTokens,
           completion_tokens: outputTokens,
           input_tokens: billableInputTokens,
@@ -317,7 +337,10 @@ export function claudeToOpenAIResponse(chunk, state) {
         if (effectiveCacheReadTokens > 0) {
           state.usage.cache_read_input_tokens = effectiveCacheReadTokens;
         }
-        if (effectiveCacheCreationTokens > 0) {
+        if (
+          effectiveCacheCreationTokens > 0 &&
+          state.usage.cache_creation_input_tokens === undefined
+        ) {
           state.usage.cache_creation_input_tokens = effectiveCacheCreationTokens;
         }
       }
@@ -378,6 +401,7 @@ export function claudeToOpenAIResponse(chunk, state) {
           const totalTokens = promptTokens + completionTokens;
 
           finalChunk.usage = {
+            ...cacheCreationFields(state.usage),
             prompt_tokens: promptTokens,
             completion_tokens: completionTokens,
             total_tokens: totalTokens,
@@ -393,7 +417,7 @@ export function claudeToOpenAIResponse(chunk, state) {
 
           // Add prompt_tokens_details if cached tokens exist
           if (cachedTokens > 0 || cacheCreationTokens > 0) {
-            finalChunk.usage.prompt_tokens_details = {};
+            finalChunk.usage.prompt_tokens_details = { ...cacheCreationFields(state.usage) };
             if (cachedTokens > 0) {
               finalChunk.usage.prompt_tokens_details.cached_tokens = cachedTokens;
             }
@@ -421,6 +445,7 @@ export function claudeToOpenAIResponse(chunk, state) {
           state.usage && typeof state.usage === "object"
             ? {
                 usage: {
+                  ...cacheCreationFields(state.usage),
                   prompt_tokens: state.usage.input_tokens || 0,
                   completion_tokens: state.usage.output_tokens || 0,
                   total_tokens: (state.usage.input_tokens || 0) + (state.usage.output_tokens || 0),
@@ -435,6 +460,7 @@ export function claudeToOpenAIResponse(chunk, state) {
                   ...(cachedTokens > 0 || cacheCreationTokens > 0
                     ? {
                         prompt_tokens_details: {
+                          ...cacheCreationFields(state.usage),
                           ...(cachedTokens > 0 ? { cached_tokens: cachedTokens } : {}),
                           ...(cacheCreationTokens > 0
                             ? {

@@ -1,3 +1,4 @@
+import Card from "@/shared/components/Card";
 import Icon from "@/shared/components/Icon";
 import Button from "@/shared/components/Button";
 import Input from "@/shared/components/Input";
@@ -58,8 +59,10 @@ export default function GlobalModelSearchPanel({
   return (
     <>
       <SegmentedControl
+        semantics="radio"
+        aria-label={getI18nOrFallback(t, "builderModel", "Model")}
         size="sm"
-        className="mt-2.5 mb-2 w-full [&_[role=tablist]]:w-full [&_[role=tab]]:flex-1"
+        className="mt-2.5 mb-2 w-full [&_[role=radiogroup]]:w-full [&_[role=radio]]:flex-1"
         value={builderSelectionMode}
         onChange={(mode) => onSelectionModeChange(mode as "step" | "global")}
         options={[
@@ -77,7 +80,7 @@ export default function GlobalModelSearchPanel({
       />
 
       {builderSelectionMode === "global" && (
-        <div className="mt-3 space-y-2.5 rounded-md border border-border bg-bg-subtle p-3">
+        <Card.Section className="mt-3 space-y-2.5">
           <div className="flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
               <Input
@@ -103,7 +106,8 @@ export default function GlobalModelSearchPanel({
                   size="icon-sm"
                   onClick={() => onGlobalSearchQueryChange("")}
                   aria-label={getI18nOrFallback(t, "clearSearch", "Clear search")}
-                  className="absolute end-1 top-1/2 -translate-y-1/2 text-text-muted"
+                  className="absolute end-1 top-1/2 -translate-y-1/2"
+                  tone="muted"
                 >
                   <Icon name="close" size={14} />
                 </Button>
@@ -126,7 +130,7 @@ export default function GlobalModelSearchPanel({
 
           {/* Quick Presets */}
           <div className="flex flex-wrap items-center gap-1">
-            <span className="text-xs text-text-muted uppercase font-semibold me-1">
+            <span className="ci-eyebrow me-1" data-weight="medium">
               {getI18nOrFallback(t, "builderGlobalShortcuts", "Shortcuts:")}
             </span>
             {QUICK_PRESETS.map((preset) => (
@@ -199,7 +203,7 @@ export default function GlobalModelSearchPanel({
               })
             )}
           </div>
-        </div>
+        </Card.Section>
       )}
     </>
   );
