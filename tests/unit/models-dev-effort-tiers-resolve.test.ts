@@ -95,10 +95,9 @@ test("flag on: a synced list with no known tier resolves to null, not an empty l
   assert.equal(caps.supportedThinkingEfforts, null);
 });
 
-// ZCode's registry declares supportedThinkingEfforts: [] on purpose: the thinking toggle
-// exists, reasoning_effort does not. The empty registry list wins over synced tiers with
-// the flag in either position.
-test("an empty registry effort list stays empty (flag off and on)", () => {
+// ZCode's native registry supports the same low/high/max effort levels as the GLM Coding
+// Plan model. The static registry remains authoritative over synced rows.
+test("ZCode's native effort levels remain visible (flag off and on)", () => {
   const zcode = snapshotWith({
     zcode: { "glm-5.3": syncedRow(["low", "medium", "high", "max"]) },
     zai: { "glm-5.3": syncedRow(["low", "medium", "high", "max"]) },
@@ -107,6 +106,10 @@ test("an empty registry effort list stays empty (flag off and on)", () => {
     const caps = withFlag(flag, () =>
       getResolvedModelCapabilities("zcode/glm-5.3", undefined, zcode)
     );
-    assert.deepEqual(caps.supportedThinkingEfforts, [], `flag=${flag ?? "off"}`);
+    assert.deepEqual(
+      caps.supportedThinkingEfforts,
+      ["low", "high", "max"],
+      `flag=${flag ?? "off"}`
+    );
   }
 });

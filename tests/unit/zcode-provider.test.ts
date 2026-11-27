@@ -48,15 +48,15 @@ test("ZCode provider registry exposes a local no-auth GLM Coding Plan backend", 
   }
   assert.deepEqual(
     zcodeProvider.models.find((model) => model.id === "glm-5.3")?.supportedThinkingEfforts,
-    []
+    ["low", "high", "max"]
   );
   assert.deepEqual(
     zcodeProvider.models.find((model) => model.id === "glm-5.3-flash")?.supportedThinkingEfforts,
-    []
+    ["low", "high", "max"]
   );
   assert.deepEqual(
     zcodeProvider.models.find((model) => model.id === "glm-5.2")?.supportedThinkingEfforts,
-    []
+    ["high", "max"]
   );
 });
 

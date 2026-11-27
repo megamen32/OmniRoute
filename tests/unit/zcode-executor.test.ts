@@ -194,8 +194,17 @@ test("ZCode resolves the native bounded maxOutputTokens from the model option sp
   assert.deepEqual(bounded, {
     providerId: "account:zai-individual-coding-plan",
     modelId: "GLM-5.3-Flash",
-    options: { reasoningLevel: "high" },
+    options: { reasoningLevel: "max" },
   });
+  assert.deepEqual(
+    resolveZcodeSelection(boundedSelectionView(), "glm-5.3-flash", undefined, false, "low").options,
+    { reasoningLevel: "low" }
+  );
+  assert.deepEqual(
+    resolveZcodeSelection(boundedSelectionView(), "glm-5.3-flash", undefined, false, "high")
+      .options,
+    { reasoningLevel: "high" }
+  );
   assert.equal(resolveZcodeMaxTokens(boundedSelectionView(), "glm-5.3-flash"), 128000);
   // Models without a token bound receive no fabricated limit. The builtin
   // Coding Plan profile stays the default fallback when no account profile is enabled.
@@ -237,8 +246,23 @@ test("ZCode always sends native-valid maxOutputTokens even when the caller omits
     selection: ZcodeTurnSelection;
     maxOutputTokens?: number;
   };
-  assert.deepEqual(args.selection.options, { reasoningLevel: "high" });
+  assert.deepEqual(args.selection.options, { reasoningLevel: "max" });
   assert.equal(args.maxOutputTokens, 128000);
+});
+
+test("ZCode forwards an explicit reasoning effort to the native selection", async () => {
+  const { ZcodeExecutor } = await loadZcodeExecutor();
+  const { executor, calls } = capturingExecutor(boundedSelectionView(), ZcodeExecutor);
+  const result = await executor.execute({
+    model: "glm-5.3-flash",
+    body: { ...requestBody(), reasoning_effort: "low" },
+    stream: false,
+    credentials: {},
+  });
+  assert.equal(("response" in result ? result.response : result).status, 200);
+  assert.deepEqual((calls()[0] as { selection: ZcodeTurnSelection }).selection.options, {
+    reasoningLevel: "low",
+  });
 });
 
 test("ZCode clamps caller token limits into the native model option range", async () => {
@@ -286,7 +310,7 @@ test("ZCode prefers the Individual Plan account and falls back only to the built
   assert.deepEqual(resolveZcodeSelection(view, "glm-5.3-flash"), {
     providerId: "account:zai-individual-coding-plan",
     modelId: "GLM-5.3-Flash",
-    options: { reasoningLevel: "high" },
+    options: { reasoningLevel: "max" },
   });
   assert.deepEqual(resolveZcodeSelection(view, "glm-5.3-flash", "account:zai-start-plan"), {
     providerId: "account:zai-start-plan",
